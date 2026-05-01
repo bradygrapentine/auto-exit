@@ -22,3 +22,8 @@ STOP
 # claude harness
 .claude/agent-status/
 .codex-runs/
+.memsearch/
+
+# captured fixtures with real account data — keep local only
+test/fixtures/*.real.json
+code-and-docs-from-chatgpt/engine-ts/test/fixtures/*.real.json
