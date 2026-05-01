@@ -57,12 +57,16 @@
 
   let _modalResolve = null;
 
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+
   function showModal(cfg) {
     qs('kea-modal-body').innerHTML =
-      `<div class="kea-modal-row"><span>Ticker</span><strong>${cfg.marketTicker || '—'}</strong></div>` +
-      `<div class="kea-modal-row"><span>Side</span><strong>${cfg.heldSide}</strong></div>` +
-      `<div class="kea-modal-row"><span>Position size</span><strong>${cfg.positionSize}</strong></div>` +
-      `<div class="kea-modal-row"><span>Chunk size</span><strong>${cfg.chunkSize}</strong></div>`;
+      `<div class="kea-modal-row"><span>Ticker</span><strong>${esc(cfg.marketTicker) || '—'}</strong></div>` +
+      `<div class="kea-modal-row"><span>Side</span><strong>${esc(cfg.heldSide)}</strong></div>` +
+      `<div class="kea-modal-row"><span>Position size</span><strong>${esc(cfg.positionSize)}</strong></div>` +
+      `<div class="kea-modal-row"><span>Chunk size</span><strong>${esc(cfg.chunkSize)}</strong></div>`;
     qs('kea-modal-confirm-cb').checked = false;
     modal.style.display = 'flex';
     return new Promise((resolve) => { _modalResolve = resolve; });
@@ -136,16 +140,16 @@
   // ── Exec summary ─────────────────────────────────────────────────────────────
   function renderSummary(data) {
     const el = qs('kea-summary');
-    if (!data || !data.stopped || !(data.ordersAttempted > 0)) { el.style.display = 'none'; return; }
+    if (!data || !data.stopped || !(data.ordersAttempted > 0 || data.lastError)) { el.style.display = 'none'; return; }
     const dur = fmtDuration(data.startedAt, data.finishedAt);
     el.style.display = '';
     el.innerHTML =
       `<div class="kea-summary-title">Run Complete</div>` +
-      `<div class="kea-summary-row"><span>Orders attempted</span><strong>${data.ordersAttempted}</strong></div>` +
-      `<div class="kea-summary-row"><span>Filled total</span><strong>${data.filledTotal ?? 0}</strong></div>` +
-      `<div class="kea-summary-row"><span>Canceled total</span><strong>${data.canceledTotal ?? 0}</strong></div>` +
-      `<div class="kea-summary-row"><span>Duration</span><strong>${dur}</strong></div>` +
-      (data.lastError ? `<div class="kea-summary-error">Last error: ${data.lastError}</div>` : '');
+      `<div class="kea-summary-row"><span>Orders attempted</span><strong>${esc(data.ordersAttempted)}</strong></div>` +
+      `<div class="kea-summary-row"><span>Filled total</span><strong>${esc(data.filledTotal ?? 0)}</strong></div>` +
+      `<div class="kea-summary-row"><span>Canceled total</span><strong>${esc(data.canceledTotal ?? 0)}</strong></div>` +
+      `<div class="kea-summary-row"><span>Duration</span><strong>${esc(dur)}</strong></div>` +
+      (data.lastError ? `<div class="kea-summary-error">Last error: ${esc(data.lastError)}</div>` : '');
     // Hide the plain status output when summary is shown
     qs('kea-output').style.display = 'none';
   }
@@ -162,8 +166,8 @@
     if (!response?.ok) return;
     const data = response.data;
 
-    // Summary: stopped + ordersAttempted > 0 → show summary, hide status text
-    if (data.stopped && data.ordersAttempted > 0) {
+    // Summary: stopped + ordersAttempted > 0, or stopped + lastError → show summary
+    if (data.stopped && (data.ordersAttempted > 0 || data.lastError)) {
       renderSummary(data);
       updateProgress(data);
       return;
