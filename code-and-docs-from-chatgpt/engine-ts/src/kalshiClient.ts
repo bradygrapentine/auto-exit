@@ -124,7 +124,12 @@ export class KalshiClient implements KalshiClientLike {
     const timestamp = Date.now().toString();
     const privateKey = fs.readFileSync(keyPath, 'utf8');
     const message = timestamp + method.toUpperCase() + path;
-    const signature = crypto.sign('RSA-SHA256', Buffer.from(message), privateKey).toString('base64');
+    // Kalshi v2 uses RSA-PSS (not PKCS#1 v1.5) with SHA-256 + salt length = digest length.
+    const signature = crypto.sign('RSA-SHA256', Buffer.from(message), {
+      key: privateKey,
+      padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+      saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
+    }).toString('base64');
     return { 'KALSHI-ACCESS-KEY': apiKey, 'KALSHI-ACCESS-TIMESTAMP': timestamp, 'KALSHI-ACCESS-SIGNATURE': signature };
   }
 
