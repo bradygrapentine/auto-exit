@@ -42,6 +42,14 @@ export interface ExitConfig {
   cancelOnStale?: boolean;
   /** When true, run() calls preflight() to validate the real position before the loop. Default false for backward compat. */
   preflight?: boolean;
+  /**
+   * Hard cap on total submitted-share volume across the run as a multiple of positionSize.
+   * Defends against the failure mode where the engine misreads fills (e.g. parser bug) and
+   * keeps re-submitting executed orders. Example: positionSize=20, multiplier=1.5 caps total
+   * submitted shares at 30 — so even if maxOrders=100, only 30 shares can ever go to the
+   * exchange. Default 1.5. Set higher only if you genuinely need many partial-retry chunks.
+   */
+  safetySubmittedMultiple?: number;
 }
 
 export type ExitConfigPatch = Partial<ExitConfig> & Pick<ExitConfig, 'marketTicker' | 'heldSide' | 'positionSize'>;
@@ -94,6 +102,8 @@ export interface JobStatus {
   ordersAttempted: number;
   filledTotal: number;
   canceledTotal: number;
+  /** Cumulative shares the engine has submitted to the exchange (regardless of fill outcome). */
+  submittedTotal: number;
   lastDecision?: PriceDecision;
   lastPayload?: OrderPayload;
   lastError?: string;

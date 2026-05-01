@@ -35,6 +35,7 @@ export class ExitRunner {
       ordersAttempted: 0,
       filledTotal: 0,
       canceledTotal: 0,
+      submittedTotal: 0,
       events: [],
     };
   }
@@ -232,6 +233,23 @@ export class ExitRunner {
           this.status.filledTotal += decision.chunkSize;
           this.status.remaining -= decision.chunkSize;
         } else {
+          // Runtime safety bound — defends against parser/fill misreads where the engine
+          // would re-submit executed orders. We track every share submitted (regardless of
+          // the reported fill outcome) and halt before exceeding the configured multiple.
+          const multiple = this.config.safetySubmittedMultiple ?? 1.5;
+          const cap = this.status.initialPosition * multiple;
+          if (this.status.submittedTotal + decision.chunkSize > cap) {
+            this.log('error', 'safety_submitted_cap_reached', {
+              submittedTotal: this.status.submittedTotal,
+              wouldSubmit: decision.chunkSize,
+              cap,
+              initialPosition: this.status.initialPosition,
+              multiple,
+            });
+            break;
+          }
+          this.status.submittedTotal += decision.chunkSize;
+
           const created = await this.client.createOrder(payload);
           this.log('info', 'order_created', { orderId: created.orderId, status: created.status });
 
