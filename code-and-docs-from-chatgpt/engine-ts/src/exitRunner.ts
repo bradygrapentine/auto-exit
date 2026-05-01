@@ -184,6 +184,13 @@ export class ExitRunner {
 
   async run(): Promise<JobStatus> {
     if (this.status.running) throw new Error('runner already running');
+    // Forbidden-ticker check — defense in depth even if config validation was bypassed
+    const forbidden = this.config.forbiddenTickers ?? [];
+    if (forbidden.includes(this.config.marketTicker)) {
+      throw new Error(
+        `marketTicker '${this.config.marketTicker}' is in forbiddenTickers — engine refuses to start`,
+      );
+    }
     this.status.running = true;
     this.status.startedAt = new Date().toISOString();
 

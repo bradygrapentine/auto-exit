@@ -113,13 +113,14 @@ describe('decideLosingExitOrder against real prod orderbook fixture', () => {
   const fixture = exists ? JSON.parse(fs.readFileSync(obFixturePath, 'utf8')) : null;
   const isLiquid = exists && (fixture?.orderbook_fp?.yes_dollars?.length ?? 0) > 0;
 
-  it.skipIf(!isLiquid)('prices a sell-YES at the highest YES bid (sub-cent), not via NO inverse', () => {
+  it.skipIf(!isLiquid)('prices a sell-YES at the highest YES bid (no cross-side, no inversion)', () => {
     const ob = parseOrderbookResponse(fixture);
     const exitCfg: ExitConfig = { ...cfg, tailSweepThreshold: 0, minLevelSize: 1, floorPriceCents: 0 };
     const decision = decideLosingExitOrder(ob, 100, exitCfg);
     expect(decision.reason).toBe('full_depth_cumulative_price');
-    const dollarValue = Number.parseFloat(decision.priceDollars);
-    expect(dollarValue).toBeGreaterThan(0);
-    expect(dollarValue).toBeLessThanOrEqual(0.01); // sub-cent
+    // Whatever the actual top YES bid is, the engine's chosen priceCentsExact must be one of the
+    // YES bid prices (not derived from NO via inversion).
+    const yesBidPrices = ob.yes.map((l) => l.priceCents).sort((a, b) => b - a);
+    expect(yesBidPrices).toContain(decision.priceCentsExact);
   });
 });

@@ -96,6 +96,25 @@ describe('mergeConfig validation', () => {
   it('accepts when safetySubmittedMultiple is raised to compensate', () => {
     expect(() => mergeConfig({ ...baseCfg, positionSize: 50, safetySubmittedMultiple: 3 }, {} as any)).not.toThrow();
   });
+
+  it('rejects when marketTicker is in forbiddenTickers', () => {
+    expect(() => mergeConfig(
+      { ...baseCfg, marketTicker: 'OFFLIMITS', forbiddenTickers: ['OFFLIMITS'] },
+      {} as any,
+    )).toThrow(/forbiddenTickers/);
+  });
+
+  it('rejects when patch sets marketTicker to a forbidden value', () => {
+    expect(() => mergeConfig(
+      { ...baseCfg, forbiddenTickers: ['OFFLIMITS'] },
+      { marketTicker: 'OFFLIMITS', heldSide: 'yes', positionSize: 100 } as any,
+    )).toThrow(/forbiddenTickers/);
+  });
+
+  it('passes through when forbiddenTickers is empty / undefined', () => {
+    expect(() => mergeConfig({ ...baseCfg, forbiddenTickers: [] }, {} as any)).not.toThrow();
+    expect(() => mergeConfig({ ...baseCfg, forbiddenTickers: undefined as any }, {} as any)).not.toThrow();
+  });
 });
 
 describe('parseArgs', () => {

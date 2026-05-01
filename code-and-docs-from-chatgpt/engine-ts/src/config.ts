@@ -27,6 +27,13 @@ export function mergeConfig(base: ExitConfig, patch: Partial<ExitConfigPatch>): 
       `Lower maxOrders or chunkSize, or raise safetySubmittedMultiple if you genuinely need many retries.`,
     );
   }
+  // forbiddenTickers — refuse to run against listed positions
+  const forbidden = merged.forbiddenTickers ?? [];
+  if (forbidden.includes(merged.marketTicker)) {
+    throw new Error(
+      `marketTicker '${merged.marketTicker}' is in forbiddenTickers — engine refuses to run against this ticker`,
+    );
+  }
   return merged;
 }
 

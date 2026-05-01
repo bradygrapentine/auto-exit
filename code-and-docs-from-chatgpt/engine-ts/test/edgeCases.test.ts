@@ -159,6 +159,31 @@ describe('runner.stop() halts the loop', () => {
   });
 });
 
+describe('forbiddenTickers runtime guard', () => {
+  it('refuses to start the loop when marketTicker is in forbiddenTickers', async () => {
+    const mock = new MockKalshiClient({ orderbookSnapshots: [fatBook] });
+    const runner = new ExitRunner(
+      { ...cfg, marketTicker: 'OFFLIMITS', forbiddenTickers: ['OFFLIMITS', 'OTHER'] },
+      mock,
+    );
+    await expect(runner.run()).rejects.toThrow(/forbiddenTickers/);
+    expect(mock.events).not.toContain('createOrder');
+  });
+
+  it('runs normally when marketTicker is not in forbiddenTickers', async () => {
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [fatBook, fatBook],
+      behaviors: [{ fillCount: 50 }, { fillCount: 50 }],
+    });
+    const runner = new ExitRunner(
+      { ...cfg, marketTicker: 'KXTEST', forbiddenTickers: ['SOMETHING_ELSE'] },
+      mock,
+    );
+    const status = await runner.run();
+    expect(status.filledTotal).toBe(100);
+  });
+});
+
 describe('preflight clamp warning', () => {
   it('clamps positionSize when observed quantity is smaller than configured', async () => {
     const mock = new MockKalshiClient({ orderbookSnapshots: [fatBook] });

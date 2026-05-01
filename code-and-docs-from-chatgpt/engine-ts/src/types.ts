@@ -50,6 +50,12 @@ export interface ExitConfig {
    * exchange. Default 1.5. Set higher only if you genuinely need many partial-retry chunks.
    */
   safetySubmittedMultiple?: number;
+  /**
+   * Tickers the engine refuses to operate against. If marketTicker matches any entry,
+   * mergeConfig throws and ExitRunner.run() throws — defense in depth. Use this for
+   * positions you must never touch via this tool (other holdings on the same exchange).
+   */
+  forbiddenTickers?: string[];
 }
 
 export type ExitConfigPatch = Partial<ExitConfig> & Pick<ExitConfig, 'marketTicker' | 'heldSide' | 'positionSize'>;
