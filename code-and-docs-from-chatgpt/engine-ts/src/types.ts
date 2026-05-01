@@ -56,6 +56,21 @@ export interface ExitConfig {
    * positions you must never touch via this tool (other holdings on the same exchange).
    */
   forbiddenTickers?: string[];
+  /**
+   * Order time-in-force. 'immediate_or_cancel' (default) is the safe losing-exit mode —
+   * fills what crosses immediately, cancels the rest, never leaves a resting bid out.
+   * 'good_till_canceled' lets the order rest on the book at your limit, useful for
+   * drip-exits at prices above the current bid. With GTC the engine still cancels
+   * stale orders on each iteration if the price hasn't been hit (so the next iteration
+   * can re-decide pricing). 'fill_or_kill' is supported but rarely useful.
+   */
+  orderTimeInForce?: 'immediate_or_cancel' | 'good_till_canceled' | 'fill_or_kill';
+  /**
+   * Optional ABSOLUTE price floor in dollar string for GTC drip-exits — engine will
+   * never sell below this price. e.g. "0.0300" pegs sells at >= 3¢ per share.
+   * If set, decideLosingExitOrder uses max(top_bid, gtcMinPriceDollars).
+   */
+  gtcMinPriceDollars?: string;
 }
 
 export type ExitConfigPatch = Partial<ExitConfig> & Pick<ExitConfig, 'marketTicker' | 'heldSide' | 'positionSize'>;

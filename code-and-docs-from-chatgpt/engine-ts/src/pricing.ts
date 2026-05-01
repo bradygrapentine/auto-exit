@@ -91,22 +91,34 @@ export function decideLosingExitOrder(orderbook: Orderbook, remainingPosition: n
 
 export function buildSellPayload(config: ExitConfig, decision: PriceDecision): OrderPayload {
   const clientOrderId = `kea-${Date.now()}-${crypto.randomUUID()}`;
+  const tif = config.orderTimeInForce ?? 'immediate_or_cancel';
+  // reduce_only requires IoC per Kalshi server-side check. For GTC drips we must drop reduce_only.
+  const reduceOnly = tif === 'immediate_or_cancel';
+
   const payload: OrderPayload = {
     ticker: config.marketTicker,
     action: 'sell',
     side: config.heldSide,
     count: decision.chunkSize,
     type: 'limit',
-    reduce_only: true,
-    // Kalshi rejects reduce_only without IoC. IoC fills what crosses immediately and cancels the rest —
-    // simpler and safer for losing-exit semantics: never leaves a resting sell out in the world.
-    time_in_force: 'immediate_or_cancel',
+    reduce_only: reduceOnly,
+    time_in_force: tif,
     client_order_id: clientOrderId,
   };
 
   // Use *_dollars (FixedPointDollars string) to support sub-cent prices. Below 10¢ Kalshi quotes in
   // 0.001 ticks; integer yes_price/no_price (1..99) cannot represent those.
-  if (config.heldSide === 'yes') payload.yes_price_dollars = decision.priceDollars;
-  else payload.no_price_dollars = decision.priceDollars;
+  const priceStr = applyGtcMinFloor(decision.priceDollars, config.gtcMinPriceDollars);
+  if (config.heldSide === 'yes') payload.yes_price_dollars = priceStr;
+  else payload.no_price_dollars = priceStr;
   return payload;
+}
+
+/** If a gtcMinPriceDollars floor is set, take the max of (decision price, floor). */
+function applyGtcMinFloor(decisionDollars: string, gtcMin?: string): string {
+  if (!gtcMin) return decisionDollars;
+  const a = Number.parseFloat(decisionDollars);
+  const b = Number.parseFloat(gtcMin);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return decisionDollars;
+  return a >= b ? decisionDollars : gtcMin;
 }

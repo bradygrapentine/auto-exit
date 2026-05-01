@@ -267,6 +267,16 @@ export class ExitRunner {
             decisionRequested: decision.chunkSize,
           });
 
+          // ── GTC: leave a resting order on the book and exit the loop ─────
+          // The order is durable on Kalshi until filled/canceled. The user comes back
+          // later (next /start invocation) to check fill state or place more.
+          const tif = this.config.orderTimeInForce ?? 'immediate_or_cancel';
+          if (tif === 'good_till_canceled' && created.status === 'resting') {
+            this.journal.append('gtc_resting', { orderId: created.orderId, requested: decision.chunkSize });
+            this.log('info', 'gtc_order_resting_exit', { orderId: created.orderId, priceDollars: decision.priceDollars });
+            break;
+          }
+
           const reconciled = await this.reconcileOrder(created);
           const filled = Math.max(0, Math.min(decision.chunkSize, reconciled.filledCount));
           this.status.filledTotal += filled;
