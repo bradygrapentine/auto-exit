@@ -1,0 +1,11 @@
+{"ts":"2026-05-01T20:24:29Z","model":"sonnet","prompt_chars":A: position-truth 3905,"description":"Track"}
+{"ts":"2026-05-01T20:24:50Z","model":"sonnet","prompt_chars":B: journal + resume 3822,"description":"Track"}
+{"ts":"2026-05-01T20:25:10Z","model":"sonnet","prompt_chars":C: retry + idempotency 3875,"description":"Track"}
+{"ts":"2026-05-01T20:25:29Z","model":"sonnet","prompt_chars":D: extension UX 3681,"description":"Track"}
+{"ts":"2026-05-01T20:31:26Z","model":"sonnet","prompt_chars":track A 2223,"description":"Review"}
+{"ts":"2026-05-01T20:31:38Z","model":"sonnet","prompt_chars":track B 2177,"description":"Review"}
+{"ts":"2026-05-01T20:31:52Z","model":"sonnet","prompt_chars":track C 2532,"description":"Review"}
+{"ts":"2026-05-01T20:32:06Z","model":"sonnet","prompt_chars":track D 2193,"description":"Review"}
+{"ts":"2026-05-01T20:34:28Z","model":"sonnet","prompt_chars":track B issues 3113,"description":"Fix"}
+{"ts":"2026-05-01T20:34:44Z","model":"sonnet","prompt_chars":track C issues 3404,"description":"Fix"}
+{"ts":"2026-05-01T20:35:02Z","model":"sonnet","prompt_chars":track D issues 2910,"description":"Fix"}

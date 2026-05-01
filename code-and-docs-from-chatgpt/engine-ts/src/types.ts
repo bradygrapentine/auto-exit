@@ -1,5 +1,20 @@
 export type Side = 'yes' | 'no';
 
+export interface RetryOptions {
+  /** Max total attempts including the first try. Default 4. */
+  maxAttempts?: number;
+  /** Base delay in ms for exponential backoff. Default 200. */
+  baseMs?: number;
+  /** Max delay cap in ms. Default 4000. */
+  maxMs?: number;
+  /** Which error classes trigger a retry. Default: ['network', '5xx', '429']. */
+  retryOn?: Array<'network' | '5xx' | '429'>;
+  /** When true, network errors may have caused a side-effect (e.g. createOrder). Default false. */
+  nonIdempotent?: boolean;
+  /** Add random jitter (0..baseMs) to backoff. Default true. */
+  jitter?: boolean;
+}
+
 export interface PriceLevel { priceCents: number; size: number; }
 export interface Orderbook { yes: PriceLevel[]; no: PriceLevel[]; }
 
