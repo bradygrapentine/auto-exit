@@ -9,6 +9,7 @@ import type {
   Orderbook,
   PriceLevel,
 } from './types.js';
+import { withRetry, HttpError, NonRetryableError, parseRetryAfterMs } from './retry.js';
 
 function dollarsToCents(value: string | number): number {
   const n = typeof value === 'string' ? Number.parseFloat(value) : value;
@@ -72,8 +73,45 @@ export function parseOrderResponse(json: any): OrderResult {
   };
 }
 
+/** Fetch-compatible interface for injection in tests. */
+export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * Perform a fetch call and convert HTTP errors into typed HttpError / NonRetryableError.
+ * Returns the Response on success (2xx).
+ */
+async function fetchChecked(fetchFn: FetchFn, url: string, init?: RequestInit): Promise<Response> {
+  let res: Response;
+  try {
+    res = await fetchFn(url, init);
+  } catch (err) {
+    // Network-level error — rethrow as plain Error so withRetry can handle it.
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+  if (res.ok) return res;
+
+  const status = res.status;
+  if (status === 429) {
+    const retryAfterMs = parseRetryAfterMs(res.headers.get('Retry-After'));
+    // Read body to avoid connection leak, then throw
+    await res.text().catch(() => '');
+    throw new HttpError(status, retryAfterMs, `HTTP 429 Too Many Requests`);
+  }
+  if (status >= 400 && status < 500) {
+    const body = await res.text().catch(() => '');
+    throw new NonRetryableError(status, `HTTP ${status}: ${body}`);
+  }
+  // 5xx
+  const body = await res.text().catch(() => '');
+  throw new HttpError(status, undefined, `HTTP ${status}: ${body}`);
+}
+
 export class KalshiClient implements KalshiClientLike {
-  constructor(private config: ExitConfig) {}
+  private readonly fetchFn: FetchFn;
+
+  constructor(private config: ExitConfig, fetchFn?: FetchFn) {
+    this.fetchFn = fetchFn ?? (globalThis.fetch as FetchFn);
+  }
 
   private authHeaders(method: string, path: string): Record<string, string> {
     const apiKey = process.env[this.config.apiKeyEnv];
@@ -87,37 +125,121 @@ export class KalshiClient implements KalshiClientLike {
   }
 
   async getOrderbook(ticker: string, depth: number): Promise<Orderbook> {
-    const path = `/markets/${ticker}/orderbook?depth=${depth}`;
-    const res = await fetch(this.config.baseUrl + path, { headers: this.authHeaders('GET', path) });
-    if (!res.ok) throw new Error(`Orderbook request failed: ${res.status} ${await res.text()}`);
-    return parseOrderbookResponse(await res.json());
+    return withRetry(async () => {
+      const path = `/markets/${ticker}/orderbook?depth=${depth}`;
+      const res = await fetchChecked(
+        this.fetchFn,
+        this.config.baseUrl + path,
+        { headers: this.authHeaders('GET', path) },
+      );
+      return parseOrderbookResponse(await res.json());
+    });
+  }
+
+  async getOrder(orderId: string): Promise<OrderResult> {
+    return withRetry(async () => {
+      const path = `/portfolio/orders/${orderId}`;
+      const res = await fetchChecked(
+        this.fetchFn,
+        this.config.baseUrl + path,
+        { headers: this.authHeaders('GET', path) },
+      );
+      return parseOrderResponse(await res.json());
+    });
+  }
+
+  async cancelOrder(orderId: string): Promise<OrderResult> {
+    return withRetry(async () => {
+      const path = `/portfolio/orders/${orderId}`;
+      const res = await fetchChecked(
+        this.fetchFn,
+        this.config.baseUrl + path,
+        { method: 'DELETE', headers: this.authHeaders('DELETE', path) },
+      );
+      return parseOrderResponse(await res.json());
+    });
+  }
+
+  /**
+   * Search for an order by client_order_id via GET /portfolio/orders?client_order_id=<id>.
+   * Returns the OrderResult if found, null otherwise.
+   */
+  private async findOrderByClientOrderId(clientOrderId: string): Promise<OrderResult | null> {
+    const path = `/portfolio/orders?client_order_id=${encodeURIComponent(clientOrderId)}`;
+    let res: Response;
+    try {
+      res = await this.fetchFn(this.config.baseUrl + path, { headers: this.authHeaders('GET', path) });
+    } catch {
+      return null; // network error during dedup check — treat as not found
+    }
+    if (!res.ok) return null;
+    let json: any;
+    try {
+      json = await res.json();
+    } catch {
+      return null;
+    }
+    // Kalshi returns either { orders: [...] } or a single order object
+    const orders: any[] = json?.orders ?? (json?.order ? [json] : []);
+    if (orders.length === 0) return null;
+    return parseOrderResponse(orders[0]);
   }
 
   async createOrder(payload: OrderPayload): Promise<OrderResult> {
     const path = '/portfolio/orders';
-    const res = await fetch(this.config.baseUrl + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.authHeaders('POST', path) },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error(`Create order failed: ${res.status} ${await res.text()}`);
-    return parseOrderResponse(await res.json());
-  }
+    let attempt = 0;
+    const maxAttempts = 4;
+    const baseMs = 200;
+    const maxMs = 4000;
 
-  async getOrder(orderId: string): Promise<OrderResult> {
-    const path = `/portfolio/orders/${orderId}`;
-    const res = await fetch(this.config.baseUrl + path, { headers: this.authHeaders('GET', path) });
-    if (!res.ok) throw new Error(`Get order failed: ${res.status} ${await res.text()}`);
-    return parseOrderResponse(await res.json());
-  }
+    let lastErr: unknown;
+    while (attempt < maxAttempts) {
+      try {
+        const res = await fetchChecked(
+          this.fetchFn,
+          this.config.baseUrl + path,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...this.authHeaders('POST', path) },
+            body: JSON.stringify(payload),
+          },
+        );
+        return parseOrderResponse(await res.json());
+      } catch (err) {
+        lastErr = err;
 
-  async cancelOrder(orderId: string): Promise<OrderResult> {
-    const path = `/portfolio/orders/${orderId}`;
-    const res = await fetch(this.config.baseUrl + path, {
-      method: 'DELETE',
-      headers: this.authHeaders('DELETE', path),
-    });
-    if (!res.ok) throw new Error(`Cancel order failed: ${res.status} ${await res.text()}`);
-    return parseOrderResponse(await res.json());
+        // 4xx (non-429) — fail fast, no retry
+        if (err instanceof NonRetryableError) throw err;
+
+        const isNetworkError = !(err instanceof HttpError);
+        const is5xx = err instanceof HttpError && err.status >= 500;
+        const is429 = err instanceof HttpError && err.status === 429;
+
+        if (!isNetworkError && !is5xx && !is429) throw err;
+
+        // On network error: the POST may have landed — check by cloid before retrying
+        if (isNetworkError) {
+          const existing = await this.findOrderByClientOrderId(payload.client_order_id);
+          if (existing) return existing; // order landed; treat as success
+        }
+
+        if (attempt === maxAttempts - 1) break;
+
+        // Compute delay
+        let delayMs: number;
+        if (is429) {
+          const httpErr = err as HttpError;
+          delayMs = httpErr.retryAfterMs !== undefined
+            ? httpErr.retryAfterMs
+            : Math.min(maxMs, baseMs * Math.pow(2, attempt)) + Math.random() * baseMs;
+        } else {
+          delayMs = Math.min(maxMs, baseMs * Math.pow(2, attempt)) + Math.random() * baseMs;
+        }
+
+        await new Promise<void>((r) => setTimeout(r, delayMs));
+        attempt++;
+      }
+    }
+    throw lastErr;
   }
 }
