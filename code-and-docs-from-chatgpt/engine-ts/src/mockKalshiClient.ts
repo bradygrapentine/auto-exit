@@ -4,6 +4,8 @@ import type {
   OrderResult,
   OrderStatus,
   Orderbook,
+  Position,
+  Side,
 } from './types.js';
 
 interface MockOrderState {
@@ -28,6 +30,7 @@ export class MockKalshiClient implements KalshiClientLike {
   private snapshotIdx = 0;
   private behaviors: MockBehavior[];
   private behaviorIdx = 0;
+  private positionStore: Map<string, { side: Side; quantity: number }> = new Map();
 
   constructor(opts: {
     orderbookSnapshots?: Orderbook[];
@@ -37,6 +40,20 @@ export class MockKalshiClient implements KalshiClientLike {
       { yes: [{ priceCents: 5, size: 10000 }], no: [{ priceCents: 5, size: 10000 }] },
     ];
     this.behaviors = opts.behaviors ?? [];
+  }
+
+  /** Set a synthetic position for use in preflight tests. */
+  setPosition(ticker: string, side: Side, quantity: number): void {
+    this.positionStore.set(ticker, { side, quantity });
+  }
+
+  async getPosition(ticker: string): Promise<Position> {
+    this.events.push('getPosition');
+    const entry = this.positionStore.get(ticker);
+    if (!entry || entry.quantity === 0) {
+      throw new Error(`No position held for ticker ${ticker}`);
+    }
+    return { ticker, side: entry.side, quantity: entry.quantity };
   }
 
   private nextSnapshot(): Orderbook {

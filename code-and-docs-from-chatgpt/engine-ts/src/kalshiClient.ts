@@ -7,8 +7,10 @@ import type {
   OrderResult,
   OrderStatus,
   Orderbook,
+  Position,
   PriceLevel,
 } from './types.js';
+import { KalshiAccountClient } from './accountClient.js';
 
 function dollarsToCents(value: string | number): number {
   const n = typeof value === 'string' ? Number.parseFloat(value) : value;
@@ -73,7 +75,11 @@ export function parseOrderResponse(json: any): OrderResult {
 }
 
 export class KalshiClient implements KalshiClientLike {
-  constructor(private config: ExitConfig) {}
+  private accountClient: KalshiAccountClient;
+
+  constructor(private config: ExitConfig) {
+    this.accountClient = new KalshiAccountClient(config);
+  }
 
   private authHeaders(method: string, path: string): Record<string, string> {
     const apiKey = process.env[this.config.apiKeyEnv];
@@ -119,5 +125,9 @@ export class KalshiClient implements KalshiClientLike {
     });
     if (!res.ok) throw new Error(`Cancel order failed: ${res.status} ${await res.text()}`);
     return parseOrderResponse(await res.json());
+  }
+
+  async getPosition(ticker: string): Promise<Position> {
+    return this.accountClient.getPosition(ticker);
   }
 }

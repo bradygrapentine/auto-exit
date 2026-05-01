@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { KalshiClient } from './kalshiClient.js';
 import { buildSellPayload, decideLosingExitOrder } from './pricing.js';
-import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderResult } from './types.js';
+import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderResult, Position } from './types.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -43,6 +43,39 @@ export class ExitRunner {
 
   private killSwitchExists(): boolean {
     return Boolean(this.config.killSwitchPath && fs.existsSync(this.config.killSwitchPath));
+  }
+
+  /** Fetch the real position from the exchange, validate against config, and optionally clamp positionSize.
+   *  Returns the observed Position for use in the /preflight route.
+   *  Throws if side mismatches or no position is held.
+   */
+  async preflight(): Promise<Position> {
+    const observed = await this.client.getPosition(this.config.marketTicker);
+
+    if (observed.side !== this.config.heldSide) {
+      throw new Error(
+        `Preflight side mismatch: config says ${this.config.heldSide} but exchange shows ${observed.side} for ${this.config.marketTicker}`,
+      );
+    }
+
+    if (observed.quantity < this.config.positionSize) {
+      this.log('warn', 'position_clamped', {
+        ticker: this.config.marketTicker,
+        configuredSize: this.config.positionSize,
+        observedSize: observed.quantity,
+      });
+      this.config = { ...this.config, positionSize: observed.quantity };
+      this.status.remaining = observed.quantity;
+      this.status.initialPosition = observed.quantity;
+    } else {
+      this.log('info', 'preflight_ok', {
+        ticker: this.config.marketTicker,
+        side: observed.side,
+        quantity: observed.quantity,
+      });
+    }
+
+    return observed;
   }
 
   async previewOnce() {
@@ -91,6 +124,10 @@ export class ExitRunner {
     this.log('info', 'exit_loop_started', { ticker: this.config.marketTicker, side: this.config.heldSide, dryRun: this.config.dryRun });
 
     try {
+      if (this.config.preflight) {
+        await this.preflight();
+      }
+
       while (this.status.remaining > 0) {
         if (this.stopRequested) break;
         if (this.killSwitchExists()) {

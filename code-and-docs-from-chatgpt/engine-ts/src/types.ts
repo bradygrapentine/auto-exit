@@ -25,6 +25,8 @@ export interface ExitConfig {
   reconcilePollMs?: number;
   reconcileMaxPolls?: number;
   cancelOnStale?: boolean;
+  /** When true, run() calls preflight() to validate the real position before the loop. Default false for backward compat. */
+  preflight?: boolean;
 }
 
 export type ExitConfigPatch = Partial<ExitConfig> & Pick<ExitConfig, 'marketTicker' | 'heldSide' | 'positionSize'>;
@@ -82,9 +84,16 @@ export interface OrderResult {
   raw?: unknown;
 }
 
+export interface Position {
+  ticker: string;
+  side: Side;
+  quantity: number;
+}
+
 export interface KalshiClientLike {
   getOrderbook(ticker: string, depth: number): Promise<Orderbook>;
   createOrder(payload: OrderPayload): Promise<OrderResult>;
   getOrder(orderId: string): Promise<OrderResult>;
   cancelOrder(orderId: string): Promise<OrderResult>;
+  getPosition(ticker: string): Promise<Position>;
 }

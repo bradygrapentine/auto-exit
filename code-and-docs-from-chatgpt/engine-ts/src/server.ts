@@ -65,6 +65,14 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, status: activeRunner?.getStatus() ?? lastStatus });
     }
 
+    if (req.method === 'POST' && url.pathname === '/preflight') {
+      const body = await readJson(req);
+      const config = effectiveConfig(body.config);
+      const runner = new ExitRunner(config);
+      const position = await runner.preflight();
+      return json(res, 200, { ok: true, observed: position, requested: { ticker: config.marketTicker, side: config.heldSide, quantity: config.positionSize } });
+    }
+
     return json(res, 404, { ok: false, error: 'not_found' });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
