@@ -1,28 +1,26 @@
 import crypto from 'node:crypto';
-import type { ExitConfig, Orderbook, OrderPayload, PriceDecision, PriceLevel, Side } from './types.js';
+import type { ExitConfig, Orderbook, OrderPayload, PriceDecision, PriceLevel } from './types.js';
 
 export function normalizeLevels(levels: PriceLevel[], minLevelSize: number): PriceLevel[] {
   return levels
     .filter((level) => Number.isFinite(level.priceCents) && Number.isFinite(level.size))
+    // priceCents may be sub-cent float (e.g. 0.9 from 0.0090 dollars). Allow >0 through 99 inclusive.
     .filter((level) => level.priceCents > 0 && level.priceCents <= 99)
     .filter((level) => level.size >= minLevelSize)
     .sort((a, b) => b.priceCents - a.priceCents);
 }
 
-/**
- * Produce the effective book of "sell-side" prices the engine can hit for `heldSide`.
- *
- * Kalshi's matching engine crosses YES and NO sides via the YES+NO=$1 invariant: a YES sell at price P
- * matches both (a) YES bids at >= P AND (b) NO bids at >= (1-P). So the best price for selling YES is
- * max(highest YES bid, $1 - lowest NO bid). We compute this by merging the direct side's book with the
- * other side's book inverted (price -> 100 - price), then letting `selectExecutablePrice` walk the
- * combined book by descending price.
- */
-export function combinedSellLevels(orderbook: Orderbook, heldSide: Side): PriceLevel[] {
-  const direct = heldSide === 'yes' ? orderbook.yes : orderbook.no;
-  const opposite = heldSide === 'yes' ? orderbook.no : orderbook.yes;
-  const inverse = opposite.map((lvl) => ({ priceCents: 100 - lvl.priceCents, size: lvl.size }));
-  return [...direct, ...inverse];
+/** Format float cents as a 4-decimal dollar string ("0.0090"). Kalshi accepts up to 6 decimals. */
+export function centsFloatToDollarString(priceCentsFloat: number): string {
+  return (priceCentsFloat / 100).toFixed(4);
+}
+
+export interface PriceSelection {
+  priceCents: number;            // floor of priceCentsExact, integer for log/display
+  priceCentsExact: number;       // float, e.g. 0.9
+  priceDollars: string;          // "0.0090"
+  cumulativeSizeAtPrice: number;
+  reason: string;
 }
 
 export function selectExecutablePrice(
@@ -30,15 +28,18 @@ export function selectExecutablePrice(
   desiredChunk: number,
   floorPriceCents: number,
   minLevelSize: number,
-): { priceCents: number; cumulativeSizeAtPrice: number; reason: string } {
+): PriceSelection {
   const levels = normalizeLevels(rawLevels, minLevelSize);
   let cumulative = 0;
 
   for (const level of levels) {
     cumulative += level.size;
     if (cumulative >= desiredChunk) {
+      const exact = Math.max(level.priceCents, floorPriceCents);
       return {
-        priceCents: Math.max(level.priceCents, floorPriceCents),
+        priceCents: Math.floor(exact),
+        priceCentsExact: exact,
+        priceDollars: centsFloatToDollarString(exact),
         cumulativeSizeAtPrice: cumulative,
         reason: 'full_depth_cumulative_price',
       };
@@ -47,6 +48,8 @@ export function selectExecutablePrice(
 
   return {
     priceCents: floorPriceCents,
+    priceCentsExact: floorPriceCents,
+    priceDollars: centsFloatToDollarString(floorPriceCents),
     cumulativeSizeAtPrice: cumulative,
     reason: 'fallback_floor_price_insufficient_depth',
   };
@@ -65,14 +68,24 @@ export function chooseChunkSize(remaining: number, config: ExitConfig, rawLevels
 }
 
 export function decideLosingExitOrder(orderbook: Orderbook, remainingPosition: number, config: ExitConfig): PriceDecision {
-  const sellLevels = combinedSellLevels(orderbook, config.heldSide);
-  const chunkSize = chooseChunkSize(remainingPosition, config, sellLevels);
+  // To exit a YES long we sell into existing YES BIDS. To exit a NO long we sell into existing NO BIDS.
+  // Kalshi does NOT cross-match SELL orders against opposite-side bids — only BUYS do that to mint a
+  // fresh pair. So we only consult the same-side bids.
+  const sideLevels = config.heldSide === 'yes' ? orderbook.yes : orderbook.no;
+  const chunkSize = chooseChunkSize(remainingPosition, config, sideLevels);
 
   if (remainingPosition <= config.tailSweepThreshold) {
-    return { chunkSize, priceCents: config.floorPriceCents, reason: 'final_tail_sweep', cumulativeSizeAtPrice: 0 };
+    return {
+      chunkSize,
+      priceCents: config.floorPriceCents,
+      priceCentsExact: config.floorPriceCents,
+      priceDollars: centsFloatToDollarString(config.floorPriceCents),
+      reason: 'final_tail_sweep',
+      cumulativeSizeAtPrice: 0,
+    };
   }
 
-  const price = selectExecutablePrice(sellLevels, chunkSize, config.floorPriceCents, config.minLevelSize);
+  const price = selectExecutablePrice(sideLevels, chunkSize, config.floorPriceCents, config.minLevelSize);
   return { chunkSize, ...price };
 }
 
@@ -85,10 +98,15 @@ export function buildSellPayload(config: ExitConfig, decision: PriceDecision): O
     count: decision.chunkSize,
     type: 'limit',
     reduce_only: true,
+    // Kalshi rejects reduce_only without IoC. IoC fills what crosses immediately and cancels the rest —
+    // simpler and safer for losing-exit semantics: never leaves a resting sell out in the world.
+    time_in_force: 'immediate_or_cancel',
     client_order_id: clientOrderId,
   };
 
-  if (config.heldSide === 'yes') payload.yes_price = decision.priceCents;
-  else payload.no_price = decision.priceCents;
+  // Use *_dollars (FixedPointDollars string) to support sub-cent prices. Below 10¢ Kalshi quotes in
+  // 0.001 ticks; integer yes_price/no_price (1..99) cannot represent those.
+  if (config.heldSide === 'yes') payload.yes_price_dollars = decision.priceDollars;
+  else payload.no_price_dollars = decision.priceDollars;
   return payload;
 }

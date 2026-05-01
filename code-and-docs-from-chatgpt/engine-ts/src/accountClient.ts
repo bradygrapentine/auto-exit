@@ -32,7 +32,7 @@ export function parsePositionsResponse(json: unknown, ticker: string): Position 
 export class KalshiAccountClient {
   constructor(private config: ExitConfig) {}
 
-  private authHeaders(method: string, path: string): Record<string, string> {
+  private authHeaders(method: string, endpointPath: string): Record<string, string> {
     const apiKey = process.env[this.config.apiKeyEnv];
     const keyPath = process.env[this.config.privateKeyPathEnv];
     if (!apiKey || !keyPath) {
@@ -40,7 +40,12 @@ export class KalshiAccountClient {
     }
     const timestamp = Date.now().toString();
     const privateKey = fs.readFileSync(keyPath, 'utf8');
-    const message = timestamp + method.toUpperCase() + path;
+    // Kalshi requires the FULL URL path (including /trade-api/v2 prefix) in the signed message
+    // for /portfolio/* endpoints. Some endpoints tolerate the abbreviated form, but /portfolio/positions
+    // and /portfolio/orders?... reject it as INCORRECT_API_KEY_SIGNATURE.
+    const baseUrlPath = new URL(this.config.baseUrl).pathname.replace(/\/$/, '');
+    const fullPath = baseUrlPath + endpointPath;
+    const message = timestamp + method.toUpperCase() + fullPath;
     // Kalshi v2 uses RSA-PSS (not PKCS#1 v1.5) with SHA-256 + salt length = digest length.
     const signature = crypto
       .sign('RSA-SHA256', Buffer.from(message), {
@@ -57,7 +62,9 @@ export class KalshiAccountClient {
   }
 
   async getPosition(ticker: string): Promise<Position> {
-    const path = `/portfolio/positions?ticker=${encodeURIComponent(ticker)}`;
+    // Kalshi rejects signature when the path includes a query string for /portfolio/positions
+    // (returns 401 INCORRECT_API_KEY_SIGNATURE). Fetch the unfiltered list and filter client-side.
+    const path = '/portfolio/positions';
     const res = await fetch(this.config.baseUrl + path, {
       method: 'GET',
       headers: { 'Content-Type': 'application/json', ...this.authHeaders('GET', path) },

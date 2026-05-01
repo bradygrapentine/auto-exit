@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { combinedSellLevels, decideLosingExitOrder, selectExecutablePrice } from '../src/pricing.js';
+import { buildSellPayload, decideLosingExitOrder, selectExecutablePrice } from '../src/pricing.js';
 import { parseOrderbookResponse } from '../src/kalshiClient.js';
 import type { ExitConfig, Orderbook } from '../src/types.js';
 
@@ -58,50 +58,51 @@ describe('pricing', () => {
   });
 });
 
-describe('cross-side pricing (Kalshi YES+NO=$1 matching)', () => {
-  it('selling YES uses NO-side inverse when it offers a better price', () => {
-    // YES bids max out at 1¢; NO bids start at 95¢ (= effective YES ask at 5¢).
-    // Engine should price the YES sell at 5¢, not 1¢.
+describe('direct-side pricing (Kalshi sells match same-side bids only, not cross-side)', () => {
+  it('selling YES prices at the highest YES bid that supports the chunk', () => {
     const orderbook: Orderbook = {
-      yes: [{ priceCents: 1, size: 10000 }],
-      no: [{ priceCents: 95, size: 5000 }, { priceCents: 96, size: 2000 }],
+      yes: [{ priceCents: 7, size: 1000 }, { priceCents: 5, size: 5000 }],
+      no: [{ priceCents: 95, size: 100000 }], // present but irrelevant for sells
     };
-    const decision = decideLosingExitOrder(orderbook, 1000, cfg);
-    expect(decision.priceCents).toBe(5); // 100 - 95 = 5
-    expect(decision.reason).toBe('full_depth_cumulative_price');
+    const decision = decideLosingExitOrder(orderbook, 800, cfg);
+    expect(decision.priceCents).toBe(7);
   });
 
-  it('selling YES uses direct YES bids when they beat the NO inverse', () => {
-    // YES bids at 50¢; NO bids only at 60¢ (= YES ask at 40¢). Direct YES side wins.
+  it('selling YES does NOT use NO bids (no cross-matching for sells)', () => {
+    // YES has no usable bids. NO has plenty. Engine should fall through to floor, not invert NO.
     const orderbook: Orderbook = {
-      yes: [{ priceCents: 50, size: 10000 }],
-      no: [{ priceCents: 60, size: 10000 }],
+      yes: [],
+      no: [{ priceCents: 95, size: 100000 }],
     };
-    const decision = decideLosingExitOrder(orderbook, 1000, cfg);
-    expect(decision.priceCents).toBe(50);
+    const decision = decideLosingExitOrder(orderbook, 800, cfg);
+    expect(decision.priceCents).toBe(cfg.floorPriceCents); // floor, not 5 (would be inverse)
+    expect(decision.reason).toBe('fallback_floor_price_insufficient_depth');
   });
 
-  it('selling NO uses YES-side inverse when better', () => {
-    // NO bids at 1¢; YES bids at 95¢ → NO ask at 5¢.
+  it('preserves sub-cent precision through to the payload (deci-cent)', () => {
+    const subCentCfg: ExitConfig = { ...cfg, floorPriceCents: 0, tailSweepThreshold: 0 };
     const orderbook: Orderbook = {
-      yes: [{ priceCents: 95, size: 10000 }],
-      no: [{ priceCents: 1, size: 10000 }],
+      yes: [{ priceCents: 0.9, size: 5000 }],
+      no: [],
     };
-    const noCfg: ExitConfig = { ...cfg, heldSide: 'no' };
-    const decision = decideLosingExitOrder(orderbook, 1000, noCfg);
-    expect(decision.priceCents).toBe(5);
+    const decision = decideLosingExitOrder(orderbook, 100, subCentCfg);
+    expect(decision.priceCents).toBe(0); // floored display
+    expect(decision.priceCentsExact).toBeCloseTo(0.9, 4);
+    expect(decision.priceDollars).toBe('0.0090');
   });
 
-  it('combinedSellLevels merges direct + inverted opposite side', () => {
-    const ob: Orderbook = {
-      yes: [{ priceCents: 5, size: 100 }],
-      no: [{ priceCents: 90, size: 200 }],
+  it('buildSellPayload uses yes_price_dollars (string), not yes_price (integer)', () => {
+    const subCentCfg: ExitConfig = { ...cfg, floorPriceCents: 0, tailSweepThreshold: 0 };
+    const orderbook: Orderbook = {
+      yes: [{ priceCents: 0.9, size: 5000 }],
+      no: [],
     };
-    const merged = combinedSellLevels(ob, 'yes');
-    expect(merged).toEqual([
-      { priceCents: 5, size: 100 },
-      { priceCents: 10, size: 200 }, // 100-90
-    ]);
+    const decision = decideLosingExitOrder(orderbook, 100, subCentCfg);
+    const payload = buildSellPayload(subCentCfg, decision);
+    expect(payload.yes_price_dollars).toBe('0.0090');
+    expect(payload.yes_price).toBeUndefined();
+    expect(payload.reduce_only).toBe(true);
+    expect(payload.time_in_force).toBe('immediate_or_cancel');
   });
 });
 
@@ -112,14 +113,13 @@ describe('decideLosingExitOrder against real prod orderbook fixture', () => {
   const fixture = exists ? JSON.parse(fs.readFileSync(obFixturePath, 'utf8')) : null;
   const isLiquid = exists && (fixture?.orderbook_fp?.yes_dollars?.length ?? 0) > 0;
 
-  it.skipIf(!isLiquid)('prices a sell-YES via the NO side, beating raw YES bids', () => {
+  it.skipIf(!isLiquid)('prices a sell-YES at the highest YES bid (sub-cent), not via NO inverse', () => {
     const ob = parseOrderbookResponse(fixture);
-    // Raw YES bids in the prod fixture are sub-cent (mostly round to 0–1¢).
-    // The NO side has bids at 95.1¢+ → effective YES asks at 4.9¢ and below.
-    // Engine should pick the NO-inverse side and price >= 4¢.
-    const exitCfg: ExitConfig = { ...cfg, tailSweepThreshold: 0, minLevelSize: 1 };
+    const exitCfg: ExitConfig = { ...cfg, tailSweepThreshold: 0, minLevelSize: 1, floorPriceCents: 0 };
     const decision = decideLosingExitOrder(ob, 100, exitCfg);
-    expect(decision.priceCents).toBeGreaterThanOrEqual(4);
     expect(decision.reason).toBe('full_depth_cumulative_price');
+    const dollarValue = Number.parseFloat(decision.priceDollars);
+    expect(dollarValue).toBeGreaterThan(0);
+    expect(dollarValue).toBeLessThanOrEqual(0.01); // sub-cent
   });
 });

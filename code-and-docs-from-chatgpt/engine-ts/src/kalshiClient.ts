@@ -14,8 +14,11 @@ import { KalshiAccountClient } from './accountClient.js';
 import { withRetry, HttpError, NonRetryableError, parseRetryAfterMs, computeBackoffMs } from './retry.js';
 
 function dollarsToCents(value: string | number): number {
+  // Preserve sub-cent precision (Kalshi quotes 0.001 ticks below 10¢). Final integer rounding
+  // happens at decision time in selectExecutablePrice via Math.floor — needed for cross-side
+  // pricing to satisfy ask + bid <= $1.
   const n = typeof value === 'string' ? Number.parseFloat(value) : value;
-  return Math.round(n * 100);
+  return n * 100;
 }
 
 function parseLevel(raw: unknown): PriceLevel | null {
@@ -58,14 +61,22 @@ function mapStatus(raw: string | undefined): OrderStatus {
   }
 }
 
+function toNumber(v: unknown): number | null {
+  if (v === undefined || v === null) return null;
+  const n = typeof v === 'string' ? Number.parseFloat(v) : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function parseOrderResponse(json: any): OrderResult {
   const order = json?.order ?? json ?? {};
   const orderId = String(order.order_id ?? order.id ?? '');
-  const requested = Number(order.count ?? order.size ?? 0);
-  const remainingCount = Number(order.remaining_count ?? order.remaining ?? requested);
-  const filledCount = Number.isFinite(order.filled_count)
-    ? Number(order.filled_count)
-    : Math.max(0, requested - remainingCount);
+  // Kalshi uses _fp suffix and string values: initial_count_fp, fill_count_fp, remaining_count_fp.
+  // Older / non-fp shapes (count, remaining_count, filled_count) supported as fallback.
+  const requested = toNumber(order.initial_count_fp) ?? toNumber(order.count) ?? toNumber(order.size) ?? 0;
+  const filledFromApi = toNumber(order.fill_count_fp) ?? toNumber(order.filled_count);
+  const remainingFromApi = toNumber(order.remaining_count_fp) ?? toNumber(order.remaining_count) ?? toNumber(order.remaining);
+  const filledCount = filledFromApi ?? (remainingFromApi !== null ? Math.max(0, requested - remainingFromApi) : 0);
+  const remainingCount = remainingFromApi ?? Math.max(0, requested - filledCount);
   return {
     orderId,
     status: mapStatus(order.status),
@@ -117,13 +128,16 @@ export class KalshiClient implements KalshiClientLike {
     this.fetchFn = fetchFn ?? (globalThis.fetch as FetchFn);
   }
 
-  private authHeaders(method: string, path: string): Record<string, string> {
+  private authHeaders(method: string, endpointPath: string): Record<string, string> {
     const apiKey = process.env[this.config.apiKeyEnv];
     const keyPath = process.env[this.config.privateKeyPathEnv];
     if (!apiKey || !keyPath) throw new Error(`Missing ${this.config.apiKeyEnv} or ${this.config.privateKeyPathEnv}`);
     const timestamp = Date.now().toString();
     const privateKey = fs.readFileSync(keyPath, 'utf8');
-    const message = timestamp + method.toUpperCase() + path;
+    // Kalshi requires the FULL URL path (including /trade-api/v2 prefix) in the signed message.
+    const baseUrlPath = new URL(this.config.baseUrl).pathname.replace(/\/$/, '');
+    const fullPath = baseUrlPath + endpointPath;
+    const message = timestamp + method.toUpperCase() + fullPath;
     // Kalshi v2 uses RSA-PSS (not PKCS#1 v1.5) with SHA-256 + salt length = digest length.
     const signature = crypto.sign('RSA-SHA256', Buffer.from(message), {
       key: privateKey,

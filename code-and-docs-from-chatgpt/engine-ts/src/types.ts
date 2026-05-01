@@ -48,7 +48,12 @@ export type ExitConfigPatch = Partial<ExitConfig> & Pick<ExitConfig, 'marketTick
 
 export interface PriceDecision {
   chunkSize: number;
+  /** Integer-cents for logging/display. Math.floor(priceDollarsExact * 100). */
   priceCents: number;
+  /** Float cents preserving sub-cent precision; Kalshi quotes 0.001 ticks below 10¢. */
+  priceCentsExact: number;
+  /** Dollar-string with up to 4 decimals for the order payload's yes_price_dollars / no_price_dollars. */
+  priceDollars: string;
   reason: string;
   cumulativeSizeAtPrice: number;
 }
@@ -59,9 +64,15 @@ export interface OrderPayload {
   side: Side;
   count: number;
   type: 'limit';
+  /** Integer cents 1..99. Use *_dollars for sub-cent precision (deci-cent ticks below 10¢). */
   yes_price?: number;
   no_price?: number;
+  /** FixedPointDollars: dollar-string with up to 6 decimals, e.g. "0.0090". Required for sub-cent prices. */
+  yes_price_dollars?: string;
+  no_price_dollars?: string;
   reduce_only: boolean;
+  /** Kalshi enum: 'immediate_or_cancel' | 'fill_or_kill' | 'good_till_canceled'. reduce_only=true requires immediate_or_cancel per server-side check. */
+  time_in_force?: 'immediate_or_cancel' | 'fill_or_kill' | 'good_till_canceled';
   client_order_id: string;
 }
 

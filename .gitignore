@@ -27,3 +27,7 @@ STOP
 # captured fixtures with real account data — keep local only
 test/fixtures/*.real.json
 code-and-docs-from-chatgpt/engine-ts/test/fixtures/*.real.json
+
+# local-only configs (real tickers, real account scope)
+config.local.*.json
+code-and-docs-from-chatgpt/engine-ts/config.local.*.json
