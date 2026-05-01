@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { ExitConfig, Orderbook, OrderPayload, PriceDecision, PriceLevel } from './types.js';
+import type { ExitConfig, Orderbook, OrderPayload, PriceDecision, PriceLevel, Side } from './types.js';
 
 export function normalizeLevels(levels: PriceLevel[], minLevelSize: number): PriceLevel[] {
   return levels
@@ -7,6 +7,22 @@ export function normalizeLevels(levels: PriceLevel[], minLevelSize: number): Pri
     .filter((level) => level.priceCents > 0 && level.priceCents <= 99)
     .filter((level) => level.size >= minLevelSize)
     .sort((a, b) => b.priceCents - a.priceCents);
+}
+
+/**
+ * Produce the effective book of "sell-side" prices the engine can hit for `heldSide`.
+ *
+ * Kalshi's matching engine crosses YES and NO sides via the YES+NO=$1 invariant: a YES sell at price P
+ * matches both (a) YES bids at >= P AND (b) NO bids at >= (1-P). So the best price for selling YES is
+ * max(highest YES bid, $1 - lowest NO bid). We compute this by merging the direct side's book with the
+ * other side's book inverted (price -> 100 - price), then letting `selectExecutablePrice` walk the
+ * combined book by descending price.
+ */
+export function combinedSellLevels(orderbook: Orderbook, heldSide: Side): PriceLevel[] {
+  const direct = heldSide === 'yes' ? orderbook.yes : orderbook.no;
+  const opposite = heldSide === 'yes' ? orderbook.no : orderbook.yes;
+  const inverse = opposite.map((lvl) => ({ priceCents: 100 - lvl.priceCents, size: lvl.size }));
+  return [...direct, ...inverse];
 }
 
 export function selectExecutablePrice(
@@ -49,14 +65,14 @@ export function chooseChunkSize(remaining: number, config: ExitConfig, rawLevels
 }
 
 export function decideLosingExitOrder(orderbook: Orderbook, remainingPosition: number, config: ExitConfig): PriceDecision {
-  const sideLevels = config.heldSide === 'yes' ? orderbook.yes : orderbook.no;
-  const chunkSize = chooseChunkSize(remainingPosition, config, sideLevels);
+  const sellLevels = combinedSellLevels(orderbook, config.heldSide);
+  const chunkSize = chooseChunkSize(remainingPosition, config, sellLevels);
 
   if (remainingPosition <= config.tailSweepThreshold) {
     return { chunkSize, priceCents: config.floorPriceCents, reason: 'final_tail_sweep', cumulativeSizeAtPrice: 0 };
   }
 
-  const price = selectExecutablePrice(sideLevels, chunkSize, config.floorPriceCents, config.minLevelSize);
+  const price = selectExecutablePrice(sellLevels, chunkSize, config.floorPriceCents, config.minLevelSize);
   return { chunkSize, ...price };
 }
 
