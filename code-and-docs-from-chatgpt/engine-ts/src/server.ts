@@ -57,7 +57,19 @@ const server = http.createServer(async (req, res) => {
       const config = effectiveConfig(body.config);
       activeRunner = new ExitRunner(config);
       activeRunner.run().then((status) => { lastStatus = status; }).catch((err) => { console.error(err); });
-      return json(res, 202, { ok: true, status: activeRunner.getStatus() });
+      return json(res, 202, { ok: true, jobId: activeRunner.jobId, status: activeRunner.getStatus() });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/resume') {
+      if (activeRunner?.getStatus().running) return json(res, 409, { ok: false, error: 'A job is already running' });
+      const body = await readJson(req);
+      if (!body.jobId || typeof body.jobId !== 'string') {
+        return json(res, 400, { ok: false, error: 'jobId is required' });
+      }
+      const config = effectiveConfig(body.config);
+      activeRunner = new ExitRunner(config, undefined, { resumeFromJobId: body.jobId });
+      activeRunner.run().then((status) => { lastStatus = status; }).catch((err) => { console.error(err); });
+      return json(res, 202, { ok: true, jobId: activeRunner.jobId, status: activeRunner.getStatus() });
     }
 
     if (req.method === 'POST' && url.pathname === '/stop') {

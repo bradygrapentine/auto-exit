@@ -88,3 +88,27 @@ export interface KalshiClientLike {
   getOrder(orderId: string): Promise<OrderResult>;
   cancelOrder(orderId: string): Promise<OrderResult>;
 }
+
+// ── Journal types ──────────────────────────────────────────────────────────────
+
+export type JournalKind =
+  | 'loop_started'
+  | 'order_placed'
+  | 'order_reconciled'
+  | 'loop_finished'
+  | 'loop_error'
+  | 'resume_started'
+  | 'resume_reconciled';
+
+export interface JournalEntry {
+  ts: string;
+  kind: JournalKind;
+  data: unknown;
+}
+
+/** Stored with every `order_placed` entry — enough to call getOrder on resume. */
+export interface OrderPlacedData {
+  orderId: string;
+  payload: OrderPayload;
+  decisionRequested: number;
+}

@@ -1,17 +1,31 @@
 import fs from 'node:fs';
 import { KalshiClient } from './kalshiClient.js';
+import { Journal, generateJobId } from './journal.js';
 import { buildSellPayload, decideLosingExitOrder } from './pricing.js';
 import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderResult } from './types.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export interface ExitRunnerOptions {
+  /** If set, attempt crash-safe resume from this jobId's journal. */
+  resumeFromJobId?: string;
+  /** Override the KEA_HOME directory (mainly for tests). */
+  keaHome?: string;
+}
+
 export class ExitRunner {
+  // Resume strategy: pass `resumeFromJobId` via ExitRunnerOptions so a single
+  // constructor handles both "new job" and "resume" without a separate factory.
+  readonly jobId: string;
   private status: JobStatus;
   private stopRequested = false;
   private client: KalshiClientLike;
+  private journal: Journal;
 
-  constructor(private config: ExitConfig, client?: KalshiClientLike) {
+  constructor(private config: ExitConfig, client?: KalshiClientLike, opts?: ExitRunnerOptions) {
     this.client = client ?? new KalshiClient(config);
+    this.jobId = opts?.resumeFromJobId ?? generateJobId();
+    this.journal = new Journal(this.jobId, opts?.keaHome);
     this.status = {
       running: false,
       stopped: false,
@@ -84,10 +98,77 @@ export class ExitRunner {
     return current;
   }
 
+  /**
+   * Crash-safe resume: read journal, reconcile any in-flight orders that never
+   * got an `order_reconciled` entry, then recompute `remaining` from fills so
+   * the live loop picks up where it crashed.
+   *
+   * Returns true if the job was already finished (caller should skip the loop).
+   */
+  private async resumeFromJournal(): Promise<boolean> {
+    if (this.journal.isFinished()) {
+      this.log('info', 'resume_noop', { jobId: this.jobId, reason: 'loop_finished in journal' });
+      return true;
+    }
+
+    const pending = this.journal.pendingOrders();
+    if (pending.length > 0) {
+      this.journal.append('resume_started', { jobId: this.jobId, pendingCount: pending.length });
+      this.log('info', 'resume_started', { jobId: this.jobId, pendingCount: pending.length });
+
+      for (const op of pending) {
+        let result: OrderResult;
+        try {
+          result = await this.client.getOrder(op.orderId);
+        } catch (err) {
+          this.log('warn', 'resume_get_order_failed', { orderId: op.orderId, error: err instanceof Error ? err.message : String(err) });
+          continue;
+        }
+
+        if (!this.isTerminal(result)) {
+          // Still resting / partially filled — run the full reconcile (poll + cancel if stale)
+          result = await this.reconcileOrder(result);
+        }
+
+        const filled = Math.max(0, Math.min(op.decisionRequested, result.filledCount));
+        this.journal.append('resume_reconciled', {
+          orderId: op.orderId,
+          status: result.status,
+          filled,
+          requested: op.decisionRequested,
+        });
+        this.log('info', 'resume_reconciled', { orderId: op.orderId, status: result.status, filled });
+      }
+    }
+
+    // Recompute remaining from journal fills so the live loop is accurate
+    const filledSoFar = this.journal.computeFilledTotal();
+    this.status.filledTotal = filledSoFar;
+    this.status.remaining = Math.max(0, this.config.positionSize - filledSoFar);
+    return false;
+  }
+
   async run(): Promise<JobStatus> {
     if (this.status.running) throw new Error('runner already running');
     this.status.running = true;
     this.status.startedAt = new Date().toISOString();
+
+    // ── Resume path ──────────────────────────────────────────────────────────
+    const wasFinished = await this.resumeFromJournal();
+    if (wasFinished) {
+      this.status.running = false;
+      this.status.stopped = true;
+      this.status.finishedAt = new Date().toISOString();
+      return this.getStatus();
+    }
+
+    // ── Normal loop ──────────────────────────────────────────────────────────
+    this.journal.append('loop_started', {
+      ticker: this.config.marketTicker,
+      side: this.config.heldSide,
+      dryRun: this.config.dryRun,
+      remaining: this.status.remaining,
+    });
     this.log('info', 'exit_loop_started', { ticker: this.config.marketTicker, side: this.config.heldSide, dryRun: this.config.dryRun });
 
     try {
@@ -116,6 +197,14 @@ export class ExitRunner {
         } else {
           const created = await this.client.createOrder(payload);
           this.log('info', 'order_created', { orderId: created.orderId, status: created.status });
+
+          // ── Journal: order placed (durable before reconcile) ──────────────
+          this.journal.append('order_placed', {
+            orderId: created.orderId,
+            payload,
+            decisionRequested: decision.chunkSize,
+          });
+
           const reconciled = await this.reconcileOrder(created);
           const filled = Math.max(0, Math.min(decision.chunkSize, reconciled.filledCount));
           this.status.filledTotal += filled;
@@ -123,6 +212,16 @@ export class ExitRunner {
           if (reconciled.status === 'canceled' && filled < decision.chunkSize) {
             this.status.canceledTotal += decision.chunkSize - filled;
           }
+
+          // ── Journal: order reconciled ──────────────────────────────────────
+          this.journal.append('order_reconciled', {
+            orderId: reconciled.orderId,
+            status: reconciled.status,
+            filled,
+            requested: decision.chunkSize,
+            remainingPosition: this.status.remaining,
+          });
+
           this.log('info', 'order_reconciled', {
             orderId: reconciled.orderId,
             status: reconciled.status,
@@ -140,11 +239,13 @@ export class ExitRunner {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.status.lastError = msg;
+      this.journal.append('loop_error', { error: msg });
       this.log('error', 'exit_loop_failed', { error: msg });
     } finally {
       this.status.running = false;
       this.status.stopped = true;
       this.status.finishedAt = new Date().toISOString();
+      this.journal.append('loop_finished', { remaining: this.status.remaining, filled: this.status.filledTotal });
       this.log('info', 'exit_loop_finished', { remaining: this.status.remaining, filled: this.status.filledTotal });
     }
     return this.getStatus();
