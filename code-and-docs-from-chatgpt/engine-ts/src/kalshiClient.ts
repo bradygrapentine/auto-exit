@@ -9,7 +9,7 @@ import type {
   Orderbook,
   PriceLevel,
 } from './types.js';
-import { withRetry, HttpError, NonRetryableError, parseRetryAfterMs } from './retry.js';
+import { withRetry, HttpError, NonRetryableError, parseRetryAfterMs, computeBackoffMs } from './retry.js';
 
 function dollarsToCents(value: string | number): number {
   const n = typeof value === 'string' ? Number.parseFloat(value) : value;
@@ -185,6 +185,8 @@ export class KalshiClient implements KalshiClientLike {
     return parseOrderResponse(orders[0]);
   }
 
+  // NOTE: createOrder uses its own fixed retry knobs (maxAttempts=4, baseMs=200, maxMs=4000)
+  // and does NOT currently honor RetryOptions. Future work to wire RetryOptions through here.
   async createOrder(payload: OrderPayload): Promise<OrderResult> {
     const path = '/portfolio/orders';
     let attempt = 0;
@@ -217,23 +219,23 @@ export class KalshiClient implements KalshiClientLike {
 
         if (!isNetworkError && !is5xx && !is429) throw err;
 
-        // On network error: the POST may have landed — check by cloid before retrying
-        if (isNetworkError) {
+        // On network error OR 5xx: the POST may have landed server-side — check by cloid before retrying
+        if (isNetworkError || is5xx) {
           const existing = await this.findOrderByClientOrderId(payload.client_order_id);
           if (existing) return existing; // order landed; treat as success
         }
 
         if (attempt === maxAttempts - 1) break;
 
-        // Compute delay
+        // Compute delay using shared computeBackoffMs helper (caps jitter within maxMs)
         let delayMs: number;
         if (is429) {
           const httpErr = err as HttpError;
           delayMs = httpErr.retryAfterMs !== undefined
             ? httpErr.retryAfterMs
-            : Math.min(maxMs, baseMs * Math.pow(2, attempt)) + Math.random() * baseMs;
+            : computeBackoffMs(attempt, baseMs, maxMs, true);
         } else {
-          delayMs = Math.min(maxMs, baseMs * Math.pow(2, attempt)) + Math.random() * baseMs;
+          delayMs = computeBackoffMs(attempt, baseMs, maxMs, true);
         }
 
         await new Promise<void>((r) => setTimeout(r, delayMs));

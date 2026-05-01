@@ -206,15 +206,41 @@ describe('KalshiClient retry integration', () => {
     expect(cloidCheckCount).toBe(1);
   });
 
+  // ── createOrder: 5xx → dedup finds existing order → short-circuit (no retry POST) ─
+
+  it('createOrder: 5xx dedup short-circuit returns existing order without retry POST', async () => {
+    let fetchCount = 0;
+    const fetchFn: FetchFn = async (url, init) => {
+      fetchCount++;
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'POST') {
+        // Attempt 1: 503 response (order may have landed server-side)
+        return fakeResponse(503, { error: 'service unavailable' });
+      }
+      // Dedup GET by cloid — order was actually created before the 503
+      if (url.includes('client_order_id=')) {
+        return fakeResponse(200, { orders: [orderJson('ord-503', 'resting', 0, 100).order] });
+      }
+      throw new Error(`Unexpected: ${method} ${url}`);
+    };
+    const client = makeClient(fetchFn);
+    const result = await client.createOrder(samplePayload);
+    expect(result.orderId).toBe('ord-503');
+    // fetch called exactly twice: initial POST + dedup GET (no retry POST)
+    expect(fetchCount).toBe(2);
+  });
+
   // ── createOrder: exhausts retries when server keeps returning 503 ───────────
+  // With 5xx dedup: each POST 503 triggers a dedup GET returning empty orders,
+  // then retries. maxAttempts=4: 4 POSTs + 4 dedup GETs (including last attempt).
 
   it('createOrder: throws after maxAttempts of 5xx', async () => {
-    const fetchFn = makeQueuedFetch([
-      fakeResponse(503, {}),
-      fakeResponse(503, {}),
-      fakeResponse(503, {}),
-      fakeResponse(503, {}),
-    ]);
+    const fetchFn: FetchFn = async (url, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'POST') return fakeResponse(503, {});
+      if (url.includes('client_order_id=')) return fakeResponse(200, { orders: [] });
+      throw new Error(`Unexpected: ${method} ${url}`);
+    };
     const client = makeClient(fetchFn);
     await expect(client.createOrder(samplePayload)).rejects.toThrow('HTTP 503');
   });
