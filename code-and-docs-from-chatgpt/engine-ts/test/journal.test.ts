@@ -97,6 +97,38 @@ describe('Journal', () => {
     expect(ids.size).toBe(100);
   });
 
+  it('readAll silently skips truncated/malformed lines', () => {
+    const j = new Journal('job-trunc', tmpDir);
+    j.append('loop_started', { ticker: 'KXTEST' });
+    // Append a partial (truncated) JSON line — simulates a mid-write crash
+    fs.appendFileSync(j.path, '{"ts":"2026', 'utf8');
+    const entries = j.readAll();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe('loop_started');
+  });
+
+  it('computeFilledTotal does not double-count on second crash-and-resume', () => {
+    const j = new Journal('job-doublecount', tmpDir);
+    // First run: order placed and reconciled
+    j.append('order_reconciled', { orderId: 'A', filled: 100 });
+    // First resume: same orderId appears as resume_reconciled (from reconcileOrder on resume)
+    j.append('resume_reconciled', { orderId: 'A', filled: 100 });
+    // Second resume: a NEW order_reconciled for A again (simulating second crash scenario)
+    j.append('order_reconciled', { orderId: 'A', filled: 100 });
+    // Should count A only once (last-seen value = 100), not 300
+    expect(j.computeFilledTotal()).toBe(100);
+  });
+
+  it('pendingOrders dedupes duplicate order_placed entries for same orderId', () => {
+    const j = new Journal('job-dedup', tmpDir);
+    // Retry path wrote order_placed twice for same orderId
+    j.append('order_placed', { orderId: 'X', payload: {}, decisionRequested: 100 });
+    j.append('order_placed', { orderId: 'X', payload: {}, decisionRequested: 100 });
+    const pending = j.pendingOrders();
+    expect(pending).toHaveLength(1);
+    expect(pending[0].orderId).toBe('X');
+  });
+
   it('survives a simulated crash mid-write (JSONL is line-oriented)', () => {
     const j = new Journal('job-009', tmpDir);
     j.append('loop_started', {});
