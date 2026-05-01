@@ -1,0 +1,19 @@
+{
+  "name": "kalshi-exit-assistant-engine",
+  "version": "0.2.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts --config ./config.example.json",
+    "server": "tsx src/server.ts --config ./config.example.json",
+    "test": "vitest run"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "20.14.10",
+    "tsx": "4.16.2",
+    "typescript": "5.5.3",
+    "vitest": "1.6.0"
+  }
+}

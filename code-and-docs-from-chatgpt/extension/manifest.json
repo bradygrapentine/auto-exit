@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Kalshi Exit Assistant Local",
+  "version": "0.2.0",
+  "description": "Local-first control panel for the Kalshi Exit Assistant CLI/engine.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "https://kalshi.com/*",
+    "https://*.kalshi.com/*",
+    "http://127.0.0.1:7777/*",
+    "http://localhost:7777/*"
+  ],
+  "action": { "default_popup": "dist/popup.html", "default_title": "Kalshi Exit Assistant" },
+  "background": { "service_worker": "dist/background.js", "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["https://kalshi.com/*", "https://*.kalshi.com/*"],
+      "js": ["dist/content.js"],
+      "css": ["dist/content.css"]
+    }
+  ]
+}

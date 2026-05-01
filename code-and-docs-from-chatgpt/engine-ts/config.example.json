@@ -1,0 +1,20 @@
+{
+  "baseUrl": "https://api.elections.kalshi.com/trade-api/v2",
+  "localServerPort": 7777,
+  "marketTicker": "KXEXAMPLE-26DEC31-YES",
+  "heldSide": "yes",
+  "positionSize": 1000,
+  "chunkSize": 500,
+  "floorPriceCents": 1,
+  "orderbookDepth": 20,
+  "minLevelSize": 50,
+  "tailSweepThreshold": 500,
+  "mildAdaptive": false,
+  "minAdaptiveChunk": 100,
+  "maxOrders": 1000,
+  "loopDelayMs": 250,
+  "dryRun": true,
+  "killSwitchPath": "./STOP",
+  "apiKeyEnv": "KALSHI_ACCESS_KEY",
+  "privateKeyPathEnv": "KALSHI_PRIVATE_KEY_PATH"
+}

@@ -1,0 +1,17 @@
+#kea-panel { position: fixed; right: 18px; bottom: 18px; z-index: 2147483647; width: 360px; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif; background: #0f172a; color: #f8fafc; border: 1px solid #334155; border-radius: 18px; box-shadow: 0 22px 50px rgba(0,0,0,.38); overflow: hidden; }
+#kea-panel * { box-sizing: border-box; }
+.kea-header { padding: 12px 14px; font-weight: 800; border-bottom: 1px solid #334155; display:flex; justify-content:space-between; align-items:center; background:#111827; }
+.kea-close { border:0; border-radius:8px; padding:4px 8px; background:#334155; color:#fff; cursor:pointer; }
+.kea-body { padding: 12px 14px; display: grid; gap: 10px; }
+.kea-grid { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
+.kea-row { display: grid; gap: 4px; font-size: 12px; color: #cbd5e1; }
+.kea-row input, .kea-row select { width: 100%; border-radius: 9px; border: 1px solid #475569; background: #1e293b; color: #fff; padding: 8px; font-size: 12px; }
+.kea-actions { display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.kea-actions button { border:0; border-radius: 10px; padding: 9px; font-weight:800; cursor:pointer; }
+.kea-primary { background:#22c55e; color:#052e16; }
+.kea-secondary { background:#334155; color:#fff; }
+.kea-danger { background:#ef4444; color:#fff; }
+.kea-note { font-size: 11px; color:#cbd5e1; line-height:1.35; white-space: pre-wrap; max-height: 180px; overflow:auto; background:#111827; border:1px solid #334155; padding:8px; border-radius:10px; }
+.kea-status { font-size: 12px; display:flex; justify-content:space-between; gap:8px; color:#d1fae5; }
+.kea-pill { background:#064e3b; border:1px solid #10b981; border-radius:999px; padding:2px 8px; color:#bbf7d0; }
+.kea-warn { color:#fde68a; }
