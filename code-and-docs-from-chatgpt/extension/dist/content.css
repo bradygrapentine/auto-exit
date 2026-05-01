@@ -15,3 +15,29 @@
 .kea-status { font-size: 12px; display:flex; justify-content:space-between; gap:8px; color:#d1fae5; }
 .kea-pill { background:#064e3b; border:1px solid #10b981; border-radius:999px; padding:2px 8px; color:#bbf7d0; }
 .kea-warn { color:#fde68a; }
+
+/* Progress bar */
+.kea-progress-wrap { display:grid; gap:4px; }
+.kea-progress-bar-bg { height:8px; background:#1e293b; border-radius:999px; overflow:hidden; border:1px solid #334155; }
+.kea-progress-bar { height:100%; background:#22c55e; border-radius:999px; width:0%; transition:width 0.4s ease; }
+.kea-progress-label { font-size:11px; color:#94a3b8; text-align:right; }
+
+/* Exec summary */
+.kea-summary { background:#111827; border:1px solid #334155; border-radius:10px; padding:10px 12px; font-size:12px; display:grid; gap:6px; }
+.kea-summary-title { font-weight:800; color:#22c55e; font-size:13px; }
+.kea-summary-row { display:flex; justify-content:space-between; color:#cbd5e1; }
+.kea-summary-row strong { color:#f8fafc; }
+.kea-summary-error { color:#fca5a5; font-size:11px; border-top:1px solid #334155; padding-top:6px; word-break:break-word; }
+
+/* Confirmation modal overlay */
+.kea-modal-overlay { position:fixed; inset:0; z-index:2147483648; background:rgba(0,0,0,.65); display:flex; align-items:center; justify-content:center; }
+.kea-modal { background:#0f172a; border:1px solid #475569; border-radius:16px; padding:20px; width:320px; display:grid; gap:14px; box-shadow:0 24px 60px rgba(0,0,0,.5); font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,sans-serif; }
+.kea-modal-title { font-weight:800; font-size:15px; color:#fde68a; }
+.kea-modal-body { display:grid; gap:6px; }
+.kea-modal-row { display:flex; justify-content:space-between; font-size:13px; color:#cbd5e1; }
+.kea-modal-row strong { color:#f8fafc; }
+.kea-modal-check { display:flex; align-items:center; gap:8px; font-size:12px; color:#cbd5e1; cursor:pointer; }
+.kea-modal-check input[type="checkbox"] { width:16px; height:16px; cursor:pointer; accent-color:#22c55e; }
+.kea-modal-check-error { outline:2px solid #ef4444; border-radius:3px; }
+.kea-modal-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.kea-modal-actions button { border:0; border-radius:10px; padding:10px; font-weight:800; cursor:pointer; font-size:13px; }
