@@ -1,0 +1,23 @@
+node_modules/
+dist-tsc/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# editor
+.vscode/
+.idea/
+
+# test/runtime artifacts
+coverage/
+.nyc_output/
+
+# kalshi exit assistant runtime data
+.kalshi-exit-assistant/
+STOP
+
+# claude harness
+.claude/agent-status/
+.codex-runs/
