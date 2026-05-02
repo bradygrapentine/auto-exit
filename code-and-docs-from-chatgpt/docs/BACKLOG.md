@@ -4,7 +4,7 @@ Last `/backlog-sync`: 2026-05-01
 
 | Status | Count |
 |--------|-------|
-| 🧊 Deferred | 4 |
+| 🧊 Deferred | 6 |
 | ✅ Shipped (this log) | 3 |
 
 Features deferred until a concrete need surfaces. Don't build speculatively.
@@ -96,6 +96,52 @@ chunk, well above $0.15. Already fine.
 **Why deferred:** P1 didn't trigger the failure mode. Build when a future
 exit hits a cheap-market dust scenario where the per-fill minimum is the
 dominant cost.
+
+## 🧊 Single-shot capture-and-execute scanner
+
+**Trigger:** the multi-market test (2026-05-01, see `MULTIMARKET_TEST_REPORT.md`)
+revealed that interesting book shapes — especially thin-top + cliff — evaporate
+between scan and execute. Two-poll workflows (scan, then human reviews, then
+buy/sell) are too slow.
+
+**Proposed:** `kea autotest --shape thin-cliff --budget 2 --depth-floor 100`
+that does in one pass:
+1. Stream-scan the open markets endpoint
+2. As soon as a market matching `--shape` is found AND its book still meets
+   the criteria on a re-fetch, immediately:
+3. Buy a small position via crossable IoC (sized to `--budget`)
+4. Run the engine sell against it (same script, no human gate)
+5. Capture pre/post and exit
+
+**What this validates that nothing else can:** auto-adaptive thin+cliff
+behavior live, since manually-paced workflows can't catch these books.
+
+**Cost to build:** ~3-4 hours. New CLI subcommand, hardcoded shape detectors,
+automated buy primitive (could be a reusable `kea buy` subcommand). Tests
+mostly trivial since most of it is plumbing existing primitives.
+
+**Why deferred:** opportunistic by definition — only matters when a
+candidate book actually appears. Build before the next attempt at
+multi-market validation, not as urgent infrastructure.
+
+## 🧊 Multi-market validation sweep — DEFERRED INDEFINITELY
+
+**Original plan:** test the engine across 4 market characteristic buckets
+(cheap-tail, mid-priced, high-priced, thin-cliff) for projection accuracy
+and fee-curve validation. See `MULTIMARKET_TEST_REPORT.md` for the 2026-05-01
+attempt.
+
+**Why deferred indefinitely:** structural Kalshi reality. A 10,000-market
+scan returned only 2 markets with two-sided liquidity. The cheap-tail
+(1-3¢) and high-priced (80-95¢) market types don't exist on demand —
+they require specific event calendars (major political events, etc).
+
+**Re-trigger this when:** a major event with deep-tail markets is active
+(election, supreme court ruling, etc.) — at that point a fresh scan
+might find 4+ usable candidates simultaneously.
+
+**Cost to re-run:** ~2 hours of execution + report writing. Code already
+exists; just needs market conditions.
 
 ## 🧊 Cancel-replace GTC drip mode
 
