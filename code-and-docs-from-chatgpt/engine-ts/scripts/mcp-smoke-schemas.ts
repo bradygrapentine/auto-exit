@@ -92,13 +92,20 @@ export const JournalReadSchema = z.object({
 });
 
 // kea_replay — replay summary object
+// Fields match mcp.ts:213-228 jsonContent return value exactly.
 export const ReplaySchema = z.object({
   jobId: z.string(),
   ticker: z.string(),
-  side: z.string(),
+  side: z.enum(['yes', 'no']),
   initialPosition: z.number(),
-  replayed: z.number().nonnegative(),
-  skipped: z.number().nonnegative(),
-  mismatches: z.array(z.unknown()),
+  replayed: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative(),
+  mismatches: z.array(z.object({
+    ts: z.string(),
+    orderId: z.string(),
+    recordedDecision: z.unknown(),
+    recomputedDecision: z.unknown(),
+    diff: z.array(z.string()),
+  })),
   allMatch: z.boolean(),
-}).passthrough();
+});
