@@ -9,7 +9,7 @@
 
 This track owns `src/tui/` (all `.tsx` components, `App.tsx`, `api.ts`) and `src/mcp.ts` (tool registrations). It does NOT modify `src/safety.ts`, `src/types.ts`, `src/journal.ts`, `src/exitRunner.ts`, or `src/buyRunner.ts` directly — coordinate new types and shared modules through the shared track. New MCP write-tools that route to existing `src/` functions are owned here; new `src/` functions they call are shared-track.
 
-**Fan-out gate:** W1.1 must be merged (MCP safety tools, TUI Safety tab) before this track's write-surface stories ship. SP2.1 strategy launcher gates on at least S1 + S2 merged (engine track).
+**Fan-out gate:** W1.1 must be merged (MCP safety tools, `/safety/*` server endpoints) before this track's write-surface stories ship. `src/tui/SafetyTab.tsx` is built by this track (TM-8) using the shared W1.1 contract — it is tui-mcp-owned. SP2.1 strategy launcher gates on at least S1 + S2 merged (engine track).
 
 ---
 
@@ -195,6 +195,31 @@ Heartbeat: any subagent running >30min appends timestamps every ~5min to `.claud
 
 ---
 
+### Story TM-8: W1.1 TUI consumer — SafetyTab.tsx
+
+**Goal:** `src/tui/SafetyTab.tsx` — TUI consumer of the W1.1 safety contract. Displays current `SafetyConfig` values (read-only fields). Lists forbidden tickers with add/remove controls that call the `/safety/*` server endpoints owned by the shared track.
+
+**File-touch boundary:**
+- `src/tui/SafetyTab.tsx` (new)
+- `src/tui/App.tsx` (register Safety tab)
+- `src/tui/api.ts` (add safety read + forbidden-ticker CRUD calls)
+- `test/tui-safety-tab.test.tsx` (new)
+
+**Internal parallelism:** no. ~1 day.
+
+**Dependencies:** W1.1 safety persistence (shared track / unblock plan) must be merged and `/safety/*` endpoints in `src/server.ts` must be frozen before this story starts.
+
+**Tasks:**
+- [ ] `SafetyTab.tsx`: read-only display of `SafetyConfig` fields
+- [ ] Forbidden tickers list: add (text input + reason field) → `POST /safety/forbidden`
+- [ ] Forbidden tickers list: remove → `DELETE /safety/forbidden/:ticker` with confirm
+- [ ] `api.ts`: `getSafetyConfig()`, `addForbiddenTicker({ ticker, reason })`, `removeForbiddenTicker(ticker)`
+- [ ] `App.tsx`: register Safety tab
+- [ ] Test: display config, add-with-reason, remove-with-confirm
+- [ ] `npm test && npm run typecheck` green
+
+---
+
 ## PR cadence
 
 - 1 PR per story.
@@ -206,6 +231,7 @@ Heartbeat: any subagent running >30min appends timestamps every ~5min to `.claud
 - TM-6 (TUI reports tab) follows TM-5.
 - TM-7 (harvest planner panel) follows W4.5 shared track.
 - Batch TM-3 + TM-4 if both complete same day.
+- TM-8 (SafetyTab.tsx) follows W1.1 contract freeze (shared track / unblock plan).
 
 ---
 

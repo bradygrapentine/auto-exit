@@ -9,7 +9,7 @@
 
 This track owns `src/safety.ts`, `src/buyRunner.ts`, `src/runnerUtils.ts`, `src/harvestPlanner.ts`, `src/types.ts`, `src/journal.ts`, `src/exitRunner.ts`, and `src/server.ts`. It also owns the `/safety/*` HTTP endpoints in `server.ts` that the extension calls. Any other track needing a `src/` file change coordinates through a shared-track PR.
 
-**Fan-out gate:** See `2026-05-02-shared-services-unblock.md`. Tracks fan out after W1.4 + W1.1 + W1.5 merge. This plan covers **ongoing shared work after fan-out** — W1.2, W1.3, W4.1, W4.2, W4.3, W4.4.
+**Fan-out gate:** See `2026-05-02-shared-services-unblock.md`. Tracks fan out after W1.4 + W1.1 + W1.5 merge. This plan covers **ongoing shared work after fan-out** — W1.2, W1.3, W4.1, W4.3.
 
 ---
 
@@ -121,34 +121,7 @@ Heartbeat: any subagent running >30min appends timestamps every ~5min to `.claud
 
 ---
 
-### Story SH-4: W4.2 — Implementation Shortfall optimizer (Almgren-Chriss)
-
-**Goal:** `src/optimalSchedule.ts` — closed-form schedule minimizing `E[slippage] + λ × Var[remaining-value-at-expiry]`. Integrates as `useOptimalSchedule: true` on any loop-based strategy.
-
-**File-touch boundary:**
-- `src/optimalSchedule.ts` (new)
-- `src/types.ts` — `OptimalScheduleInput`, `OptimalScheduleOutput`
-- `src/runnerUtils.ts` — `chooseChunkSize` accepts `OptimalScheduleOutput` as override
-- `test/optimalSchedule.test.ts` (new)
-
-**Internal parallelism:** single Sonnet dispatch — math-heavy, ~3-4 days.
-
-**Dependencies:**
-- Shared interface consumed: W1.2 TCA (impact estimates), W4.1 (probability snapshots from triggers)
-- Sequence: SH-1 (TCA) must be merged before SH-4 ships — calibration data needed
-
-**Tasks:**
-- [ ] Add `OptimalScheduleInput/Output` types to `src/types.ts`
-- [ ] Implement Almgren-Chriss schedule in `src/optimalSchedule.ts`
-  - [ ] Inputs: position size, time to expiry, current probability, impact estimate
-  - [ ] Output: chunk schedule (size + interval)
-- [ ] Unit tests against known analytic solutions (3+ cases)
-- [ ] Wire into `runnerUtils.chooseChunkSize` as optional override
-- [ ] `npm test && npm run typecheck` green
-
----
-
-### Story SH-5: W4.3 — Portfolio liquidation sequencer
+### Story SH-4: W4.3 — Portfolio liquidation sequencer
 
 **Goal:** `kea portfolio plan` subcommand + optional `--auto-execute`. Reads positions, ranks by `markToBid − EV(hold)`, emits recommended strategy sequence.
 
@@ -175,46 +148,12 @@ Heartbeat: any subagent running >30min appends timestamps every ~5min to `.claud
 
 ---
 
-### Story SH-6: W4.4 — Smart Order Router (multi-venue)
-
-**Goal:** abstract `KalshiClient` to `VenueClient` interface; Polymarket adapter; router picks best venue by effective price after fees.
-
-**File-touch boundary:**
-- `src/venueClient.ts` (new — `VenueClient` interface)
-- `src/kalshiVenueAdapter.ts` (new — wraps existing `KalshiClient`)
-- `src/polymarketVenueAdapter.ts` (new)
-- `src/sor.ts` (new — Smart Order Router)
-- `src/kalshiClient.ts` — no change (wrapped, not modified)
-- `src/types.ts` — `VenueConfig`, `RouteDecision`
-- `test/sor.test.ts` (new)
-
-**Internal parallelism:** three parallel Sonnet dispatches after interface defined:
-- Dispatch A: `VenueClient` interface + Kalshi adapter
-- Dispatch B: Polymarket adapter + fee schedule
-- Dispatch C: Router logic + route-decision tests
-
-**Dependencies:** entire algo sequence on Kalshi must be stable before multi-venue multiplies it. Sequence: SH-6 is last.
-
-**Tasks:**
-- [ ] Define `VenueClient` interface in `src/venueClient.ts`
-- [ ] Kalshi adapter in `src/kalshiVenueAdapter.ts`
-- [ ] Polymarket CLOB adapter in `src/polymarketVenueAdapter.ts`
-- [ ] Fee schedule per venue
-- [ ] Contract-equivalence mapping (matching tickers across venues)
-- [ ] Router: `routeOrder(order, venues)` → `RouteDecision`
-- [ ] Tests: routing scenarios (one venue has better price, fallback on depth)
-- [ ] `npm test && npm run typecheck` green
-
----
-
 ## PR cadence
 
-- 1 PR per story (SH-1 through SH-6).
+- 1 PR per story (SH-1 through SH-4).
 - SH-1 and SH-2 can run in parallel (no overlap in file-touch).
 - SH-3 follows after SH-2 (pre-trade checks used by triggers).
-- SH-4 follows after SH-1 (needs TCA impact data).
-- SH-5 follows after S-library is largely complete.
-- SH-6 is last.
+- SH-4 follows after S-library is largely complete.
 
 ---
 

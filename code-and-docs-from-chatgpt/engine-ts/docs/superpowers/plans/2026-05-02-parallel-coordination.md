@@ -105,13 +105,14 @@ Current kinds (post-unblock): `order_intent | order_placed | order_reconciled | 
 | `src/server.ts` | **owns** | — | coord PR | coord PR |
 | `src/mcp.ts` | — | — | — | **owns** |
 | `src/tui/` | — | — | — | **owns** |
-| `src/tui/SafetyTab.tsx` | **owns** (W1.1) | — | — | reads |
 | `src/cli.ts` | **owns** | — | — | — |
 | `src/*.ts` new strategy modules | — | **owns** | — | — |
 | `extension/` | — | — | **owns** | — |
 | `test/extension/` | — | — | **owns** | — |
 
 **Cross-track edits:** if any track needs to touch a file owned by another track, open a coordination PR targeting the owning track's branch. Never commit cross-track file edits in a single-track PR.
+
+**Safety contract split (W1.1):** shared owns the W1.1 contract (`src/safety.ts`, `safety.json` schema, server endpoints in `src/server.ts`, audit log format); tui-mcp builds `src/tui/SafetyTab.tsx` using that contract. `SafetyTab.tsx` is tui-mcp-owned (falls under `src/tui/`); it must not be listed as shared-owned.
 
 ---
 

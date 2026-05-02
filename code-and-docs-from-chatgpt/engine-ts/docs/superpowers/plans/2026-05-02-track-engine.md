@@ -361,6 +361,67 @@ Heartbeat: any subagent running >30min appends timestamps every ~5min to `.claud
 
 ---
 
+### Story EN-17: W4.2 — Implementation Shortfall optimizer (Almgren-Chriss)
+
+**Goal:** `src/optimalSchedule.ts` — closed-form schedule minimizing `E[slippage] + λ × Var[remaining-value-at-expiry]`. Integrates as `useOptimalSchedule: true` on any loop-based strategy.
+
+**File-touch boundary:**
+- `src/optimalSchedule.ts` (new)
+- Coordinate with shared track to add `OptimalScheduleInput`, `OptimalScheduleOutput` to `src/types.ts`
+- Coordinate with shared track: `chooseChunkSize` in `src/runnerUtils.ts` accepts `OptimalScheduleOutput` as override
+- `test/optimalSchedule.test.ts` (new)
+
+**Internal parallelism:** single Sonnet dispatch — math-heavy, ~3-4 days.
+
+**Dependencies:**
+- W1.2 TCA (shared track SH-1) must be merged — calibration impact estimates needed
+- W4.1 trigger layer (shared track SH-3) — probability snapshots from triggers
+- S-library largely complete (optimizer wraps loop-based strategies)
+
+**Tasks:**
+- [ ] Coordinate `OptimalScheduleInput/Output` type additions with shared track (coord PR)
+- [ ] Implement Almgren-Chriss schedule in `src/optimalSchedule.ts`
+  - [ ] Inputs: position size, time to expiry, current probability, impact estimate
+  - [ ] Output: chunk schedule (size + interval)
+- [ ] Unit tests against known analytic solutions (3+ cases)
+- [ ] Coordinate `runnerUtils.chooseChunkSize` override with shared track (coord PR)
+- [ ] `npm test && npm run typecheck` green
+
+---
+
+### Story EN-18: W4.4 — Smart Order Router (multi-venue)
+
+**Goal:** abstract `KalshiClient` to `VenueClient` interface; Polymarket adapter; router picks best venue by effective price after fees.
+
+**File-touch boundary:**
+- `src/venueClient.ts` (new — `VenueClient` interface)
+- `src/kalshiVenueAdapter.ts` (new — wraps existing `KalshiClient`)
+- `src/polymarketVenueAdapter.ts` (new)
+- `src/sor.ts` (new — Smart Order Router)
+- `src/kalshiClient.ts` — no change (wrapped, not modified)
+- Coordinate with shared track to add `VenueConfig`, `RouteDecision` to `src/types.ts`
+- `test/sor.test.ts` (new)
+
+**Internal parallelism:** three parallel Sonnet dispatches after interface defined:
+- Dispatch A: `VenueClient` interface + Kalshi adapter
+- Dispatch B: Polymarket adapter + fee schedule
+- Dispatch C: Router logic + route-decision tests
+
+**Dependencies:** entire S-library on Kalshi must be stable before multi-venue multiplies it. EN-18 is last — comes after EN-17 (optimizer) and all strategy stories.
+
+**Tasks:**
+- [ ] Define `VenueClient` interface in `src/venueClient.ts`
+- [ ] Kalshi adapter in `src/kalshiVenueAdapter.ts`
+- [ ] Polymarket CLOB adapter in `src/polymarketVenueAdapter.ts`
+- [ ] Fee schedule per venue
+- [ ] Contract-equivalence mapping (matching tickers across venues)
+- [ ] Router: `routeOrder(order, venues)` → `RouteDecision`
+- [ ] Tests: routing scenarios (one venue has better price, fallback on depth)
+- [ ] Coordinate `VenueConfig`, `RouteDecision` type additions with shared track (coord PR)
+- [ ] `npm test && npm run typecheck` green
+
+---
+
 ## PR cadence
 
 - 1 PR per story for EN-1 through EN-12.
@@ -369,6 +430,8 @@ Heartbeat: any subagent running >30min appends timestamps every ~5min to `.claud
 - EN-14 (W3.2) before EN-10 (S4 stealth).
 - EN-15 (W3.1) and EN-16 (W3.3) in parallel with strategy work.
 - Batch tiny cross-cutting PRs (EN-14/EN-15/EN-16) into one if <1 day total.
+- EN-17 (W4.2 IS optimizer) follows SH-1 (TCA) + SH-3 (triggers) merged and S-library largely complete.
+- EN-18 (W4.4 SOR) is last — after EN-17 and full Kalshi strategy suite stable.
 
 ---
 
