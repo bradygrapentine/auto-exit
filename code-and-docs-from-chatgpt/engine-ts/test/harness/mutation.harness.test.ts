@@ -1,14 +1,11 @@
 import { describe, beforeAll } from 'vitest';
 import { loadActive } from '../../src/credentials.js';
+import { assertDemoBaseUrl } from './runner.js';
 
 describe.runIf(process.env.HARNESS === '1' && process.env.HARNESS_SUITE === 'mutation')('MCP mutation harness', () => {
   beforeAll(() => {
     const a = loadActive();
-    if (!a.baseUrl.includes('demo')) {
-      throw new Error(
-        `mutation suite refuses to run against non-demo baseUrl '${a.baseUrl}'. Run \`kea use demo\` first.`,
-      );
-    }
+    assertDemoBaseUrl(a.baseUrl);
   });
 
   // No mutation tests yet — the engine doesn't expose mutating MCP tools.

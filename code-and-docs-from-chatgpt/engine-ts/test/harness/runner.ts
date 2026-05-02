@@ -5,6 +5,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEMO_BASE_URL } from '../../src/credentials.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -27,6 +28,19 @@ export interface HarnessResult {
 
 const BASELINES_DIR = path.resolve(__dirname, 'baselines');
 const LATENCY_FILE = path.resolve(__dirname, 'latency', 'p95.json');
+
+/**
+ * Guard that ensures the active profile targets the canonical Kalshi demo URL.
+ * Throws on any non-exact match — prevents substring tricks like
+ * `https://demo.evil.example/api`.
+ */
+export function assertDemoBaseUrl(baseUrl: string): void {
+  if (baseUrl !== DEMO_BASE_URL) {
+    throw new Error(
+      `mutation suite refuses to run against baseUrl '${baseUrl}'. Expected canonical Kalshi demo (${DEMO_BASE_URL}). Run \`kea use demo\` first.`,
+    );
+  }
+}
 
 export async function spawnClient(): Promise<{ client: Client; close: () => Promise<void> }> {
   const transport = new StdioClientTransport({ command: 'npx', args: ['tsx', 'src/mcp.ts'] });
