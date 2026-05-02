@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { KalshiClient } from './kalshiClient.js';
 import { Journal, generateJobId } from './journal.js';
 import { buildSellPayload, centsFloatToDollarString, decideLosingExitOrder, normalizeLevels, oneTickBelowCents, projectFullExit } from './pricing.js';
+import { mergeIntoExitConfig, getSafety } from './safety.js';
 import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, Position } from './types.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -322,6 +323,11 @@ export class ExitRunner {
 
   async run(): Promise<JobStatus> {
     if (this.status.running) throw new Error('runner already running');
+
+    // ── Load and merge safety guard-rails (always, before forbidden check) ──
+    const safetySnapshot = getSafety();
+    this.config = mergeIntoExitConfig(this.config);
+
     // Forbidden-ticker check — defense in depth even if config validation was bypassed
     const forbidden = this.config.forbiddenTickers ?? [];
     if (forbidden.includes(this.config.marketTicker)) {
@@ -340,6 +346,14 @@ export class ExitRunner {
       this.status.finishedAt = new Date().toISOString();
       return this.getStatus();
     }
+
+    // ── Write safety_loaded after confirming we're running a live job ────────
+    this.journal.append('safety_loaded', {
+      safetySubmittedMultiple: safetySnapshot.safetySubmittedMultiple,
+      floorPriceCents: safetySnapshot.floorPriceCents,
+      tailSweepThreshold: safetySnapshot.tailSweepThreshold,
+      forbiddenCount: safetySnapshot.forbiddenTickers.length,
+    });
 
     // ── Normal loop ──────────────────────────────────────────────────────────
     this.journal.append('loop_started', {
