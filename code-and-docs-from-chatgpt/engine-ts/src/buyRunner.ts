@@ -40,6 +40,7 @@ export class BuyRunner {
   private totalNotionalCents = 0; // filled × priceCents, for avgPriceCents computation
   private feesIncurredDollars = 0;
   private remaining: number;
+  private submittedTotal = 0;
   private ordersAttempted = 0;
 
   constructor(client: KalshiClientLike, private config: BuyConfig, opts?: BuyRunnerOptions) {
@@ -71,29 +72,44 @@ export class BuyRunner {
 
   private async reconcileOrder(initial: OrderResult): Promise<OrderResult> {
     if (this.isTerminal(initial)) return initial;
+    const pollMs = this.config.reconcilePollMs ?? 250;
+    const maxPolls = this.config.reconcileMaxPolls ?? 4;
     let current = initial;
-    // Simple poll loop (no cancel-on-stale for buys — just poll twice)
-    for (let i = 0; i < 4; i += 1) {
+    for (let i = 0; i < maxPolls; i += 1) {
       if (this.stopRequested) break;
-      await sleep(250);
+      await sleep(pollMs);
       try {
         current = await this.client.getOrder(initial.orderId);
-      } catch {
+      } catch (err) {
+        this.log('warn', 'get_order_failed', { error: err instanceof Error ? err.message : String(err) });
         continue;
       }
       if (this.isTerminal(current)) return current;
+    }
+    // Stale order still resting — cancel it
+    try {
+      const canceled = await this.client.cancelOrder(initial.orderId);
+      this.log('warn', 'order_canceled_stale', { orderId: initial.orderId, filled: canceled.filledCount });
+      return canceled;
+    } catch (err) {
+      this.log('error', 'cancel_failed', { error: err instanceof Error ? err.message : String(err) });
     }
     return current;
   }
 
   /**
    * Resume path: read journal, compute already-filled quantity from reconciled entries.
-   * Returns true if job was already finished.
+   * Returns { finished: boolean; isResuming: boolean }.
+   *   finished   — true if buy_loop_finished already in journal (caller should skip loop)
+   *   isResuming — true if journal had prior entries (caller should skip buy_loop_started)
    */
-  private async resumeFromJournal(): Promise<boolean> {
+  private async resumeFromJournal(): Promise<{ finished: boolean; isResuming: boolean }> {
+    const allEntries = this.journal.readAll();
+    const isResuming = allEntries.length > 0;
+
     if (this.journal.isFinished()) {
       this.log('info', 'resume_noop', { jobId: this.jobId, reason: 'buy_loop_finished in journal' });
-      return true;
+      return { finished: true, isResuming };
     }
 
     // Phase 1: reconcile pending order_intent entries (crash window)
@@ -170,7 +186,7 @@ export class BuyRunner {
     const filledSoFar = this.journal.computeFilledTotal();
     this.filled = filledSoFar;
     this.remaining = Math.max(0, this.config.size - filledSoFar);
-    return false;
+    return { finished: false, isResuming };
   }
 
   async run(): Promise<BuyResult> {
@@ -179,28 +195,32 @@ export class BuyRunner {
     checkForbiddenTickers(this.config.ticker, safetySnapshot);
 
     // Resume path
-    const wasFinished = await this.resumeFromJournal();
+    const { finished: wasFinished, isResuming } = await this.resumeFromJournal();
     if (wasFinished) {
       return this.buildResult('complete');
     }
 
     // Write safety_loaded AFTER confirming we're running a live job
-    this.journal.append('safety_loaded', {
-      forbiddenCount: safetySnapshot.forbiddenTickers.length,
-    });
+    if (!isResuming) {
+      this.journal.append('safety_loaded', {
+        forbiddenCount: safetySnapshot.forbiddenTickers.length,
+      });
+    }
 
     const chunkSize = this.config.chunkSize ?? DEFAULT_CHUNK_SIZE;
     const maxOrders = this.config.maxOrders ?? DEFAULT_MAX_ORDERS;
     const orderbookDepth = this.config.orderbookDepth ?? DEFAULT_ORDERBOOK_DEPTH;
     const loopDelayMs = this.config.loopDelayMs ?? DEFAULT_LOOP_DELAY_MS;
 
-    this.journal.append('buy_loop_started', {
-      ticker: this.config.ticker,
-      side: this.config.side,
-      size: this.config.size,
-      dryRun: this.config.dryRun,
-      remaining: this.remaining,
-    });
+    if (!isResuming) {
+      this.journal.append('buy_loop_started', {
+        ticker: this.config.ticker,
+        side: this.config.side,
+        size: this.config.size,
+        dryRun: this.config.dryRun,
+        remaining: this.remaining,
+      });
+    }
     this.log('info', 'buy_loop_started', {
       ticker: this.config.ticker,
       size: this.config.size,
@@ -269,6 +289,21 @@ export class BuyRunner {
             yes_price_dollars: side === 'yes' ? priceDollars : undefined,
             no_price_dollars: side === 'no' ? priceDollars : undefined,
           };
+
+          // Safety cap: defend against parser/fill misread loops
+          const multiple = this.config.safetySubmittedMultiple ?? safetySnapshot.safetySubmittedMultiple;
+          const cap = this.config.size * multiple;
+          if (this.submittedTotal + chunk > cap) {
+            this.log('error', 'safety_submitted_cap_reached', {
+              submittedTotal: this.submittedTotal,
+              wouldSubmit: chunk,
+              cap,
+              initialSize: this.config.size,
+              multiple,
+            });
+            break;
+          }
+          this.submittedTotal += chunk;
 
           // Write order_intent BEFORE createOrder (crash-safe)
           this.journal.append('order_intent', {
@@ -350,6 +385,7 @@ export class BuyRunner {
       avgPriceCents,
       feesIncurredDollars: this.feesIncurredDollars,
       remaining: this.remaining,
+      submittedTotal: this.submittedTotal,
       status,
     };
   }

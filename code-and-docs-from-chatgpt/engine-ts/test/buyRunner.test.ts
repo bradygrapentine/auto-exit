@@ -290,3 +290,134 @@ describe('run() convenience export', () => {
     expect(result.filled).toBe(100);
   });
 });
+
+describe('BuyRunner C1 — no double buy_loop_started on resume', () => {
+  it('writes buy_loop_started exactly once across crash + resume', async () => {
+    const jobId = generateJobId();
+
+    // Step 1: simulate a partial first run by pre-seeding a journal with
+    //         buy_loop_started + 200 filled/reconciled — as if crash happened mid-run.
+    const j = new Journal(jobId, tmpDir);
+    j.append('safety_loaded', { forbiddenCount: 0 });
+    j.append('buy_loop_started', { ticker: 'KXTEST', size: 500, remaining: 500 });
+    j.append('order_intent', {
+      clientOrderId: 'cloid-c1-1',
+      payload: { ticker: 'KXTEST', action: 'buy', side: 'yes', count: 200, type: 'limit', reduce_only: false, client_order_id: 'cloid-c1-1' },
+    });
+    j.append('order_placed', {
+      orderId: 'ord-c1-1',
+      payload: { ticker: 'KXTEST', action: 'buy', side: 'yes', count: 200, type: 'limit', reduce_only: false, client_order_id: 'cloid-c1-1' },
+      decisionRequested: 200,
+    });
+    j.append('order_reconciled', { orderId: 'ord-c1-1', status: 'filled', filled: 200, requested: 200, remainingPosition: 300 });
+
+    // Step 2: resume — should fill remaining 300 without writing a second buy_loop_started
+    const books = Array.from({ length: 5 }, () => askBook);
+    const behaviors = [{ fillCount: 300 }];
+    const mock = new MockKalshiClient({ orderbookSnapshots: books, behaviors });
+
+    const runner = new BuyRunner(
+      mock,
+      makeConfig({ size: 500, chunkSize: 300 }),
+      { keaHome: tmpDir, resumeFromJobId: jobId },
+    );
+    const result = await runner.run();
+
+    expect(result.status).toBe('complete');
+    expect(result.filled).toBeGreaterThanOrEqual(300);
+
+    const j2 = new Journal(jobId, tmpDir);
+    const entries = j2.readAll();
+    const loopStartedCount = entries.filter((e) => e.kind === 'buy_loop_started').length;
+    expect(loopStartedCount).toBe(1);
+  });
+});
+
+describe('BuyRunner C2 — safetySubmittedMultiple cap', () => {
+  it('stops after submitting size × multiple contracts', async () => {
+    // With safetySubmittedMultiple=1.0, cap = size (100).
+    // chunkSize=70: first order submits 70 (submittedTotal=70), fills 60, remaining=40.
+    // Second attempt chunk = min(70, 40) = 40. Cap check: 70+40=110 > 100 → break.
+    const books = Array.from({ length: 5 }, () => askBook);
+    const behaviors = [{ fillCount: 60 }, { fillCount: 40 }];
+    const mock = new MockKalshiClient({ orderbookSnapshots: books, behaviors });
+
+    const jobId = generateJobId();
+    const runner = new BuyRunner(
+      mock,
+      makeConfig({ size: 100, chunkSize: 70, safetySubmittedMultiple: 1.0 }),
+      { keaHome: tmpDir, resumeFromJobId: jobId },
+    );
+    const result = await runner.run();
+
+    // Cap was hit — only 1 createOrder call made (70 submitted, 60 filled, 40 remaining)
+    expect(mock.events.filter((e) => e === 'createOrder').length).toBe(1);
+    expect(result.submittedTotal).toBe(70);
+    expect(result.remaining).toBe(40);
+    expect(result.status).toBe('partial');
+  });
+});
+
+describe('BuyRunner I3 — crash-window resume via findOrderByClientOrderId', () => {
+  it('resumes via findOrderByClientOrderId when order_intent exists without order_placed', async () => {
+    const jobId = generateJobId();
+    const clientOrderId = 'cloid-buy-crash-window';
+
+    // 1. Create journal with order_intent for 200 contracts (no matching order_placed)
+    const j = new Journal(jobId, tmpDir);
+    j.append('safety_loaded', { forbiddenCount: 0 });
+    j.append('buy_loop_started', { ticker: 'KXTEST', size: 500, remaining: 500 });
+    j.append('order_intent', {
+      clientOrderId,
+      payload: {
+        ticker: 'KXTEST',
+        action: 'buy',
+        side: 'yes',
+        count: 200,
+        type: 'limit',
+        reduce_only: false,
+        client_order_id: clientOrderId,
+      },
+    });
+
+    // 2. Configure MockKalshiClient.findOrderByClientOrderId to return a filled order
+    const books = Array.from({ length: 5 }, () => askBook);
+    const behaviors = [{ fillCount: 300 }];
+    const mock = new MockKalshiClient({ orderbookSnapshots: books, behaviors });
+    mock['orders'].push({
+      orderId: 'ord-buy-exchange-456',
+      payload: {
+        ticker: 'KXTEST',
+        action: 'buy',
+        side: 'yes',
+        count: 200,
+        type: 'limit',
+        reduce_only: false,
+        client_order_id: clientOrderId,
+      },
+      filled: 200,
+      requested: 200,
+      status: 'filled',
+    } as any);
+
+    // 3. Run BuyRunner with size=500 — expect it starts with remaining=300 (500-200)
+    const runner = new BuyRunner(
+      mock,
+      makeConfig({ size: 500, chunkSize: 300 }),
+      { keaHome: tmpDir, resumeFromJobId: jobId },
+    );
+    const result = await runner.run();
+
+    expect(result.status).toBe('complete');
+    expect(result.remaining).toBe(0);
+    expect(mock.events).toContain('findOrderByClientOrderId');
+
+    // 4. Verify synthetic order_placed entry written for the recovered order
+    const j2 = new Journal(jobId, tmpDir);
+    const entries = j2.readAll();
+    const syntheticPlaced = entries.find(
+      (e) => e.kind === 'order_placed' && (e.data as any).orderId === 'ord-buy-exchange-456',
+    );
+    expect(syntheticPlaced).toBeDefined();
+  });
+});

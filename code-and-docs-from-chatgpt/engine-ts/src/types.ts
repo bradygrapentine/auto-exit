@@ -276,6 +276,11 @@ export interface BuyConfig {
   loopDelayMs?: number;
   dryRun?: boolean;
   jobId?: string;            // for resume
+  /** Override for the safety cap: max total submitted = size × multiple. Falls back to
+   *  SafetyConfig.safetySubmittedMultiple (default 1.5) if not set. */
+  safetySubmittedMultiple?: number;
+  reconcilePollMs?: number;
+  reconcileMaxPolls?: number;
   // mirrored from ExitConfig pattern:
   baseUrl?: string;
   orderbookDepth?: number;
@@ -293,6 +298,8 @@ export interface BuyResult {
   avgPriceCents: number;
   feesIncurredDollars: number;
   remaining: number;
+  /** Cumulative contracts submitted to the exchange (regardless of fill). */
+  submittedTotal: number;
   status: 'complete' | 'partial' | 'error';
 }
 
