@@ -15,6 +15,18 @@ import { KalshiClient } from './kalshiClient.js';
 import { KalshiAccountClient } from './accountClient.js';
 import { ExitRunner } from './exitRunner.js';
 import { loadConfig } from './config.js';
+import {
+  loadActive,
+  redactKeyId,
+  upsertProfile,
+  setActive,
+  removeProfile,
+  listProfiles,
+  validateKeyFile,
+  defaultBaseUrlFor,
+  KeaNotConfiguredError,
+} from './credentials.js';
+import readline from 'node:readline/promises';
 import type { ExitConfig, Orderbook } from './types.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
@@ -218,9 +230,76 @@ async function cmdJournal(flags: Record<string, string>) {
   }
 }
 
+function cmdWhoami(): void {
+  try {
+    const a = loadActive();
+    const isDemo = a.baseUrl.includes('demo');
+    process.stdout.write(`profile: ${a.profileName}${a.profileName === 'env' ? ' (env vars)' : ''}\n`);
+    process.stdout.write(`key id : ${redactKeyId(a.keyId)}\n`);
+    process.stdout.write(`baseUrl: ${a.baseUrl}${isDemo ? '  [DEMO]' : '  [PROD]'}\n`);
+  } catch (e) {
+    if (e instanceof KeaNotConfiguredError) die(e.message);
+    throw e;
+  }
+}
+
+async function promptIfMissing(label: string, current: string | undefined, fallback?: string): Promise<string> {
+  if (current) return current;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(fallback ? `${label} [${fallback}]: ` : `${label}: `)).trim();
+    return answer || fallback || '';
+  } finally {
+    rl.close();
+  }
+}
+
+async function cmdLogin(flags: Record<string, string>): Promise<void> {
+  const profile = await promptIfMissing('profile name', flags.profile, 'prod');
+  if (!profile) die('profile name required');
+  const keyId = await promptIfMissing('access key id', flags['key-id']);
+  if (!keyId) die('key id required');
+  const keyFile = await promptIfMissing('path to RSA private key', flags['key-file']);
+  if (!keyFile) die('key file required');
+  await validateKeyFile(keyFile);
+  const baseUrl = flags['base-url'] ?? defaultBaseUrlFor(profile);
+  upsertProfile(profile, { keyId, keyPath: keyFile, baseUrl });
+  ok(`saved profile '${profile}'`);
+  cmdWhoami();
+}
+
+function cmdUse(rest: string[]): void {
+  const name = rest[0];
+  if (!name) die('usage: kea use <profile>');
+  setActive(name);
+  cmdWhoami();
+}
+
+function cmdLogout(flags: Record<string, string>): void {
+  if (flags.all === 'true') {
+    for (const name of listProfiles()) removeProfile(name);
+    ok('removed all profiles');
+    return;
+  }
+  const name = flags.profile;
+  if (!name) die('usage: kea logout --profile <name> | --all');
+  removeProfile(name);
+  ok(`removed profile '${name}'`);
+}
+
 function cmdHelp() {
   process.stdout.write(`
 kea — Kalshi Exit Assistant CLI
+
+Account commands:
+  login [--profile <name>] [--key-id <id>] [--key-file <path>] [--base-url <url>]
+                                     Connect a Kalshi profile (prompts for missing fields)
+  use <profile>                      Switch active profile
+  whoami                             Show active profile (key id last-4 only)
+  logout [--profile <name>] [--all]  Remove a profile
+
+Credentials are stored at $KEA_HOME/credentials.json (chmod 600).
+File takes precedence over KALSHI_* env vars; env vars are a fallback.
 
 Read-only commands (no money moves):
   preview --config <path>            Project the full exit: gross, fees, net, per-level fills
@@ -234,7 +313,7 @@ Mutating commands (live):
   resume --job <id> --config <path>  Resume a journaled job
   cancel-resting --order-id <id>     Cancel a specific resting order
 
-Env required for live commands:
+Env fallback (used only when no profile is configured via \`kea login\`):
   KALSHI_ACCESS_KEY                  access key id
   KALSHI_PRIVATE_KEY_PATH            absolute path to RSA private key
   KALSHI_BASE_URL                    e.g. https://api.elections.kalshi.com/trade-api/v2
@@ -243,9 +322,14 @@ Env required for live commands:
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+function tryLoadBaseUrl(): string {
+  try { return loadActive().baseUrl; }
+  catch { return process.env.KALSHI_BASE_URL ?? 'https://api.elections.kalshi.com/trade-api/v2'; }
+}
+
 function makeMinimalConfig(ticker: string): ExitConfig {
   return {
-    baseUrl: process.env.KALSHI_BASE_URL ?? 'https://api.elections.kalshi.com/trade-api/v2',
+    baseUrl: tryLoadBaseUrl(),
     localServerPort: 0,
     marketTicker: ticker,
     heldSide: 'yes',
@@ -266,10 +350,10 @@ function makeMinimalConfig(ticker: string): ExitConfig {
 }
 
 // ── dispatch ──────────────────────────────────────────────────────────────────
-async function main() {
-  const argv = process.argv.slice(2);
+export async function runCli(argv: string[]): Promise<void> {
   const command = argv[0] ?? 'help';
-  const flags = parseFlags(argv.slice(1));
+  const rest = argv.slice(1);
+  const flags = parseFlags(rest);
 
   switch (command) {
     case 'preview': return cmdPreview(flags);
@@ -280,6 +364,10 @@ async function main() {
     case 'start': return cmdStart(flags);
     case 'resume': return cmdResume(flags);
     case 'journal': return cmdJournal(flags);
+    case 'whoami': return cmdWhoami();
+    case 'login': return cmdLogin(flags);
+    case 'use': return cmdUse(rest.filter((x) => !x.startsWith('--')));
+    case 'logout': return cmdLogout(flags);
     case 'help':
     case '--help':
     case '-h': return cmdHelp();
@@ -290,7 +378,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  process.stderr.write(`✗ ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  runCli(process.argv.slice(2)).catch((err) => {
+    process.stderr.write(`✗ ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}

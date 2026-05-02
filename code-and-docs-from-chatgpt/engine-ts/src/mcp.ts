@@ -26,6 +26,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { fetchBalance, fetchPositions, fetchRestingOrders, fetchOrderbook, fetchPreview, listJournalSummaries } from './tui/api.js';
 import { loadJournalReplay, replayAll } from './replay.js';
+import { loadActive } from './credentials.js';
 import type { ExitConfig, Side } from './types.js';
 
 function jsonContent(value: unknown) {
@@ -40,9 +41,14 @@ function errorContent(err: unknown) {
 // Engine config used when replay needs to re-run decideLosingExitOrder. Defaults
 // match the conservative `previewConfig` shape in src/tui/api.ts so replay reproduces
 // the same decisions the TUI's preview tab would.
+function tryLoadBaseUrl(): string {
+  try { return loadActive().baseUrl; }
+  catch { return process.env.KALSHI_BASE_URL ?? 'https://api.elections.kalshi.com/trade-api/v2'; }
+}
+
 function defaultEngineConfig(): ExitConfig {
   return {
-    baseUrl: process.env.KALSHI_BASE_URL ?? 'https://api.elections.kalshi.com/trade-api/v2',
+    baseUrl: tryLoadBaseUrl(),
     localServerPort: 0,
     marketTicker: 'PLACEHOLDER',
     heldSide: 'yes',
@@ -64,6 +70,25 @@ function defaultEngineConfig(): ExitConfig {
 
 export function buildMcpServer(): McpServer {
   const server = new McpServer({ name: 'kea-engine', version: '0.2.0' });
+
+  server.registerTool(
+    'kea_whoami',
+    {
+      description: 'Returns the active credentials profile (name, last-4 of key id, base URL, demo flag). Read-only; no secrets in response.',
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const a = loadActive();
+        return jsonContent({
+          activeProfile: a.profileName,
+          keyIdLast4: a.keyId.slice(-4),
+          baseUrl: a.baseUrl,
+          isDemo: a.baseUrl.includes('demo'),
+        });
+      } catch (err) { return errorContent(err); }
+    },
+  );
 
   server.registerTool(
     'kea_balance',

@@ -9,15 +9,21 @@ import type { ExitConfig } from '../src/types.js';
 // Generate a real RSA keypair so the signer doesn't error.
 const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const pemPath = path.join(os.tmpdir(), `kea-test-key-${Date.now()}.pem`);
+let prevAccessKey: string | undefined;
+let prevKeyPath: string | undefined;
 beforeAll(() => {
   fs.writeFileSync(pemPath, privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
-  process.env.KEA_TEST_KEY = 'test-access-key';
-  process.env.KEA_TEST_KEY_PATH = pemPath;
+  // loadActive() reads KALSHI_ACCESS_KEY / KALSHI_PRIVATE_KEY_PATH (env fallback when no
+  // credentials.json present). Seed those so signing tests have credentials available.
+  prevAccessKey = process.env.KALSHI_ACCESS_KEY;
+  prevKeyPath = process.env.KALSHI_PRIVATE_KEY_PATH;
+  process.env.KALSHI_ACCESS_KEY = 'test-access-key';
+  process.env.KALSHI_PRIVATE_KEY_PATH = pemPath;
 });
 afterAll(() => {
   fs.rmSync(pemPath);
-  delete process.env.KEA_TEST_KEY;
-  delete process.env.KEA_TEST_KEY_PATH;
+  if (prevAccessKey !== undefined) process.env.KALSHI_ACCESS_KEY = prevAccessKey; else delete process.env.KALSHI_ACCESS_KEY;
+  if (prevKeyPath !== undefined) process.env.KALSHI_PRIVATE_KEY_PATH = prevKeyPath; else delete process.env.KALSHI_PRIVATE_KEY_PATH;
 });
 
 const cfg: ExitConfig = {
@@ -105,13 +111,13 @@ describe('KalshiAccountClient.getPosition (mocked fetch)', () => {
   });
 
   it('throws when env vars are unset', async () => {
-    const k = process.env.KEA_TEST_KEY;
-    delete process.env.KEA_TEST_KEY;
+    const k = process.env.KALSHI_ACCESS_KEY;
+    delete process.env.KALSHI_ACCESS_KEY;
     try {
       const client = new KalshiAccountClient(cfg);
-      await expect(client.getPosition('KXTEST')).rejects.toThrow(/Missing/);
+      await expect(client.getPosition('KXTEST')).rejects.toThrow(/No Kalshi credentials configured/);
     } finally {
-      process.env.KEA_TEST_KEY = k;
+      if (k !== undefined) process.env.KALSHI_ACCESS_KEY = k;
     }
   });
 });

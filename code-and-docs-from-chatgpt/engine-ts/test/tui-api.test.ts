@@ -61,7 +61,7 @@ describe('tui/api fetchBalance', () => {
     try {
       const { fetchBalance } = await import('../src/tui/api.js');
       mockFetch(async () => new Response('{}', { status: 200 }));
-      await expect(fetchBalance()).rejects.toThrow(/Missing KALSHI_ACCESS_KEY/);
+      await expect(fetchBalance()).rejects.toThrow(/No Kalshi credentials configured/);
     } finally {
       process.env.KALSHI_ACCESS_KEY = saved;
     }
@@ -73,7 +73,7 @@ describe('tui/api fetchBalance', () => {
     try {
       const { fetchBalance } = await import('../src/tui/api.js');
       mockFetch(async () => new Response('{}', { status: 200 }));
-      await expect(fetchBalance()).rejects.toThrow(/Missing KALSHI_ACCESS_KEY/);
+      await expect(fetchBalance()).rejects.toThrow(/No Kalshi credentials configured/);
     } finally {
       process.env.KALSHI_PRIVATE_KEY_PATH = saved;
     }
@@ -90,6 +90,35 @@ describe('tui/api fetchBalance', () => {
       await fetchBalance();
     } finally {
       delete process.env.KALSHI_BASE_URL;
+    }
+  });
+});
+
+describe('tui/api uses loadActive credentials', () => {
+  it('signs requests with credentials-file profile (no env vars)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kea-home-'));
+    const prevHome = process.env.KEA_HOME;
+    const prevKey = process.env.KALSHI_ACCESS_KEY;
+    const prevPath = process.env.KALSHI_PRIVATE_KEY_PATH;
+    process.env.KEA_HOME = dir;
+    delete process.env.KALSHI_ACCESS_KEY;
+    delete process.env.KALSHI_PRIVATE_KEY_PATH;
+    try {
+      const { upsertProfile } = await import('../src/credentials.js');
+      upsertProfile('prod', { keyId: 'TUIKEY', keyPath: pemPath, baseUrl: 'https://api.elections.kalshi.com/trade-api/v2' });
+      const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ balance: 1500, portfolio_value: 0 }), { status: 200 }));
+      vi.stubGlobal('fetch', fetchSpy);
+      const { fetchBalance } = await import('../src/tui/api.js');
+      const r = await fetchBalance();
+      expect(r.balanceDollars).toBe(15);
+      const init = fetchSpy.mock.calls[0][1] as RequestInit;
+      const headers = init.headers as Record<string, string>;
+      expect(headers['KALSHI-ACCESS-KEY']).toBe('TUIKEY');
+    } finally {
+      if (prevHome !== undefined) process.env.KEA_HOME = prevHome; else delete process.env.KEA_HOME;
+      if (prevKey !== undefined) process.env.KALSHI_ACCESS_KEY = prevKey; else delete process.env.KALSHI_ACCESS_KEY;
+      if (prevPath !== undefined) process.env.KALSHI_PRIVATE_KEY_PATH = prevPath; else delete process.env.KALSHI_PRIVATE_KEY_PATH;
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });
