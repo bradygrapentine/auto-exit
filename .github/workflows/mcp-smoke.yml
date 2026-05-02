@@ -2,10 +2,6 @@ name: mcp-smoke
 on:
   workflow_dispatch:
   pull_request:
-    paths:
-      - 'code-and-docs-from-chatgpt/engine-ts/src/**'
-      - 'code-and-docs-from-chatgpt/engine-ts/scripts/**'
-      - 'code-and-docs-from-chatgpt/engine-ts/test/harness/**'
   schedule:
     - cron: '0 12 * * *'  # daily at 12:00 UTC
 jobs:
