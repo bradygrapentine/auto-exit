@@ -19,6 +19,7 @@
  *   kea_forbidden_list— list forbidden tickers
  *   kea_forbidden_add — add a ticker to the forbidden list
  *   kea_forbidden_remove — remove a ticker from the forbidden list
+ *   kea_harvest_planner — EV-weighted harvest vs hold analysis
  *
  * Run: `npx tsx src/mcp.ts` (stdio transport — register in your MCP host config).
  */
@@ -33,6 +34,7 @@ import { fetchBalance, fetchPositions, fetchRestingOrders, fetchOrderbook, fetch
 import { loadJournalReplay, replayAll } from './replay.js';
 import { loadActive } from './credentials.js';
 import { getSafety, setSafety, listForbidden, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
+import { computeHarvestPlan } from './harvestPlanner.js';
 import type { ExitConfig, Side } from './types.js';
 
 function jsonContent(value: unknown) {
@@ -303,6 +305,30 @@ export function buildMcpServer(): McpServer {
       try {
         removeForbiddenTicker(ticker);
         return jsonContent({ removed: ticker });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_harvest_planner',
+    {
+      description: 'EV-weighted harvest vs hold analysis. Computes EV crossover, risk-reduction table, Greeks, and suggested strategies for a binary position.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        position: z.number().int().positive().describe('Number of contracts held'),
+        costBasisCents: z.number().nonnegative().describe('Total cost basis in cents'),
+        marketP: z.number().min(0).max(1).describe('Market-implied probability (current bid / 100)'),
+        privateP: z.number().min(0).max(1).describe("Operator's private probability estimate"),
+        catalystType: z.enum(['soft', 'hard']).describe('Catalyst type'),
+        catalystExpectedDate: z.string().optional().describe('ISO8601 expected catalyst date (for theta)'),
+        payoutCents: z.number().optional().describe('Payout in cents per contract (default 100)'),
+      },
+    },
+    async (args) => {
+      try {
+        const orderbook = await fetchOrderbook(args.ticker);
+        const plan = computeHarvestPlan({ ...args, side: 'sell' }, orderbook);
+        return jsonContent(plan);
       } catch (err) { return errorContent(err); }
     },
   );

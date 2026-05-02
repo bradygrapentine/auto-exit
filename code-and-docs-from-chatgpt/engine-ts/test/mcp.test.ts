@@ -72,6 +72,7 @@ describe('MCP server — tool registration', () => {
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'kea_balance', 'kea_forbidden_add', 'kea_forbidden_list', 'kea_forbidden_remove',
+      'kea_harvest_planner',
       'kea_journal_list', 'kea_journal_read',
       'kea_orderbook', 'kea_positions', 'kea_preview',
       'kea_replay', 'kea_resting_orders',
@@ -487,6 +488,59 @@ describe('MCP server — error surfacing', () => {
     (listJournalSummaries as ReturnType<typeof vi.fn>).mockImplementationOnce(() => { throw new Error('disk fail'); });
     const { client } = await connect();
     const res = await client.callTool({ name: 'kea_journal_list', arguments: {} });
+    expect(res.isError).toBe(true);
+  });
+});
+
+describe('MCP server — kea_harvest_planner', () => {
+  it('returns pStar and harvestIsEvPositive for worked example', async () => {
+    // fetchOrderbook mock returns { yes: [{ priceCents: 30, size: 100 }], no: [] }
+    // We override it for this test with a more realistic orderbook
+    const { fetchOrderbook } = await import('../src/tui/api.js');
+    (fetchOrderbook as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      yes: [{ priceCents: 72, size: 200 }, { priceCents: 71, size: 150 }],
+      no: [{ priceCents: 27, size: 300 }],
+    });
+
+    const { client } = await connect();
+    const res = await client.callTool({
+      name: 'kea_harvest_planner',
+      arguments: {
+        ticker: 'TEST-MARKET',
+        position: 500,
+        costBasisCents: 4500,
+        marketP: 0.72,
+        privateP: 0.80,
+        catalystType: 'soft',
+        payoutCents: 100,
+      },
+    });
+
+    const parsed = parseJsonResult(res);
+    // pStar = privateP = 0.80
+    expect(parsed.pStar).toBeCloseTo(0.80, 10);
+    // harvestIsEvPositive = false (marketP 0.72 < pStar 0.80)
+    expect(parsed.harvestIsEvPositive).toBe(false);
+    // evHold = $400, evHarvestNow = $360
+    expect(parsed.evHold).toBeCloseTo(400, 10);
+    expect(parsed.evHarvestNow).toBeCloseTo(360, 10);
+  });
+
+  it('returns isError when fetchOrderbook fails', async () => {
+    const { fetchOrderbook } = await import('../src/tui/api.js');
+    (fetchOrderbook as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('orderbook fail'));
+    const { client } = await connect();
+    const res = await client.callTool({
+      name: 'kea_harvest_planner',
+      arguments: {
+        ticker: 'TEST-MARKET',
+        position: 500,
+        costBasisCents: 4500,
+        marketP: 0.72,
+        privateP: 0.80,
+        catalystType: 'soft',
+      },
+    });
     expect(res.isError).toBe(true);
   });
 });
