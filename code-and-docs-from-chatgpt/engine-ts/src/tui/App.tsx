@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Box, Text, useApp, useInput, useStdout } from 'ink';
+import { Box, Text, useApp, useInput, useStdin, useStdout } from 'ink';
 import {
   fetchBalance, fetchPositions, fetchRestingOrders, fetchPreview, fetchOrderbook, listJournalSummaries,
   type BalanceData, type PositionRow, type RestingOrderRow, type PreviewResult, type JournalSummary,
@@ -45,7 +45,11 @@ export function App() {
     return () => clearInterval(t);
   }, [refreshDashboard]);
 
-  const isTTY = Boolean(process.stdin.isTTY);
+  // Guard useInput against non-raw-mode stdin (piping, redirected, test harness).
+  // ink's useStdin reports whether the bound stdin supports raw mode; this is the
+  // right signal in both production (real TTY) and ink-testing-library (mock stdin).
+  const stdinInfo = useStdin();
+  const isInteractive = stdinInfo.isRawModeSupported;
   useInput(
     (input, key) => {
       if (input === 'q' || input === 'Q') { exit(); return; }
@@ -66,7 +70,7 @@ export function App() {
         }
       }
     },
-    { isActive: isTTY },
+    { isActive: isInteractive },
   );
 
   return (

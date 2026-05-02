@@ -2,15 +2,16 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    include: ['test/**/*.test.ts'],
+    include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
     exclude: ['node_modules/**', 'dist/**', 'worktrees/**'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'text-summary', 'json-summary'],
-      include: ['src/**/*.ts'],
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
       exclude: [
         'src/cli.ts',          // tiny entrypoint, no logic
         'src/server.ts',       // HTTP plumbing covered indirectly via integration; not unit-tested
+        'src/tui.tsx',         // tiny entrypoint that just renders <App />
         'src/**/*.d.ts',
       ],
       thresholds: {
