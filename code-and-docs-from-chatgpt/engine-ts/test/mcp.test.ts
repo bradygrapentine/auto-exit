@@ -73,7 +73,7 @@ describe('MCP server — tool registration', () => {
     expect(names).toEqual([
       'kea_balance', 'kea_journal_list', 'kea_journal_read',
       'kea_orderbook', 'kea_positions', 'kea_preview',
-      'kea_replay', 'kea_resting_orders',
+      'kea_replay', 'kea_resting_orders', 'kea_whoami',
     ]);
     // No mutating tool is exposed in this slice.
     expect(names.find((n) => /create|cancel|exit|sell|buy/.test(n))).toBeUndefined();
@@ -178,6 +178,32 @@ describe('MCP server — read-only tools', () => {
     const { client } = await connect();
     const res = await client.callTool({ name: 'kea_replay', arguments: { jobId: 'nope' } });
     expect(res.isError).toBe(true);
+  });
+});
+
+describe('kea_whoami', () => {
+  it('returns active profile, last-4 key id, baseUrl, isDemo', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kea-home-'));
+    const prevHome = process.env.KEA_HOME;
+    process.env.KEA_HOME = dir;
+    try {
+      const FIXTURE = path.resolve(__dirname, 'fixtures/test-rsa.pem');
+      const { upsertProfile } = await import('../src/credentials.js');
+      upsertProfile('demo', { keyId: 'AKID-DEMO-WXYZ', keyPath: FIXTURE, baseUrl: 'https://demo-api.kalshi.co/trade-api/v2' });
+      const { client } = await connect();
+      const result = await client.callTool({ name: 'kea_whoami', arguments: {} }) as { content: Array<{ text: string }> };
+      const payload = JSON.parse(result.content[0].text);
+      expect(payload).toEqual({
+        activeProfile: 'demo',
+        keyIdLast4: 'WXYZ',
+        baseUrl: 'https://demo-api.kalshi.co/trade-api/v2',
+        isDemo: true,
+      });
+      expect(result.content[0].text).not.toContain('AKID-DEMO-WXYZ');
+    } finally {
+      if (prevHome !== undefined) process.env.KEA_HOME = prevHome; else delete process.env.KEA_HOME;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -72,6 +72,25 @@ export function buildMcpServer(): McpServer {
   const server = new McpServer({ name: 'kea-engine', version: '0.2.0' });
 
   server.registerTool(
+    'kea_whoami',
+    {
+      description: 'Returns the active credentials profile (name, last-4 of key id, base URL, demo flag). Read-only; no secrets in response.',
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const a = loadActive();
+        return jsonContent({
+          activeProfile: a.profileName,
+          keyIdLast4: a.keyId.slice(-4),
+          baseUrl: a.baseUrl,
+          isDemo: a.baseUrl.includes('demo'),
+        });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
     'kea_balance',
     {
       description: 'Returns the trading account balance and total portfolio value in dollars.',
