@@ -4,15 +4,14 @@ Last `/backlog-sync`: 2026-05-02
 
 | Status | Count |
 |--------|-------|
-| 🚨 Critical fix (W1.4 journal bug) | 1 |
-| 🟡 Plan ready | 1 |
+| 🟡 Plan ready / in progress | 2 |
 | 🧊 Foundation (W1) | 3 |
 | 🧊 Strategy library (S) | 16 |
 | 🧊 Cross-cutting (W3) | 3 |
 | 🧊 Decision + optimization (W4) | 4 |
-| 🧊 Surface parity (SP1–SP4) | 14 |
+| 🧊 Surface parity (SP1–SP4) | 17 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 3 |
+| ✅ Shipped (this log) | 7 |
 
 This file is split into three sequences plus two ledgers. The
 **Algorithmic enhancement sequence** runs W1 (foundation) → S (unified
@@ -102,7 +101,9 @@ CLI/MCP/TUI surfaces inherit from W1.1 patterns.
 **Why third:** every strategy in S should refuse to start when a risk
 envelope is breached. Cleaner to add the check once, before each strategy.
 
-### 🚨 W1.4 — Journal pre-call ordering bug fix
+### 🟡 W1.4 — Journal pre-call ordering bug fix
+
+**Status:** in flight as `chore/dispatch-journal-bug-fix`.
 
 **Trigger (Sonnet A code review, 2026-05-02):** at `exitRunner.ts:350-363`,
 the `order_placed` journal entry is written *after* `createOrder` returns,
@@ -1027,6 +1028,26 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-02 — Account connect (CLI / TUI / MCP).** Named credential profiles
+  persisted in `$KEA_HOME/credentials.json` (atomic write, `0o600`). CLI: `kea
+  login`, `kea use`, `kea logout`, `kea whoami`. TUI: Account tab with `s`-key
+  profile switch. MCP: `kea_whoami` read-only tool. All surfaces fall back to
+  env vars when no profile is active. See `feat/account-connect`.
+
+- **2026-05-02 — Read-only MCP server.** Claude tool interface (`kea_balance`,
+  `kea_positions`, `kea_orderbook`, `kea_preview`, `kea_journal_list`,
+  `kea_journal_read`, `kea_replay`, `kea_resting_orders`). 95% test coverage
+  with real end-to-end pipeline tests. See `feat(mcp)`.
+
+- **2026-05-02 — Ink TUI (read-only dashboard).** Multi-tab terminal app:
+  positions, orderbook, preview, and journal views. Live smoke test suite
+  renders each tab against prod read-only endpoint. See `feat(tui)`.
+
+- **2026-05-02 — Journal replay + live-capture.** `replayJob` reconstructs job
+  state from JSONL journal; live-capture script records real execution traces
+  for fixture use. End-to-end replay tests validate resume semantics. See
+  `feat(replay)`.
 
 - **2026-05-01 — Auto-adaptive chunking.** `mildAdaptive` is now optional. When
   omitted, `chooseChunkSize` auto-decides: fat top (≥ 5× chunkSize) → fixed;
