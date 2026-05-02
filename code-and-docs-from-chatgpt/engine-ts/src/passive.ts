@@ -128,7 +128,7 @@ export async function run(
   const loopDelayMs = config.loopDelayMs ?? DEFAULT_LOOP_DELAY_MS;
   const kalshiSide = config.ticker.endsWith('_NO') ? 'no' : 'yes';
 
-  // Effective floor for sell side: tighter of SafetyConfig.floorPriceCents and config.minPriceCents
+  // Effective floor for sell side: Math.max is correct because higher floor = tighter constraint for seller
   const effectiveFloorCents =
     config.side === 'sell'
       ? Math.max(safety.floorPriceCents, config.minPriceCents ?? 0)

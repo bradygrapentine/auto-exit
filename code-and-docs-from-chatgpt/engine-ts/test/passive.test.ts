@@ -42,45 +42,6 @@ afterEach(() => {
 
 // ── Orderbook fixtures ────────────────────────────────────────────────────────
 
-/**
- * A normal spread book:
- *   YES asks at 55¢ (sellers of YES)
- *   NO asks at 40¢ → implied YES bid = 100 - 40 = 60... wait, that gives bid > ask.
- *
- * Let's use a realistic Kalshi spread:
- *   YES ask = 55¢ (seller wants 55¢ for YES)
- *   NO ask  = 50¢ → implied YES bid = 100 - 50 = 50¢
- *   spread  = 55 - 50 = 5¢
- *
- * sell initial price: ask - 1 = 54¢
- * buy  initial price: bid + 1 = 51¢
- */
-const spreadBook: Orderbook = {
-  yes: [{ priceCents: 55, size: 10000 }],
-  no: [{ priceCents: 45, size: 10000 }],  // implied YES bid = 100 - 45 = 55... hmm
-};
-
-// Let's recalculate: NO ask at 45¢ → implied YES bid = 100 - 45 = 55¢.
-// That equals YES ask = 55¢ → spread = 0. Bad.
-// Use: YES ask = 60¢, NO ask = 35¢ → implied YES bid = 65¢. Still bad (bid > ask).
-//
-// Kalshi invariant: YES ask + NO ask ≈ 100¢ (complementary).
-// So NO ask = 100 - YES ask = 100 - 60 = 40¢, implied YES bid = 100 - NO ask = 100 - 40 = 60¢ (no spread).
-// In practice: YES ask < implied YES bid is impossible; NO ask = 100 - YES bid.
-//
-// Correct relationship:
-//   YES bid + NO ask = 100 (buyer of YES at X, seller of NO at 100-X)
-//   YES ask + NO bid = 100
-//   spread = YES ask - YES bid = YES ask - (100 - NO ask)
-//
-// For a 5¢ spread:
-//   YES ask = 55¢, YES bid = 50¢
-//   NO ask  = 100 - YES bid = 50¢
-//   Verify: implied YES bid = 100 - NO ask = 100 - 50 = 50¢ ✓
-//   spread = 55 - 50 = 5¢ ✓
-//
-// So: yes: [{priceCents: 55}], no: [{priceCents: 50}]
-
 const normalBook: Orderbook = {
   yes: [{ priceCents: 55, size: 10000 }], // best YES ask = 55¢
   no: [{ priceCents: 50, size: 10000 }],  // best NO ask = 50¢ → implied YES bid = 50¢
@@ -402,10 +363,9 @@ describe('passive: error handling', () => {
       makeConfig({ size: 100, chunkSize: 100, passiveTimeboxMs: 1 }),
     );
 
-    // After getOrder throws: break from poll → cancel → walk tick → second order fills
-    expect(result.filled).toBeGreaterThanOrEqual(0);
-    // Either filled (if cancel path worked) or partial
-    expect(['complete', 'partial']).toContain(result.status);
+    // After getOrder throws: break from poll → cancel (filledCount: 0) → walk tick → second order fills
+    expect(result.filled).toBe(100);
+    expect(result.status).toBe('complete');
   });
 
   it('continues when cancelOrder throws (ignores cancel error, walks tick)', async () => {
@@ -469,5 +429,24 @@ describe('passive: loopDelayMs > 0', () => {
     // Just verify it ran correctly — timing assertions are fragile but loopDelayMs path is covered
     expect(result.status).toBe('complete');
     expect(result.filled).toBe(100);
+  });
+});
+
+describe('passive: multi-chunk outer loop', () => {
+  it('fills chunk 1 then chunk 2, total filled === 200', async () => {
+    // size: 200, chunkSize: 100 — two outer-loop iterations
+    // chunk 1 fills on first iter, chunk 2 fills on first iter
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [normalBook, normalBook],
+      behaviors: [
+        { fillCount: 100 }, // chunk 1: immediate fill
+        { fillCount: 100 }, // chunk 2: immediate fill
+      ],
+    });
+    const result = await run(mock, makeConfig({ size: 200, chunkSize: 100 }));
+
+    expect(result.filled).toBe(200);
+    expect(result.status).toBe('complete');
+    expect(result.remaining).toBe(0);
   });
 });
