@@ -14,6 +14,11 @@
  *   kea_journal_list  — recent jobs from $KEA_HOME/jobs
  *   kea_journal_read  — full journal contents for one jobId
  *   kea_replay        — replay a journal: assert engine reproduces every recorded decision
+ *   kea_safety_get    — read current safety config
+ *   kea_safety_set    — update scalar safety fields
+ *   kea_forbidden_list— list forbidden tickers
+ *   kea_forbidden_add — add a ticker to the forbidden list
+ *   kea_forbidden_remove — remove a ticker from the forbidden list
  *
  * Run: `npx tsx src/mcp.ts` (stdio transport — register in your MCP host config).
  */
@@ -27,6 +32,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { fetchBalance, fetchPositions, fetchRestingOrders, fetchOrderbook, fetchPreview, listJournalSummaries } from './tui/api.js';
 import { loadJournalReplay, replayAll } from './replay.js';
 import { loadActive } from './credentials.js';
+import { getSafety, setSafety, listForbidden, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
 import type { ExitConfig, Side } from './types.js';
 
 function jsonContent(value: unknown) {
@@ -226,6 +232,77 @@ export function buildMcpServer(): McpServer {
           })),
           allMatch: results.every((r) => r.decisionMatches),
         });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_safety_get',
+    {
+      description: 'Returns the current safety guard-rail config (safetySubmittedMultiple, floorPriceCents, tailSweepThreshold, forbiddenTickers).',
+      inputSchema: {},
+    },
+    () => {
+      try { return jsonContent(getSafety()); }
+      catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_safety_set',
+    {
+      description: 'Update one or more scalar safety fields. Guard-rails only tighten at job start — setting a looser value here is stored but will only apply if the job config is also loose.',
+      inputSchema: {
+        safetySubmittedMultiple: z.number().min(1.0).max(1.2).optional().describe('Multiplier cap on submitted shares [1.0, 1.2]'),
+        floorPriceCents: z.number().int().min(0).max(99).optional().describe('Minimum sell price in cents [0, 99]'),
+        tailSweepThreshold: z.number().min(0).max(1_000_000).optional().describe('Tail sweep threshold [0, 1_000_000]'),
+      },
+    },
+    (args) => {
+      try { return jsonContent(setSafety(args)); }
+      catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_forbidden_list',
+    {
+      description: 'Lists all tickers on the forbidden list. The engine refuses to run against these.',
+      inputSchema: {},
+    },
+    () => {
+      try { return jsonContent({ forbidden: listForbidden() }); }
+      catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_forbidden_add',
+    {
+      description: 'Add a ticker to the forbidden list. The engine will refuse to run against it.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        reason: z.string().min(1).describe('Why this ticker is forbidden'),
+      },
+    },
+    ({ ticker, reason }) => {
+      try { return jsonContent(addForbiddenTicker(ticker, reason, 'mcp')); }
+      catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_forbidden_remove',
+    {
+      description: 'Remove a ticker from the forbidden list.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker to unblock'),
+      },
+    },
+    ({ ticker }) => {
+      try {
+        removeForbiddenTicker(ticker);
+        return jsonContent({ removed: ticker });
       } catch (err) { return errorContent(err); }
     },
   );
