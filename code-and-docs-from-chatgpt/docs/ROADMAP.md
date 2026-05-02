@@ -1,31 +1,25 @@
 # Roadmap: CLI First → Local Extension → SaaS
 
-## Phase 0 — CLI proof
+## Phase 0 — CLI proof ✅
 
-Validate the hard part locally:
+Validated:
 
-- API auth
-- orderbook parsing
-- full-depth cumulative pricing
-- order payload shape
-- dry-run execution logs
-- tiny live-size test
+- ✅ API auth (PSS signing, full-path message)
+- ✅ orderbook parsing (`_fp` suffix, deci-cent ticks below 10¢)
+- ✅ full-depth cumulative pricing
+- ✅ order payload shape (FixedPointDollars strings, IoC + GTC)
+- ✅ dry-run execution logs
+- ✅ tiny live-size test (Phase 1: 5,000 P1 shares exited cleanly; smoke + resume tests since)
 
-## Phase 1 — Local engine bridge
+## Phase 1 — Local engine bridge ✅
 
-Added in this package:
+- ✅ local HTTP server on `127.0.0.1:7777`
+- ✅ `/health` `/preview` `/start` `/stop` `/status` `/preflight` `/resume`
+- ✅ Chrome extension messaging to local server
 
-- local HTTP server on `127.0.0.1:7777`
-- `/health`
-- `/preview`
-- `/start`
-- `/stop`
-- `/status`
-- Chrome extension messaging to local server
+## Phase 2 — Extension polish (in progress)
 
-## Phase 2 — Extension polish
-
-Next work:
+Remaining work:
 
 - auto-detect market ticker more robustly
 - optionally read position size from page if available
@@ -34,17 +28,19 @@ Next work:
 - execution summary report
 - persistent saved presets
 
-## Phase 3 — Engine hardening
+## Phase 3 — Engine hardening ✅
 
-Before any broader release:
+All shipped:
 
-- true fill reconciliation before decrementing remaining size
-- cancel/retry handling
-- partial fill support
-- position refresh from Kalshi account endpoint
-- structured logs to disk
-- crash-safe resume
-- test adapter with mock orderbooks
+- ✅ true fill reconciliation before decrementing remaining size
+- ✅ cancel/retry handling (`reconcileMaxPolls`, `cancelOnStale`)
+- ✅ partial fill support
+- ✅ position refresh from Kalshi account endpoint (`preflight`)
+- ✅ structured logs to disk (append-only JSONL journal)
+- ✅ crash-safe resume (live-validated — see `RESUME_LIVE_TEST_PLAN.md`)
+- ✅ test adapter with mock orderbooks (`MockKalshiClient`)
+- ✅ runtime safety cap (`safetySubmittedMultiple`) + forbidden-tickers guard
+- ✅ auto-adaptive chunking (heuristic-based, no flag needed)
 
 ## Phase 4 — Winning exits
 

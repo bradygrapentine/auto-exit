@@ -88,6 +88,60 @@ describe('chooseChunkSize adaptive path', () => {
   });
 });
 
+describe('chooseChunkSize auto-adaptive heuristic (mildAdaptive undefined)', () => {
+  // baseCfg has mildAdaptive: false; strip it to exercise the auto path.
+  const autoCfg: ExitConfig = { ...baseCfg, minAdaptiveChunk: 5 };
+  delete (autoCfg as Partial<ExitConfig>).mildAdaptive;
+
+  it('uses fixed chunk when top is fat (>= 5x chunkSize)', () => {
+    // chunkSize=50, top=300 (≥ 250). Auto says fixed.
+    const levels = [
+      { priceCents: 9, size: 300 },
+      { priceCents: 5, size: 100 }, // big cliff but irrelevant — top is fat
+    ];
+    expect(chooseChunkSize(200, autoCfg, levels)).toBe(50);
+  });
+
+  it('uses adaptive when top is thin AND next level is a cliff (>= 0.2¢ below)', () => {
+    // chunkSize=50, top=20 @ 0.9¢, next=1000 @ 0.5¢. 0.4¢ gap → cliff. 0.8 * 20 = 16.
+    const levels = [
+      { priceCents: 0.9, size: 20 },
+      { priceCents: 0.5, size: 1000 },
+    ];
+    expect(chooseChunkSize(200, autoCfg, levels)).toBe(16);
+  });
+
+  it('uses fixed when top is thin but next level is shallow (< 0.2¢ gap)', () => {
+    // chunkSize=50, top=20 @ 0.9¢, next=20 @ 0.8¢. 0.1¢ gap → not a cliff. Fixed.
+    const levels = [
+      { priceCents: 0.9, size: 20 },
+      { priceCents: 0.8, size: 20 },
+    ];
+    expect(chooseChunkSize(200, autoCfg, levels)).toBe(50);
+  });
+
+  it('uses fixed when only one level exists (no cliff to dodge)', () => {
+    const levels = [{ priceCents: 5, size: 30 }];
+    expect(chooseChunkSize(200, autoCfg, levels)).toBe(50);
+  });
+
+  it('explicit mildAdaptive: false bypasses auto and forces fixed even on cliff books', () => {
+    const cfg: ExitConfig = { ...autoCfg, mildAdaptive: false };
+    const levels = [
+      { priceCents: 0.9, size: 20 },
+      { priceCents: 0.5, size: 1000 },
+    ];
+    expect(chooseChunkSize(200, cfg, levels)).toBe(50);
+  });
+
+  it('explicit mildAdaptive: true forces adaptive even on fat-top books', () => {
+    const cfg: ExitConfig = { ...autoCfg, mildAdaptive: true };
+    const levels = [{ priceCents: 9, size: 300 }];
+    // 0.8 * 300 = 240, capped at chunkSize=50.
+    expect(chooseChunkSize(200, cfg, levels)).toBe(50);
+  });
+});
+
 describe('normalizeLevels filters', () => {
   it('drops zero-or-negative prices', () => {
     const got = normalizeLevels([

@@ -29,7 +29,12 @@ export interface ExitConfig {
   orderbookDepth: number;
   minLevelSize: number;
   tailSweepThreshold: number;
-  mildAdaptive: boolean;
+  /**
+   * Adaptive chunk sizing. Leave undefined to let the engine auto-decide based on book shape:
+   * thin top + cliff → adaptive (avoid sweeping into worse prices); fat top → fixed (no benefit).
+   * Set true to force adaptive, false to force fixed (legacy explicit override).
+   */
+  mildAdaptive?: boolean;
   minAdaptiveChunk: number;
   maxOrders: number;
   loopDelayMs: number;
@@ -71,6 +76,13 @@ export interface ExitConfig {
    * If set, decideLosingExitOrder uses max(top_bid, gtcMinPriceDollars).
    */
   gtcMinPriceDollars?: string;
+  /**
+   * Test-only knob: sleep N ms between writing the `order_placed` journal entry and
+   * starting reconciliation. Used to deterministically reproduce the crash-mid-flight
+   * scenario for the resume test (RESUME_LIVE_TEST_PLAN.md). Default 0. NEVER set in
+   * production configs — it stalls every order placement.
+   */
+  deliberatePauseAfterPlaceMs?: number;
 }
 
 export type ExitConfigPatch = Partial<ExitConfig> & Pick<ExitConfig, 'marketTicker' | 'heldSide' | 'positionSize'>;

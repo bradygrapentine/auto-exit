@@ -55,14 +55,33 @@ export function selectExecutablePrice(
   };
 }
 
+/** True when the top of book is thin AND the next level is a real cliff (≥ 2 deci-cent ticks
+ *  below). In that shape, fixed chunkSize would sweep through the cliff and take a worse blended
+ *  price, so we shrink the chunk to fit the top level. Fat tops or shallow cliffs see no benefit
+ *  from adaptive sizing — selectExecutablePrice already prices each chunk at the level needed. */
+function shouldAutoAdapt(levels: PriceLevel[], chunkSize: number): boolean {
+  const top = levels[0];
+  if (!top) return false;
+  if (top.size >= 5 * chunkSize) return false; // fat top — fixed chunk fits comfortably
+  const next = levels[1];
+  if (!next) return false;                     // single-level book — no cliff to dodge
+  return top.priceCents - next.priceCents >= 0.2; // ≥ 2 deci-cent ticks gap
+}
+
 export function chooseChunkSize(remaining: number, config: ExitConfig, rawLevels: PriceLevel[]): number {
   const fixed = Math.min(config.chunkSize, remaining);
   if (remaining <= config.tailSweepThreshold) return remaining;
-  if (!config.mildAdaptive) return fixed;
+  // Explicit opt-out: caller pinned the strategy to fixed. Skip the heuristic.
+  if (config.mildAdaptive === false) return fixed;
 
   const levels = normalizeLevels(rawLevels, config.minLevelSize);
-  const topSize = levels[0]?.size ?? 0;
-  const adaptive = Math.floor(topSize * 0.8);
+  if (levels.length === 0) return fixed;
+
+  // mildAdaptive === true forces adaptive; undefined runs the auto heuristic.
+  const useAdaptive = config.mildAdaptive === true || shouldAutoAdapt(levels, config.chunkSize);
+  if (!useAdaptive) return fixed;
+
+  const adaptive = Math.floor(levels[0].size * 0.8);
   const bounded = Math.max(config.minAdaptiveChunk, Math.min(config.chunkSize, adaptive));
   return Math.min(remaining, bounded);
 }

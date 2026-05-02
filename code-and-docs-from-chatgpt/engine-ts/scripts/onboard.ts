@@ -207,6 +207,127 @@ async function listOpen(limit = 15) {
   saveFixture('markets-open.real.json', res.json);
 }
 
+/**
+ * Read-only scanner: walks open markets, fetches orderbooks, surfaces ones whose
+ * shape would actually exercise the auto-adaptive chunking path (thin top YES bid
+ * + cliff to next level). Used to find a candidate for a small live test.
+ *
+ * Criteria: top YES bid size < 50, AND (top.priceCents - next.priceCents) >= 0.2¢,
+ * AND top YES bid <= 30¢ (so a $2 buy is feasible).
+ */
+async function findThinCliff(scanLimit: number) {
+  checkEnv();
+  console.log(`→ scanning up to ${scanLimit} open markets for thin-top + cliff YES books`);
+
+  let cursor: string | undefined;
+  let scanned = 0;
+  let preFilterPassed = 0;
+  let orderbooksFetched = 0;
+  let twoPlusLevels = 0;
+  const candidates: Array<{
+    ticker: string;
+    yesBid: number;
+    yesAsk: number;
+    topSize: number;
+    nextPrice: number;
+    nextSize: number;
+    cliffCents: number;
+    title?: string;
+  }> = [];
+
+  while (scanned < scanLimit) {
+    const pageSize = Math.min(200, scanLimit - scanned);
+    const qs = `?status=open&limit=${pageSize}` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '');
+    const res = await call('GET', `/markets${qs}`);
+    if (res.status !== 200) die(`markets list HTTP ${res.status}: ${res.raw.slice(0, 200)}`);
+    const markets = res.json?.markets ?? [];
+    cursor = res.json?.cursor;
+    if (markets.length === 0) break;
+
+    // Pre-filter on the cheap fields before fetching orderbooks.
+    // Kalshi returns yes_bid_dollars as a string ("0.0500") and volume_fp as a numeric string.
+    const cheapAndActive = markets.filter((m: any) => {
+      const ybStr = m.yes_bid_dollars ?? m.yes_bid;
+      const yb = typeof ybStr === 'string' ? Number.parseFloat(ybStr) * 100 : Number(ybStr);
+      const vol = Number.parseFloat(String(m.volume_fp ?? m.volume ?? 0));
+      return Number.isFinite(yb) && yb >= 0.5 && yb <= 30 && vol > 0;
+    });
+
+    preFilterPassed += cheapAndActive.length;
+    for (const m of cheapAndActive) {
+      const ticker = String(m.ticker);
+      try {
+        const ob = await call('GET', `/markets/${ticker}/orderbook?depth=10`);
+        if (ob.status !== 200) continue;
+        orderbooksFetched += 1;
+        // YES bids live under orderbook.yes (deci-cent ints) or orderbook_fp.yes_dollars (string $).
+        const root = ob.json?.orderbook ?? ob.json?.orderbook_fp ?? ob.json ?? {};
+        const yesRaw = root.yes_dollars ?? root.yes ?? [];
+        if (!Array.isArray(yesRaw) || yesRaw.length < 2) continue;
+        // Each entry: [price, size]. Price is dollar-string for *_dollars, integer cents for *_fp/yes.
+        const isDollars = Boolean(root.yes_dollars);
+        const levels = yesRaw
+          .map((row: any[]) => {
+            const p = isDollars ? Number.parseFloat(String(row[0])) * 100 : Number(row[0]);
+            return { priceCents: p, size: Number(row[1]) };
+          })
+          .filter((l) => Number.isFinite(l.priceCents) && l.priceCents > 0 && l.size > 0)
+          .sort((a, b) => b.priceCents - a.priceCents);
+        if (levels.length < 2) continue;
+        twoPlusLevels += 1;
+        const top = levels[0];
+        const next = levels[1];
+        const cliff = top.priceCents - next.priceCents;
+        if (top.size < 50 && cliff >= 0.2) {
+          const yesBidCents = (() => {
+            const s = m.yes_bid_dollars ?? m.yes_bid;
+            return typeof s === 'string' ? Number.parseFloat(s) * 100 : Number(s);
+          })();
+          const yesAskCents = (() => {
+            const s = m.yes_ask_dollars ?? m.yes_ask;
+            return typeof s === 'string' ? Number.parseFloat(s) * 100 : Number(s);
+          })();
+          candidates.push({
+            ticker,
+            yesBid: yesBidCents,
+            yesAsk: yesAskCents,
+            topSize: top.size,
+            nextPrice: next.priceCents,
+            nextSize: next.size,
+            cliffCents: cliff,
+            title: m.title ?? m.subtitle,
+          });
+        }
+      } catch {
+        // ignore single-market errors, keep scanning
+      }
+    }
+
+    scanned += markets.length;
+    if (!cursor) break;
+  }
+
+  console.log(`\nscanned ${scanned} | pre-filter passed ${preFilterPassed} | books fetched ${orderbooksFetched} | books with 2+ levels ${twoPlusLevels} | matched ${candidates.length}`);
+  if (candidates.length === 0) {
+    console.log('  (no candidates — try larger --limit, or markets shape changed)');
+    return;
+  }
+
+  // Rank: prefer cheaper markets (smaller $2 trade overhead), bigger cliff, smaller top.
+  candidates.sort((a, b) => b.cliffCents - a.cliffCents || a.topSize - b.topSize || a.yesBid - b.yesBid);
+
+  console.log('\nticker                                              top      next         cliff   yes_ask  title');
+  for (const c of candidates.slice(0, 20)) {
+    const t = c.ticker.padEnd(50);
+    const top = `${c.topSize}@${c.yesBid}¢`.padStart(8);
+    const next = `${c.nextSize}@${c.nextPrice.toFixed(1)}¢`.padStart(11);
+    const cliff = `${c.cliffCents.toFixed(1)}¢`.padStart(5);
+    const ask = `${c.yesAsk}¢`.padStart(7);
+    console.log(`${t} ${top} ${next}   ${cliff}   ${ask}  ${(c.title ?? '').slice(0, 50)}`);
+  }
+  saveFixture('thin-cliff-candidates.real.json', candidates);
+}
+
 async function main() {
   const cmd = process.argv[2];
   const args = Object.fromEntries(
@@ -233,8 +354,11 @@ async function main() {
     case 'list-open':
       await listOpen(args.limit ? Number(args.limit) : 15);
       break;
+    case 'find-thin-cliff':
+      await findThinCliff(args.limit ? Number(args.limit) : 400);
+      break;
     default:
-      console.log('commands:\n  ping\n  list-open [--limit N]\n  capture-readonly --ticker <T>\n  place-rest-test --ticker <T>');
+      console.log('commands:\n  ping\n  list-open [--limit N]\n  capture-readonly --ticker <T>\n  place-rest-test --ticker <T>\n  find-thin-cliff [--limit N]');
       process.exit(1);
   }
 }

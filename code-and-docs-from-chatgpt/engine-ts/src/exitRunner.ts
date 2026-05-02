@@ -267,6 +267,15 @@ export class ExitRunner {
             decisionRequested: decision.chunkSize,
           });
 
+          // ── Test-only: deliberate pause to reproduce the crash-mid-flight scenario.
+          // The journal already has `order_placed`; sleeping here gives a Ctrl-C window
+          // before `order_reconciled` is appended. Production configs leave this at 0.
+          const pauseMs = this.config.deliberatePauseAfterPlaceMs ?? 0;
+          if (pauseMs > 0) {
+            this.log('warn', 'deliberate_pause_after_place', { ms: pauseMs, orderId: created.orderId });
+            await sleep(pauseMs);
+          }
+
           // ── GTC: leave a resting order on the book and exit the loop ─────
           // The order is durable on Kalshi until filled/canceled. The user comes back
           // later (next /start invocation) to check fill state or place more.

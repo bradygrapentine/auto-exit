@@ -1,65 +1,88 @@
-# Live Resume / Journal Pipeline Test (deferred — user must green-light)
+# Live Resume / Journal Pipeline Test — EXECUTED 2026-05-01 ✓
 
 The crash-safe-resume code path (`src/journal.ts` + `ExitRunner.resumeFromJournal`)
-has been tested only against `MockKalshiClient`. It has never been exercised
-against the live Kalshi API. Live shapes have already diverged from our
-assumptions in several places (signing path, _fp suffixes, time_in_force enum)
-so it's plausible the resume path has latent bugs only visible against real
-responses.
+was tested live against the Kalshi prod API on 2026-05-01. **Passed.**
 
-**This test is destructive-by-design** — it deliberately kills the engine
-mid-iteration. It must not run without explicit user authorization, and only
-on a small chunk size that any errant fill leaves a manageable footprint.
+## Outcome
 
-## Procedure
+- **JobId of resume target:** `1777682074894-c2cb`
+- **Ticker:** KXMOVVAREDISTRICT-26APR21-YES-P1 (existing position, no buy step needed)
+- **Trade size:** 100 shares @ 0.8¢ IoC
+- Engine was killed after `order_placed` was written to the journal but before
+  `order_reconciled`. On restart with `/resume`, engine read the journal, called
+  `getOrder` against Kalshi, observed `status=filled, filled=100`, wrote
+  `resume_reconciled`, and exited cleanly. **`submittedTotal=0` on the resume
+  run** — proving no double-submission of the already-filled order.
 
-1. **Tiny test config.** `chunkSize: 100`, `positionSize: 100`, `maxOrders: 1`,
-   `safetySubmittedMultiple: 1.1` (cap = 110 max submitted). Single chunk only.
-2. **Use IoC** so any successful order is terminal — resume on a non-IoC GTC
-   order would over-test the failure mode.
-3. **Engine starts in terminal 1.** Tail the journal in terminal 2:
-   `tail -F ~/.kalshi-exit-assistant/jobs/*.jsonl`.
-4. **POST /start** with `dryRun: false`.
-5. **Immediately Ctrl-C the engine** — try to land the kill between
-   `order_placed` and `order_reconciled` lines in the journal. Realistically
-   the iteration is fast (~50ms), so the kill may land before or after; either
-   way the journal records what landed.
-6. **Inspect the journal** in `~/.kalshi-exit-assistant/jobs/<jobId>.jsonl`:
-   - If `order_placed` exists but no `order_reconciled` → resume target.
-   - If both exist → no resume needed; just verify position state via
-     capture-readonly.
-7. **Restart the engine** with `--resume <jobId>` (server route TBD —
-   currently /resume on the HTTP server, accepts {jobId, config}).
-8. **POST /resume** with the captured jobId. Engine should:
-   - Read the journal
-   - Find the dangling `order_placed`
-   - GET that order from Kalshi
-   - Reconcile fill state into the in-memory remaining
-   - Append `resume_reconciled`
-   - Continue or terminate based on remaining
-9. **Verify via capture-readonly** that position state matches what the
-   journal reports.
+Final position math reconciled exactly: pre-test 94,996.51 → post-test 94,896.51,
+matching the observed fill from the orphan order.
 
-## Failure modes to watch for
+## What this validated
 
-- `getOrder` against a real order_id returns a different shape than mock —
-  parser may misread fillCount (we fixed this case already, but resume calls
-  it from a different path).
-- Journal file write was not flushed before Ctrl-C — resume sees an empty or
-  truncated journal and treats as "no pending" (correct behavior, but
-  destructive of the actual order on Kalshi). Mitigation: always
-  capture-readonly after a Ctrl-C to manually reconcile.
-- Resume finds an order that's already `filled` on Kalshi — engine should
-  recognize this and decrement remaining, not re-place.
+The main unknown — whether live Kalshi `getOrder` responses parse correctly when
+called from the resume code path — is now confirmed. Mock-only coverage is no
+longer the gating risk.
 
-## Why this is deferred
+## Methodology — superseded the original IoC + Ctrl-C race
 
-- Requires a live trade to exist, which means committing to a small loss.
-- Footgun risk: a bug in resume could re-place an already-filled order,
-  doubling the trade.
-- Expected value of catching a bug: high (resume is one of the more complex
-  code paths).
-- Acceptable cost of running: ~$1-2 of fees + spread on a 100-share P1 trade.
+The original plan called for IoC orders + manually Ctrl-C'ing the engine to
+land between `order_placed` and `order_reconciled`. That window is ~50ms on a
+fast IoC fill — essentially impossible to hit reliably.
 
-User must explicitly authorize before this runs. Document the decision in the
-PR description if executed.
+**What worked instead:** added a test-only `deliberatePauseAfterPlaceMs` config
+knob to `ExitRunner` (see `src/exitRunner.ts`). When set, it sleeps the configured
+ms between writing `order_placed` to the journal and starting `reconcileOrder`.
+Set to 30000ms, this opens a deterministic 30-second window for the kill. The
+flag defaults to 0 — set it only in test configs, never production.
+
+## Procedure (as executed)
+
+1. **Test config** (`config.local.resume-test-p1.json`):
+   - `positionSize: 100`, `chunkSize: 100`, `maxOrders: 1`
+   - `safetySubmittedMultiple: 1.1` → 110-share hard cap
+   - `forbiddenTickers: ["KXMOVVAREDISTRICT-26APR21-YES-P4"]`
+   - `deliberatePauseAfterPlaceMs: 30000`
+   - `preflight: true`, `dryRun: false`
+2. Start engine with that config. POST `/start`. Engine writes `order_placed`
+   then enters the 30s pause.
+3. Poll `/status` for the `deliberate_pause_after_place` event. Once seen, kill
+   the server PID immediately (`lsof -ti:7777 | xargs kill -9`).
+4. Verify journal at `~/.kalshi-exit-assistant/jobs/<jobId>.jsonl`: `order_placed`
+   present, `order_reconciled` absent.
+5. Edit config: `deliberatePauseAfterPlaceMs: 0` (so the live loop after resume
+   doesn't also pause).
+6. Restart server with same config.
+7. POST `/resume` with `{ "jobId": "<captured>" }`.
+8. Engine: reads journal → `getOrder(orderId)` → reconciles fill → writes
+   `resume_reconciled` → continues loop (already at remaining=0) → exits.
+9. Verify position via capture-readonly.
+
+## Cost of the test as executed
+
+- Two real attempts (first kill missed the window with an 8s pause; bumped to
+  30s and caught it on the second).
+- Each attempt sold 100 P1 shares at 0.8¢ — receiving ~$0.75 net per attempt.
+- **Net result: +$1.50 to balance, -200 P1 shares**, plus one orphan reconcile
+  successfully tested. Resume test on a held position is *cash-positive*; the
+  only "cost" is incidentally exiting more of the position.
+
+## Failure modes that did not materialize
+
+- ✗ Did NOT happen: `getOrder` response shape mismatch on real Kalshi data.
+  Parser handled `_fp` suffixes correctly (already covered by fixture-pinned
+  tests, but now also exercised live).
+- ✗ Did NOT happen: resume re-placed an already-filled order. The
+  `submittedTotal: 0` on the resume run is the proof.
+- ✗ Did NOT happen: journal write was lost mid-Ctrl-C. The append-only JSONL
+  with synchronous writes survives `kill -9`.
+
+## When to run again
+
+This is now a regression test — re-run if any of these change materially:
+- `parseOrderResponse` signature/keys in `src/kalshiClient.ts`
+- The journal entry shape for `order_placed`
+- Kalshi's `/portfolio/orders/<id>` response (rare, but has happened — see
+  `_fp` suffix migration)
+- `ExitRunner.resumeFromJournal` logic
+
+The deterministic-pause methodology is now the reference approach.
