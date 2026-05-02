@@ -82,13 +82,25 @@ export const JournalListSchema = z.array(JournalSummarySchema);
 
 // kea_journal_read — returns { jobId, entries: JournalEntry[] }
 // NOTE: plan had z.array(...) but actual response is an object with jobId + entries.
+// JournalKind literals from src/types.ts:196-210.
+const JournalKindEnum = z.enum([
+  'loop_started',
+  'order_placed',
+  'order_reconciled',
+  'loop_finished',
+  'loop_error',
+  'resume_started',
+  'resume_reconciled',
+  'gtc_resting',
+  'tail_gtc_posted',
+]);
 export const JournalReadSchema = z.object({
   jobId: z.string(),
   entries: z.array(z.object({
     ts: z.string(),
-    kind: z.string(),
+    kind: JournalKindEnum,
     data: z.unknown(),
-  }).passthrough()),
+  })),
 });
 
 // kea_replay — replay summary object
