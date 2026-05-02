@@ -7,6 +7,9 @@ on:
       - 'code-and-docs-from-chatgpt/engine-ts/src/tui/api.ts'
       - 'code-and-docs-from-chatgpt/engine-ts/src/credentials.ts'
       - 'code-and-docs-from-chatgpt/engine-ts/scripts/mcp-smoke*.ts'
+      - 'code-and-docs-from-chatgpt/engine-ts/src/replay.ts'
+      - 'code-and-docs-from-chatgpt/engine-ts/src/journal.ts'
+      - 'code-and-docs-from-chatgpt/engine-ts/src/exitRunner.ts'
 jobs:
   smoke:
     runs-on: ubuntu-latest
