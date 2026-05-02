@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BuyRunner, run } from '../src/buyRunner.js';
 import { Journal, generateJobId } from '../src/journal.js';
 import { MockKalshiClient } from '../src/mockKalshiClient.js';
-import type { BuyConfig, OrderIntentData, Orderbook } from '../src/types.js';
+import type { BuyConfig, KalshiClientLike, OrderIntentData, Orderbook } from '../src/types.js';
 
 // ── Safety mock ───────────────────────────────────────────────────────────────
 vi.mock('../src/safety.js', async () => {
@@ -328,6 +328,8 @@ describe('BuyRunner C1 — no double buy_loop_started on resume', () => {
 
     const j2 = new Journal(jobId, tmpDir);
     const entries = j2.readAll();
+    const loopStartedEntries = entries.filter(e => e.kind === 'buy_loop_started');
+    expect(loopStartedEntries).toHaveLength(1);
     const loopStartedCount = entries.filter((e) => e.kind === 'buy_loop_started').length;
     expect(loopStartedCount).toBe(1);
   });
@@ -354,6 +356,76 @@ describe('BuyRunner C2 — safetySubmittedMultiple cap', () => {
     expect(mock.events.filter((e) => e === 'createOrder').length).toBe(1);
     expect(result.submittedTotal).toBe(70);
     expect(result.remaining).toBe(40);
+    expect(result.status).toBe('partial');
+  });
+
+  it('stops at safetySubmittedMultiple cap — size=300 cap=1.0 → exactly 3 createOrder calls', async () => {
+    // size=300, chunkSize=100, cap=1.0 → submittedTotal cap = 300
+    // Each order fills exactly 100 → after 3 orders submittedTotal = 300 = cap → no 4th call
+    const books = Array.from({ length: 5 }, () => askBook);
+    const behaviors = [{ fillCount: 100 }, { fillCount: 100 }, { fillCount: 100 }];
+    const mock = new MockKalshiClient({ orderbookSnapshots: books, behaviors });
+
+    const jobId = generateJobId();
+    const runner = new BuyRunner(
+      mock,
+      makeConfig({ size: 300, chunkSize: 100, safetySubmittedMultiple: 1.0 }),
+      { keaHome: tmpDir, resumeFromJobId: jobId },
+    );
+    const result = await runner.run();
+
+    expect(result.filled).toBe(300);
+    expect(result.status).toBe('complete');
+    // A 4th order would exceed cap — assert exactly 3 createOrder calls
+    expect(mock.events.filter((e) => e === 'createOrder').length).toBe(3);
+    expect(result.submittedTotal ?? result.filled).toBeLessThanOrEqual(300);
+  });
+});
+
+describe('BuyRunner I1 — stale-order cancel', () => {
+  it('invokes cancelOrder and does not throw when stale order persists', async () => {
+    // fillCount=0 → order created as resting; no pollFill set → getOrder keeps returning resting
+    // → reconcileMaxPolls exhausted → stale → cancelOrder called
+    const books = Array.from({ length: 5 }, () => askBook);
+    const behaviors = [{ fillCount: 0 }];
+    const mock = new MockKalshiClient({ orderbookSnapshots: books, behaviors });
+
+    const jobId = generateJobId();
+    const runner = new BuyRunner(
+      mock,
+      makeConfig({ size: 100, chunkSize: 100, maxOrders: 1, reconcileMaxPolls: 1, reconcilePollMs: 0 }),
+      { keaHome: tmpDir, resumeFromJobId: jobId },
+    );
+    const result = await runner.run();
+
+    // Runner must not throw — partial because stale order filled 0
+    expect(result).toBeDefined();
+    expect(result.status).toBe('partial');
+    // cancelOrder must have been called (stale path exercised)
+    expect(mock.events).toContain('cancelOrder');
+  });
+
+  it('does not crash when cancelOrder throws on stale order', async () => {
+    // Inline KalshiClientLike stub: createOrder resting, getOrder stays resting, cancelOrder throws
+    const client: KalshiClientLike = {
+      getOrderbook: async () => askBook,
+      createOrder: async () => ({ orderId: 'stale-1', status: 'resting', filledCount: 0, remainingCount: 100 }),
+      getOrder: async () => ({ orderId: 'stale-1', status: 'resting', filledCount: 0, remainingCount: 100 }),
+      cancelOrder: async () => { throw new Error('cancel_unreachable'); },
+      getPosition: async () => ({ ticker: 'KXTEST', side: 'yes', quantity: 0 }),
+      getRestingOrderCount: async () => 0,
+      findOrderByClientOrderId: async () => null,
+    };
+
+    const jobId = generateJobId();
+    const runner = new BuyRunner(
+      client,
+      makeConfig({ size: 100, chunkSize: 100, maxOrders: 1, reconcileMaxPolls: 1, reconcilePollMs: 0 }),
+      { keaHome: tmpDir, resumeFromJobId: jobId },
+    );
+    // Must not throw even when cancelOrder throws
+    const result = await runner.run();
+    expect(result).toBeDefined();
     expect(result.status).toBe('partial');
   });
 });
