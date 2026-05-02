@@ -339,7 +339,7 @@ export function buildMcpServer(): McpServer {
     'kea_tca_summary',
     {
       description: 'Returns TCA (Transaction Cost Analysis) for a completed job: per-chunk slippage, avg slippage vs arrival mid, estimated fees.',
-      inputSchema: { jobId: z.string() },
+      inputSchema: { jobId: z.string().min(1) },
     },
     async ({ jobId }) => {
       try {
@@ -348,11 +348,28 @@ export function buildMcpServer(): McpServer {
         const tcaEntries = entries
           .filter((e) => e.kind === 'tca')
           .map((e) => e.data as Omit<TcaEntry, 'kind' | 'ts'>);
+        // Check for dry-run disclosure
+        const loopStartEntry = entries.find(
+          (e) => e.kind === 'loop_started' || e.kind === 'buy_loop_started',
+        );
+        const isDryRun = Boolean((loopStartEntry?.data as Record<string, unknown> | undefined)?.dryRun);
         if (tcaEntries.length === 0) {
-          return jsonContent({ jobId, chunks: 0, avgSlippageCents: 0, entries: [] });
+          return jsonContent({
+            jobId,
+            chunks: 0,
+            avgSlippageCents: 0,
+            entries: [],
+            ...(isDryRun ? { dryRun: true } : {}),
+          });
         }
         const avgSlippageCents = tcaEntries.reduce((s, e) => s + e.slippageCents, 0) / tcaEntries.length;
-        return jsonContent({ jobId, chunks: tcaEntries.length, avgSlippageCents, entries: tcaEntries });
+        return jsonContent({
+          jobId,
+          chunks: tcaEntries.length,
+          avgSlippageCents,
+          entries: tcaEntries,
+          ...(isDryRun ? { dryRun: true } : {}),
+        });
       } catch (err) { return errorContent(err); }
     },
   );

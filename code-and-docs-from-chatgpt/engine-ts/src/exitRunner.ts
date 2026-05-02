@@ -487,8 +487,8 @@ export class ExitRunner {
           });
 
           // ── Journal: TCA entry ─────────────────────────────────────────────
-          const executedPriceCents = decision.priceCentsExact;
-          const slippageCents = executedPriceCents - arrivalMidCents;
+          const limitPriceCents = decision.priceCentsExact;
+          const slippageCents = limitPriceCents - arrivalMidCents;
           const depthTier = decision.cumulativeSizeAtPrice > 0
             ? Math.ceil(decision.cumulativeSizeAtPrice / decision.chunkSize)
             : 1;
@@ -498,7 +498,7 @@ export class ExitRunner {
             side: 'sell',
             chunkIndex: this.status.ordersAttempted - 1,
             arrivalMidCents,
-            executedPriceCents,
+            limitPriceCents,
             slippageCents,
             chunkSize: decision.chunkSize,
             depthTier,

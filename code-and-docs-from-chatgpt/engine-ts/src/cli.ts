@@ -376,7 +376,14 @@ function cmdReport(positional: string[]): void {
     .map((e) => e.data as Omit<TcaEntry, 'kind' | 'ts'>);
 
   if (tcaEntries.length === 0) {
+    const loopStartEntry = entries.find(
+      (e) => e.kind === 'loop_started' || e.kind === 'buy_loop_started',
+    );
+    const isDryRun = Boolean((loopStartEntry?.data as Record<string, unknown> | undefined)?.dryRun);
     process.stdout.write(`TCA Report — ${jobId}\nNo TCA entries found.\n`);
+    if (isDryRun) {
+      process.stdout.write('Note: job was dry-run (no real fills)\n');
+    }
     return;
   }
 
@@ -388,16 +395,16 @@ function cmdReport(positional: string[]): void {
   process.stdout.write(`Side: ${side}\n`);
   process.stdout.write(`Chunks: ${tcaEntries.length}\n\n`);
 
-  const header = `${'Chunk'.padStart(5)}  ${'arrivalMid'.padStart(10)}  ${'executed'.padStart(8)}  ${'slippage'.padStart(8)}  ${'size'.padStart(6)}`;
+  const header = `${'Chunk'.padStart(5)}  ${'arrivalMid'.padStart(10)}  ${'limitPrice'.padStart(10)}  ${'slippage'.padStart(8)}  ${'size'.padStart(6)}`;
   process.stdout.write(header + '\n');
   process.stdout.write(`${'─'.repeat(header.length)}\n`);
 
   for (const e of tcaEntries) {
     const idx = String(e.chunkIndex + 1).padStart(5);
     const mid = fmtCents(e.arrivalMidCents).padStart(10);
-    const exec = fmtCents(e.executedPriceCents).padStart(8);
+    const lim = fmtCents(e.limitPriceCents).padStart(10);
     const slip = (e.slippageCents >= 0 ? '+' : '') + fmtCents(e.slippageCents);
-    process.stdout.write(`${idx}  ${mid}  ${exec}  ${slip.padStart(8)}  ${String(e.chunkSize).padStart(6)}\n`);
+    process.stdout.write(`${idx}  ${mid}  ${lim}  ${slip.padStart(8)}  ${String(e.chunkSize).padStart(6)}\n`);
   }
 
   const avgSlippage = tcaEntries.reduce((s, e) => s + e.slippageCents, 0) / tcaEntries.length;

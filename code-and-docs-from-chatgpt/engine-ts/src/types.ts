@@ -239,8 +239,12 @@ export interface TcaEntry {
   side: 'buy' | 'sell';
   chunkIndex: number;
   arrivalMidCents: number;      // (topBid + topAsk) / 2 at decision time
-  executedPriceCents: number;   // actual fill price
-  slippageCents: number;        // executedPrice - arrivalMid (positive = paid more than mid)
+  /** Requested limit price (cents). Kalshi IoC orders fill at-or-better than this;
+   *  the actual fill price equals this for single-level fills. */
+  limitPriceCents: number;
+  /** slippageCents = limitPriceCents - arrivalMidCents.
+   *  Positive = limit was above arrival mid (aggressive). Negative = passive. */
+  slippageCents: number;        // limitPriceCents - arrivalMidCents
   chunkSize: number;
   depthTier: number;            // how many levels deep the fill reached
 }

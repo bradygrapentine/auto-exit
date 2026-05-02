@@ -559,8 +559,8 @@ describe('MCP server — kea_tca_summary', () => {
   it('returns chunks and avgSlippageCents for a job with 2 tca entries', async () => {
     const jobId = 'tca-test-job';
     writeTcaJournal(jobId, [
-      { jobId, ticker: 'KXTEST', side: 'sell', chunkIndex: 0, arrivalMidCents: 70, executedPriceCents: 69, slippageCents: -1, chunkSize: 200, depthTier: 1 },
-      { jobId, ticker: 'KXTEST', side: 'sell', chunkIndex: 1, arrivalMidCents: 70, executedPriceCents: 68, slippageCents: -2, chunkSize: 200, depthTier: 1 },
+      { jobId, ticker: 'KXTEST', side: 'sell', chunkIndex: 0, arrivalMidCents: 70, limitPriceCents: 69, slippageCents: -1, chunkSize: 200, depthTier: 1 },
+      { jobId, ticker: 'KXTEST', side: 'sell', chunkIndex: 1, arrivalMidCents: 70, limitPriceCents: 68, slippageCents: -2, chunkSize: 200, depthTier: 1 },
     ]);
     const { client } = await connect();
     const res = await client.callTool({ name: 'kea_tca_summary', arguments: { jobId } });

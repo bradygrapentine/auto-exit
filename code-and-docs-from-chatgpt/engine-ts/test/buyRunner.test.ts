@@ -41,9 +41,11 @@ afterEach(() => {
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
+// YES bid at 10¢, NO bid at 70¢ → YES ask = 100 - 70 = 30¢, mid = (10+30)/2 = 20¢
+// topAskCents (30) is below maxPriceCents (50), so orders will be placed.
 const askBook: Orderbook = {
   yes: [{ priceCents: 10, size: 10000 }],
-  no: [{ priceCents: 10, size: 10000 }],
+  no: [{ priceCents: 70, size: 10000 }],
 };
 
 function makeConfig(overrides: Partial<BuyConfig> = {}): BuyConfig {

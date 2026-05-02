@@ -239,20 +239,18 @@ export class BuyRunner {
           );
           this.log('info', 'dry_run_chunk', { chunk, remaining: this.remaining });
         } else {
-          // Determine ask price ceiling
-          const askLevels = (this.config.ticker.endsWith('_NO') ? orderbook.no : orderbook.yes)
-            .filter((l) => l.size > 0)
-            .sort((a, b) => a.priceCents - b.priceCents);
-
-          const topAskCents = askLevels[0]?.priceCents ?? 99;
-
-          // Arrival mid at decision time: (topBid + topAsk) / 2
-          // topBid: best resting bid on the same side (sorted descending)
-          const bidLevels = (this.config.ticker.endsWith('_NO') ? orderbook.no : orderbook.yes)
-            .filter((l) => l.size > 0)
-            .sort((a, b) => b.priceCents - a.priceCents);
-          const topBidCents = bidLevels[0]?.priceCents ?? 0;
-          const arrivalMidCents = (topBidCents + topAskCents) / 2;
+          // Determine ask price and arrival mid.
+          // Kalshi binary: YES ask = 100 - top NO bid; NO ask = 100 - top YES bid.
+          const isNoBuy = this.config.ticker.endsWith('_NO');
+          const topSameBidCents = (isNoBuy ? orderbook.no : orderbook.yes)
+            ?.filter((l) => l.size > 0)
+            .sort((a, b) => b.priceCents - a.priceCents)[0]?.priceCents ?? 0;
+          const topOppBid = (isNoBuy ? orderbook.yes : orderbook.no)
+            ?.filter((l) => l.size > 0)
+            .sort((a, b) => b.priceCents - a.priceCents)[0];
+          // Ask = 100 - opposite-side top bid (binary complement)
+          const topAskCents = topOppBid ? 100 - topOppBid.priceCents : 100;
+          const arrivalMidCents = (topSameBidCents + topAskCents) / 2;
           const maxCents = this.config.maxPriceCents ?? 99;
 
           if (topAskCents > maxCents) {
@@ -322,15 +320,15 @@ export class BuyRunner {
           });
 
           // ── Journal: TCA entry ─────────────────────────────────────────────
-          const executedPriceCents = topAskCents;
-          const slippageCents = executedPriceCents - arrivalMidCents;
+          const limitPriceCents = topAskCents;
+          const slippageCents = limitPriceCents - arrivalMidCents;
           this.journal.append('tca', {
             jobId: this.journal.jobId,
             ticker: this.config.ticker,
             side: 'buy',
             chunkIndex: this.ordersAttempted - 1,
             arrivalMidCents,
-            executedPriceCents,
+            limitPriceCents,
             slippageCents,
             chunkSize: chunk,
             depthTier: 1,

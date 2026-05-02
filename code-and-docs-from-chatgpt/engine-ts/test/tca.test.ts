@@ -2,7 +2,7 @@
  * tca.test.ts — SH-1 Post-trade TCA tests.
  *
  * Verifies that exitRunner and buyRunner write `tca` journal entries with correct
- * arrivalMidCents, executedPriceCents, slippageCents, and side fields.
+ * arrivalMidCents, limitPriceCents, slippageCents, and side fields.
  */
 
 import fs from 'node:fs';
@@ -88,7 +88,7 @@ describe('ExitRunner TCA', () => {
     expect(tca).toHaveLength(2);
   });
 
-  it('each tca entry has arrivalMidCents, executedPriceCents, slippageCents', async () => {
+  it('each tca entry has arrivalMidCents, limitPriceCents, slippageCents', async () => {
     const mock = new MockKalshiClient({
       orderbookSnapshots: [testBook, testBook, testBook],
       behaviors: [{ fillCount: 200 }, { fillCount: 200 }],
@@ -101,9 +101,9 @@ describe('ExitRunner TCA', () => {
     for (const entry of tca) {
       const d = entry.data as Omit<TcaEntry, 'kind' | 'ts'>;
       expect(typeof d.arrivalMidCents).toBe('number');
-      expect(typeof d.executedPriceCents).toBe('number');
+      expect(typeof d.limitPriceCents).toBe('number');
       expect(typeof d.slippageCents).toBe('number');
-      expect(d.slippageCents).toBe(d.executedPriceCents - d.arrivalMidCents);
+      expect(d.slippageCents).toBe(d.limitPriceCents - d.arrivalMidCents);
     }
   });
 
@@ -160,11 +160,14 @@ describe('BuyRunner TCA', () => {
     orderbookDepth: 20,
   };
 
-  it('writes tca entry with side=buy after a buy fill', async () => {
-    // YES ask at 30¢ (sorted ascending: priceCents=30 is the cheapest ask)
+  it('writes tca entry with side=buy and non-zero slippage (both book sides present)', async () => {
+    // YES bid at 40¢ (top of yes book), NO bid at 30¢ → YES ask = 100 - 30 = 70¢
+    // arrivalMid = (40 + 70) / 2 = 55¢
+    // limitPrice = topAsk = 70¢ (the ask we pay as buyer)
+    // slippage = 70 - 55 = +15¢ (aggressive — paying above mid)
     const buyBook: Orderbook = {
-      yes: [{ priceCents: 30, size: 10000 }],
-      no: [{ priceCents: 10, size: 10000 }],
+      yes: [{ priceCents: 40, size: 10000 }],
+      no: [{ priceCents: 30, size: 10000 }],
     };
     const mock = new MockKalshiClient({
       orderbookSnapshots: [buyBook, buyBook],
@@ -179,6 +182,34 @@ describe('BuyRunner TCA', () => {
     const d = tca[0]!.data as Omit<TcaEntry, 'kind' | 'ts'>;
     expect(d.side).toBe('buy');
     expect(typeof d.arrivalMidCents).toBe('number');
+    expect(typeof d.limitPriceCents).toBe('number');
     expect(typeof d.slippageCents).toBe('number');
+    // With asymmetric book (bid=40, ask=70), mid=55 and slippage should not be 0
+    expect(d.slippageCents).not.toBe(0);
+    // Exact values: limitPrice=70, arrivalMid=55, slippage=+15
+    expect(d.limitPriceCents).toBe(70);
+    expect(d.arrivalMidCents).toBe(55);
+    expect(d.slippageCents).toBe(15);
+  });
+
+  it('dry-run exit: zero TCA entries', async () => {
+    const dryRunCfg: ExitConfig = { ...baseExitCfg, dryRun: true };
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [testBook, testBook, testBook],
+      behaviors: [],
+    });
+    const runner = new ExitRunner(dryRunCfg, mock, { keaHome: tmpDir });
+    await runner.run();
+
+    const journal = new Journal(runner.jobId, tmpDir);
+    const entries = journal.readAll();
+    const tca = entries.filter((e) => e.kind === 'tca');
+    expect(tca).toHaveLength(0);
+
+    // The loop_started entry should carry dryRun: true
+    const loopStart = entries.find((e) => e.kind === 'loop_started');
+    expect(loopStart).toBeDefined();
+    const data = loopStart!.data as Record<string, unknown>;
+    expect(data.dryRun).toBe(true);
   });
 });
