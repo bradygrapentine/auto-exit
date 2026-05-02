@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { KalshiClient } from './kalshiClient.js';
 import { Journal, generateJobId } from './journal.js';
-import { buildSellPayload, centsFloatToDollarString, decideLosingExitOrder, normalizeLevels, oneTickBelowCents } from './pricing.js';
+import { buildSellPayload, centsFloatToDollarString, decideLosingExitOrder, normalizeLevels, oneTickBelowCents, projectFullExit } from './pricing.js';
 import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, Position } from './types.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -37,6 +37,7 @@ export class ExitRunner {
       filledTotal: 0,
       canceledTotal: 0,
       submittedTotal: 0,
+      feesIncurredDollars: 0,
       events: [],
     };
   }
@@ -98,7 +99,9 @@ export class ExitRunner {
     const orderbook = await this.client.getOrderbook(this.config.marketTicker, this.config.orderbookDepth);
     const decision = decideLosingExitOrder(orderbook, this.config.positionSize, this.config);
     const payload = buildSellPayload(this.config, decision);
-    return { orderbook, decision, payload };
+    const sideLevels = this.config.heldSide === 'yes' ? orderbook.yes : orderbook.no;
+    const projection = projectFullExit(sideLevels, this.config.positionSize, this.config);
+    return { orderbook, decision, payload, projection };
   }
 
   private isTerminal(result: OrderResult): boolean {
@@ -373,6 +376,11 @@ export class ExitRunner {
           this.status.remaining = Math.max(0, this.status.remaining - filled);
           if (reconciled.status === 'canceled' && filled < decision.chunkSize) {
             this.status.canceledTotal += decision.chunkSize - filled;
+          }
+          if (reconciled.takerFeesDollars && Number.isFinite(reconciled.takerFeesDollars)) {
+            this.status.feesIncurredDollars = Number(
+              (this.status.feesIncurredDollars + reconciled.takerFeesDollars).toFixed(4),
+            );
           }
 
           // ── Journal: order reconciled ──────────────────────────────────────

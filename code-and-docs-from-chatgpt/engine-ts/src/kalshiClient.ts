@@ -77,11 +77,13 @@ export function parseOrderResponse(json: any): OrderResult {
   const remainingFromApi = toNumber(order.remaining_count_fp) ?? toNumber(order.remaining_count) ?? toNumber(order.remaining);
   const filledCount = filledFromApi ?? (remainingFromApi !== null ? Math.max(0, requested - remainingFromApi) : 0);
   const remainingCount = remainingFromApi ?? Math.max(0, requested - filledCount);
+  const takerFeesDollars = toNumber(order.taker_fees_dollars) ?? undefined;
   return {
     orderId,
     status: mapStatus(order.status),
     filledCount,
     remainingCount,
+    takerFeesDollars: takerFeesDollars ?? undefined,
     raw: json,
   };
 }

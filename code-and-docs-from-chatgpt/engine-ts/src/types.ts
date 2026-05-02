@@ -150,6 +150,8 @@ export interface JobStatus {
   canceledTotal: number;
   /** Cumulative shares the engine has submitted to the exchange (regardless of fill outcome). */
   submittedTotal: number;
+  /** Cumulative taker fees in dollars, summed from each reconciled order's takerFeesDollars. */
+  feesIncurredDollars: number;
   lastDecision?: PriceDecision;
   lastPayload?: OrderPayload;
   lastError?: string;
@@ -163,6 +165,8 @@ export interface OrderResult {
   status: OrderStatus;
   filledCount: number;
   remainingCount: number;
+  /** Taker fees paid for this order, in dollars. Parsed from Kalshi's `taker_fees_dollars` field. */
+  takerFeesDollars?: number;
   raw?: unknown;
 }
 

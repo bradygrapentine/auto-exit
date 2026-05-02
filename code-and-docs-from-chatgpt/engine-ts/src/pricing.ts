@@ -22,6 +22,90 @@ export function oneTickBelowCents(cents: number, floorCents: number): number {
   return Math.max(cents - tick, floorCents);
 }
 
+export interface ProjectedFill {
+  shares: number;
+  priceCents: number;
+  grossDollars: number;
+  feeDollars: number;
+}
+
+export interface ExitProjection {
+  fills: ProjectedFill[];
+  totalSharesFilled: number;
+  totalGrossDollars: number;
+  totalFeesDollars: number;
+  /** Net dollars after fees, on the assumption that fills happen at level prices (taker). */
+  netDollars: number;
+  avgPriceCents: number;
+  /** Effective fee rate: total fees / total gross. */
+  feeRatio: number;
+  estimatedChunks: number;
+  /** Shares that would not have a bid to fill against, even if maxOrders weren't a constraint. */
+  unfillableAtAnyBid: number;
+  /** True if the projection ran out of `maxOrders` before draining the position. */
+  hitsMaxOrders: boolean;
+}
+
+/**
+ * Walk the orderbook for the held side and project the engine's IoC exit, level by level.
+ * Conservative — assumes each fill segment within a chunk pays the per-fill $0.01 minimum
+ * (matches Kalshi's fee accounting on multi-level fills).
+ */
+export function projectFullExit(
+  rawLevels: PriceLevel[],
+  positionSize: number,
+  config: ExitConfig,
+): ExitProjection {
+  const levels = normalizeLevels(rawLevels, config.minLevelSize); // already sorted desc by price
+  const depth = levels.map((l) => ({ priceCents: l.priceCents, available: l.size }));
+
+  let remaining = positionSize;
+  let chunks = 0;
+  const fills: ProjectedFill[] = [];
+
+  while (remaining > 0 && chunks < config.maxOrders) {
+    const chunkSize = Math.floor(Math.min(config.chunkSize, remaining));
+    if (chunkSize < 1) break;
+    chunks += 1;
+
+    let toFill = chunkSize;
+    for (const level of depth) {
+      if (toFill <= 0) break;
+      if (level.available <= 0) continue;
+      const taken = Math.min(toFill, level.available);
+      const pricePerShare = level.priceCents / 100;
+      const gross = taken * pricePerShare;
+      const rawFee = 0.07 * taken * pricePerShare * (1 - pricePerShare);
+      const fee = Math.max(Math.ceil(rawFee * 100) / 100, 0.01); // round up to cent, $0.01 min
+      fills.push({ shares: taken, priceCents: level.priceCents, grossDollars: gross, feeDollars: fee });
+      level.available -= taken;
+      toFill -= taken;
+    }
+
+    const filledThisChunk = chunkSize - toFill;
+    remaining -= filledThisChunk;
+    if (filledThisChunk === 0) break; // book exhausted
+  }
+
+  const totalShares = fills.reduce((s, f) => s + f.shares, 0);
+  const totalGross = fills.reduce((s, f) => s + f.grossDollars, 0);
+  const totalFees = fills.reduce((s, f) => s + f.feeDollars, 0);
+  const exhaustedDepth = depth.every((l) => l.available <= 0);
+
+  return {
+    fills,
+    totalSharesFilled: totalShares,
+    totalGrossDollars: Number(totalGross.toFixed(4)),
+    totalFeesDollars: Number(totalFees.toFixed(2)),
+    netDollars: Number((totalGross - totalFees).toFixed(4)),
+    avgPriceCents: totalShares > 0 ? Number(((totalGross / totalShares) * 100).toFixed(4)) : 0,
+    feeRatio: totalGross > 0 ? Number((totalFees / totalGross).toFixed(4)) : 0,
+    estimatedChunks: chunks,
+    unfillableAtAnyBid: exhaustedDepth && remaining > 0 ? remaining : 0,
+    hitsMaxOrders: chunks >= config.maxOrders && remaining > 0,
+  };
+}
+
 export interface PriceSelection {
   priceCents: number;            // floor of priceCentsExact, integer for log/display
   priceCentsExact: number;       // float, e.g. 0.9
