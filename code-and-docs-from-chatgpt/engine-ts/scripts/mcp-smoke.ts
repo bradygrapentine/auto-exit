@@ -10,6 +10,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { z } from 'zod';
+
+const NO_CREDS_MESSAGE = 'No Kalshi credentials configured. Run `kea login` to connect.';
 import {
   BalanceSchema, PositionsSchema, RestingOrdersSchema, OrderbookSchema,
   PreviewSchema, JournalListSchema, JournalReadSchema, ReplaySchema, WhoamiSchema,
@@ -89,8 +91,8 @@ async function main() {
     try {
       const r = await client.callTool({ name: c.name, arguments: args });
       const text = (r.content?.[0] as { text: string } | undefined)?.text ?? '';
-      // Server returns error text like "error: No Kalshi credentials configured" on auth failure.
-      if (text.startsWith('error:') && /No Kalshi credentials configured/.test(text)) {
+      // Server returns error text exactly "error: <message>" on auth failure.
+      if (text === `error: ${NO_CREDS_MESSAGE}`) {
         results.push({ name: c.name, ms: Date.now() - t0, status: 'SKIP', detail: 'no credentials' });
         skip += 1;
         continue;
@@ -129,7 +131,7 @@ async function main() {
 
 main().catch((e) => {
   // Skip gracefully when credentials are missing — useful for CI without secrets.
-  if (e instanceof Error && /No Kalshi credentials configured/.test(e.message)) {
+  if (e instanceof Error && e.message === NO_CREDS_MESSAGE) {
     process.stdout.write('skipped: no Kalshi credentials configured\n');
     process.exit(0);
   }
