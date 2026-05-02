@@ -208,16 +208,28 @@ export function buildMcpServer(): McpServer {
   return server;
 }
 
-export async function startStdio(): Promise<void> {
+export async function startStdio(transport?: { start?: () => Promise<void> } & object): Promise<void> {
   const server = buildMcpServer();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const t: any = transport ?? new StdioServerTransport();
+  await server.connect(t);
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
-if (isMain) {
-  startStdio().catch((err) => {
+export { defaultEngineConfig };
+
+export function isMainModule(): boolean {
+  return import.meta.url === `file://${process.argv[1]}`;
+}
+
+export function runIfMain(opts?: { start?: () => Promise<void>; isMain?: () => boolean; onError?: (err: unknown) => void }): void {
+  const isMain = opts?.isMain ?? isMainModule;
+  if (!isMain()) return;
+  const start = opts?.start ?? startStdio;
+  const onError = opts?.onError ?? ((err: unknown) => {
     console.error('mcp: fatal', err);
     process.exit(1);
   });
+  start().catch(onError);
 }
+
+runIfMain();
