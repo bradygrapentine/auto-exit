@@ -124,6 +124,15 @@ Layered on top of an established strategy library.
     drives multi-position exits in priority order.
 20. **Smart Order Router** — multi-venue (Kalshi + Polymarket + …). Final
     layer; only valuable after single-venue maturity is locked.
+21. **Harvest planner (decision-support tool)** — operator-facing "what-if"
+    panel: EV crossover (`p* = avg_harvest_price / payout`), patient-vs-hold
+    EV table under market p and operator's private p, and risk-reduction
+    sizing table (incl. no-loss-floor row). Output framed in TradFi
+    vocabulary (Delta / Theta / Gamma proxy / Sleeve sizing) since Kalshi
+    binaries are digital options and patient-harvest = gamma scalping into
+    expiry + pre-event de-risking sleeve. Sits between the strategy library
+    and the trigger layer — agent calls this before invoking S1 (passive)
+    or W2.4 (scale-out). See `BACKLOG.md` W4.5.
 
 ## Entry strategies (Phases 10–11)
 
