@@ -120,6 +120,6 @@ export class Journal {
 
 /** Generate a simple unique job ID: timestamp + 4-hex random suffix. */
 export function generateJobId(): string {
-  const rand = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  const rand = Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
   return `${Date.now()}-${rand}`;
 }
