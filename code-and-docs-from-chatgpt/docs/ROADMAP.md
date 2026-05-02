@@ -160,7 +160,7 @@ explicitly out-of-scope for that surface. Today coverage is uneven:
 | Capability | Extension | TUI | MCP |
 |---|---|---|---|
 | Losing exit (existing) | ✅ via `/start` | ✅ | read-only preview |
-| Account / profile switching | ❌ | 🟡 (account-connect) | 🟡 (`kea_whoami`) |
+| Account / profile switching | ❌ (SP1.7) | ✅ (shipped 2026-05-02) | ✅ `kea_whoami` (shipped 2026-05-02) |
 | Safety + forbidden tickers | ❌ | 🟡 (W1.1) | 🟡 (W1.1) |
 | Named strategies (S library) | ❌ | ❌ | ❌ |
 | Triggers (W4.1) | ❌ | ❌ | ❌ |
