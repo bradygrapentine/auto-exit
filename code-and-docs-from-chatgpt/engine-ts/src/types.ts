@@ -83,6 +83,19 @@ export interface ExitConfig {
    * production configs — it stalls every order placement.
    */
   deliberatePauseAfterPlaceMs?: number;
+  /**
+   * After the main IoC loop finishes (book emptied, max_orders hit, fractional
+   * remainder, etc.) with remaining > 0, automatically post a single GTC sell
+   * for the remaining shares so the tail drains passively. Order rests on the
+   * book until filled, canceled, or the market expires. Default false.
+   */
+  tailGtcOnFinish?: boolean;
+  /**
+   * Explicit price (FixedPointDollars string, e.g. "0.0100") for the tail GTC
+   * order. If unset and `tailGtcOnFinish` is true, the engine undercuts the top
+   * opposite-side bid (= our ask) by one tick. Floor: floorPriceCents.
+   */
+  tailGtcPriceDollars?: string;
 }
 
 export type ExitConfigPatch = Partial<ExitConfig> & Pick<ExitConfig, 'marketTicker' | 'heldSide' | 'positionSize'>;
@@ -176,7 +189,9 @@ export type JournalKind =
   | 'loop_finished'
   | 'loop_error'
   | 'resume_started'
-  | 'resume_reconciled';
+  | 'resume_reconciled'
+  | 'gtc_resting'
+  | 'tail_gtc_posted';
 
 export interface JournalEntry {
   ts: string;

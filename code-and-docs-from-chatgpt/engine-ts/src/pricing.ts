@@ -15,6 +15,13 @@ export function centsFloatToDollarString(priceCentsFloat: number): string {
   return (priceCentsFloat / 100).toFixed(4);
 }
 
+/** One tick below `cents`, clamped to `floorCents`. Kalshi uses 0.1¢ ticks below 10¢ and 1¢ ticks
+ *  at/above 10¢. Used by the tail-GTC undercut logic — we post one tick under our side's ask. */
+export function oneTickBelowCents(cents: number, floorCents: number): number {
+  const tick = cents <= 10 ? 0.1 : 1;
+  return Math.max(cents - tick, floorCents);
+}
+
 export interface PriceSelection {
   priceCents: number;            // floor of priceCentsExact, integer for log/display
   priceCentsExact: number;       // float, e.g. 0.9

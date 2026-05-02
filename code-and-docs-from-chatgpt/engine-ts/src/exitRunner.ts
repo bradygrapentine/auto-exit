@@ -1,8 +1,9 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { KalshiClient } from './kalshiClient.js';
 import { Journal, generateJobId } from './journal.js';
-import { buildSellPayload, decideLosingExitOrder } from './pricing.js';
-import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderResult, Position } from './types.js';
+import { buildSellPayload, centsFloatToDollarString, decideLosingExitOrder, normalizeLevels, oneTickBelowCents } from './pricing.js';
+import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, Position } from './types.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -182,6 +183,66 @@ export class ExitRunner {
     return false;
   }
 
+  /** Post a single GTC sell for the remaining position. Price is either the explicit
+   *  `tailGtcPriceDollars` config override or one tick under our side's ask (derived
+   *  from the top opposite-side bid). Skips if no opposite-side bid exists or remaining
+   *  rounds to < 1 share. */
+  private async postTailGtcOrder(): Promise<void> {
+    const remainingInt = Math.floor(this.status.remaining);
+    if (remainingInt < 1) {
+      this.log('info', 'tail_gtc_skipped_below_one_share', { remaining: this.status.remaining });
+      return;
+    }
+
+    let priceDollars: string | undefined;
+    if (this.config.tailGtcPriceDollars) {
+      priceDollars = this.config.tailGtcPriceDollars;
+    } else {
+      let orderbook;
+      try {
+        orderbook = await this.client.getOrderbook(this.config.marketTicker, this.config.orderbookDepth);
+      } catch (err) {
+        this.log('warn', 'tail_gtc_skipped_orderbook_failed', { error: err instanceof Error ? err.message : String(err) });
+        return;
+      }
+      // Our ask = 100¢ - opposite-side top bid (in cents). Sell YES → look at NO bids.
+      const oppRaw = this.config.heldSide === 'yes' ? orderbook.no : orderbook.yes;
+      const opp = normalizeLevels(oppRaw, this.config.minLevelSize).sort((a, b) => b.priceCents - a.priceCents);
+      if (opp.length === 0) {
+        this.log('warn', 'tail_gtc_skipped_no_opposite_bid', {});
+        return;
+      }
+      const ourAskCents = 100 - opp[0].priceCents;
+      const undercutCents = oneTickBelowCents(ourAskCents, this.config.floorPriceCents);
+      if (undercutCents <= 0) {
+        this.log('warn', 'tail_gtc_skipped_undercut_below_floor', { ourAskCents, floor: this.config.floorPriceCents });
+        return;
+      }
+      priceDollars = centsFloatToDollarString(undercutCents);
+    }
+
+    const payload: OrderPayload = {
+      ticker: this.config.marketTicker,
+      action: 'sell',
+      side: this.config.heldSide,
+      count: remainingInt,
+      type: 'limit',
+      reduce_only: false, // Kalshi requires reduce_only=false for GTC
+      time_in_force: 'good_till_canceled',
+      client_order_id: `kea-tail-${Date.now()}-${crypto.randomUUID()}`,
+    };
+    if (this.config.heldSide === 'yes') payload.yes_price_dollars = priceDollars;
+    else payload.no_price_dollars = priceDollars;
+
+    try {
+      const result = await this.client.createOrder(payload);
+      this.journal.append('tail_gtc_posted', { orderId: result.orderId, count: remainingInt, priceDollars });
+      this.log('info', 'tail_gtc_posted', { orderId: result.orderId, count: remainingInt, priceDollars, status: result.status });
+    } catch (err) {
+      this.log('error', 'tail_gtc_failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   async run(): Promise<JobStatus> {
     if (this.status.running) throw new Error('runner already running');
     // Forbidden-ticker check — defense in depth even if config validation was bypassed
@@ -316,6 +377,11 @@ export class ExitRunner {
         }
 
         if (this.config.loopDelayMs > 0) await sleep(this.config.loopDelayMs);
+      }
+
+      // Tail GTC drain: post any leftover shares as a resting order so they exit passively.
+      if (this.config.tailGtcOnFinish && this.status.remaining > 0 && !this.stopRequested) {
+        await this.postTailGtcOrder();
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
