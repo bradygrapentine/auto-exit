@@ -91,14 +91,29 @@ export async function runCase(client: Client, c: HarnessCase, state: Record<stri
 // Recursive structural diff between two JSON-Schema-ish objects. Returns paths
 // that differ (added/removed/type-changed). Conservative — false positives on
 // noisy fields are addressed by widening the schema, not by ignoring.
+//
+// Handles three node shapes:
+//   1. type:'object' with `properties`  — recurse into each property
+//   2. type:'array'  with `items`       — recurse into items with `[]` suffix
+//   3. Leaf (string/number/boolean/…)   — compare types and enum arrays
 export function diffKeys(a: unknown, b: unknown, prefix = ''): string[] {
-  // Implementation: walk `properties`, `items`, `type`. Report:
-  //   `+ path.to.field` (in b not in a)
-  //   `- path.to.field` (in a not in b)
-  //   `~ path.to.field: <typeA> -> <typeB>` (type mismatch)
   const out: string[] = [];
   const ao = (a ?? {}) as Record<string, unknown>;
   const bo = (b ?? {}) as Record<string, unknown>;
+
+  // Array node: recurse into items
+  if (ao.type === 'array' || bo.type === 'array') {
+    const aItems = ao.items as Record<string, unknown> | undefined;
+    const bItems = bo.items as Record<string, unknown> | undefined;
+    const itemPath = prefix ? `${prefix}[]` : '[]';
+    if (aItems && bItems) {
+      out.push(...diffKeys(aItems, bItems, itemPath));
+    }
+    // If one side has items and the other doesn't, treat as type mismatch at this level.
+    return out;
+  }
+
+  // Object node: compare properties
   const aProps = (ao.properties ?? {}) as Record<string, unknown>;
   const bProps = (bo.properties ?? {}) as Record<string, unknown>;
   const allKeys = new Set([...Object.keys(aProps), ...Object.keys(bProps)]);
@@ -108,8 +123,24 @@ export function diffKeys(a: unknown, b: unknown, prefix = ''): string[] {
     const subPath = prefix ? `${prefix}.${k}` : k;
     if (!ak) { out.push(`+ ${subPath}`); continue; }
     if (!bk) { out.push(`- ${subPath}`); continue; }
-    if (ak.type !== bk.type) out.push(`~ ${subPath}: ${ak.type} -> ${bk.type}`);
-    if (ak.type === 'object' || bk.type === 'object') out.push(...diffKeys(ak, bk, subPath));
+    if (ak.type !== bk.type) {
+      out.push(`~ ${subPath}: ${ak.type} -> ${bk.type}`);
+      continue;
+    }
+    // Enum-vs-string drift: one side has enum constraints, the other doesn't
+    if (ak.type === 'string') {
+      const aEnum = ak.enum as unknown[] | undefined;
+      const bEnum = bk.enum as unknown[] | undefined;
+      if (aEnum && !bEnum) {
+        out.push(`~ ${subPath}: enum -> string`);
+      } else if (!aEnum && bEnum) {
+        out.push(`~ ${subPath}: string -> enum`);
+      }
+    }
+    // Recurse into nested object/array nodes
+    if (ak.type === 'object' || bk.type === 'object' || ak.type === 'array' || bk.type === 'array') {
+      out.push(...diffKeys(ak, bk, subPath));
+    }
   }
   return out;
 }
