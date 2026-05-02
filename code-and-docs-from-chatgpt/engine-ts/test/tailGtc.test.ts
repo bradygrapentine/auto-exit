@@ -133,6 +133,67 @@ describe('tailGtcOnFinish: posts a resting GTC for the remainder after main loop
     expect(status.remaining).toBe(0);
   });
 
+  it('SKIPS the tail post when a resting order already exists for the ticker', async () => {
+    // This is the regression test for the duplicate-post bug. Re-running the engine
+    // while a prior tail-GTC is still resting would post a second sell, and GTC drops
+    // reduce_only — both filling could flip the position short.
+    const ob: Orderbook = {
+      yes: [],
+      no: [{ priceCents: 95, size: 1000 }],
+    };
+    const captured: OrderPayload[] = [];
+    const client: KalshiClientLike = {
+      getOrderbook: async () => ob,
+      createOrder: async (p) => {
+        captured.push(p);
+        return { orderId: `m-${captured.length}`, status: 'resting', filledCount: 0, remainingCount: p.count };
+      },
+      getOrder: async () => ({ orderId: 'x', status: 'canceled', filledCount: 0, remainingCount: 0 }),
+      cancelOrder: async () => ({ orderId: 'x', status: 'canceled', filledCount: 0, remainingCount: 0 }),
+      // Position has 1 resting order from a previous run
+      getPosition: async () => ({ ticker: 'KXTEST', side: 'yes', quantity: 100, restingOrdersCount: 1 }),
+    };
+    const cfg: ExitConfig = {
+      ...baseCfg,
+      tailGtcOnFinish: true,
+      tailGtcPriceDollars: '0.0100',
+      cancelOnStale: false,
+    };
+    const runner = new ExitRunner(cfg, client);
+    const status = await runner.run();
+
+    // Main loop ran (1 IoC attempt that didn't fill), but tail post must have been blocked.
+    const tailEvents = status.events.filter((e) => e.message === 'tail_gtc_posted');
+    expect(tailEvents).toHaveLength(0);
+    const blockedEvents = status.events.filter((e) => e.message === 'tail_gtc_skipped_existing_resting_order');
+    expect(blockedEvents).toHaveLength(1);
+    // No GTC payload was submitted
+    const gtcSubmissions = captured.filter((p) => p.time_in_force === 'good_till_canceled');
+    expect(gtcSubmissions).toHaveLength(0);
+  });
+
+  it('skips when getPosition lookup fails before the tail post (defensive)', async () => {
+    const ob: Orderbook = { yes: [], no: [{ priceCents: 95, size: 1000 }] };
+    const client: KalshiClientLike = {
+      getOrderbook: async () => ob,
+      createOrder: async () => ({ orderId: 'm-1', status: 'resting', filledCount: 0, remainingCount: 0 }),
+      getOrder: async () => ({ orderId: 'x', status: 'canceled', filledCount: 0, remainingCount: 0 }),
+      cancelOrder: async () => ({ orderId: 'x', status: 'canceled', filledCount: 0, remainingCount: 0 }),
+      getPosition: async () => { throw new Error('account_api_unavailable'); },
+    };
+    const cfg: ExitConfig = {
+      ...baseCfg,
+      tailGtcOnFinish: true,
+      tailGtcPriceDollars: '0.0100',
+      cancelOnStale: false,
+    };
+    const runner = new ExitRunner(cfg, client);
+    const status = await runner.run();
+
+    expect(status.events.some((e) => e.message === 'tail_gtc_skipped_position_lookup_failed')).toBe(true);
+    expect(status.events.some((e) => e.message === 'tail_gtc_posted')).toBe(false);
+  });
+
   it('floors fractional remainder before submitting (Kalshi rejects float count)', async () => {
     const ob: Orderbook = { yes: [], no: [{ priceCents: 95, size: 1000 }] };
     const captured: OrderPayload[] = [];

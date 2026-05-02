@@ -22,10 +22,14 @@ export function parsePositionsResponse(json: unknown, ticker: string): Position 
   if (!Number.isFinite(raw) || raw === 0) {
     throw new Error(`No position held for ticker ${ticker}`);
   }
+  const restingRaw = (entry as { resting_orders_count?: unknown }).resting_orders_count;
+  const restingOrdersCount =
+    typeof restingRaw === 'number' && Number.isFinite(restingRaw) ? restingRaw : undefined;
   return {
     ticker,
     side: raw > 0 ? 'yes' : 'no',
     quantity: Math.abs(raw),
+    restingOrdersCount,
   };
 }
 

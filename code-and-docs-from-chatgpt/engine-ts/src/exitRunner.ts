@@ -194,6 +194,26 @@ export class ExitRunner {
       return;
     }
 
+    // Guard: don't double-post if a resting order already exists on this market.
+    // Without this, re-running the engine while a previous tail-GTC is still
+    // resting would post a second sell — and since GTC drops reduce_only, both
+    // filling could flip the position short.
+    try {
+      const observed = await this.client.getPosition(this.config.marketTicker);
+      if ((observed.restingOrdersCount ?? 0) > 0) {
+        this.log('warn', 'tail_gtc_skipped_existing_resting_order', {
+          ticker: this.config.marketTicker,
+          restingOrdersCount: observed.restingOrdersCount,
+        });
+        return;
+      }
+    } catch (err) {
+      this.log('warn', 'tail_gtc_skipped_position_lookup_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+
     let priceDollars: string | undefined;
     if (this.config.tailGtcPriceDollars) {
       priceDollars = this.config.tailGtcPriceDollars;

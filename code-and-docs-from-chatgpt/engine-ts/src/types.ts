@@ -170,6 +170,9 @@ export interface Position {
   ticker: string;
   side: Side;
   quantity: number;
+  /** Number of resting orders we currently have on this market. Used to prevent
+   *  re-posting tail-GTC duplicates across re-runs. Optional — older parsers may not surface it. */
+  restingOrdersCount?: number;
 }
 
 export interface KalshiClientLike {
