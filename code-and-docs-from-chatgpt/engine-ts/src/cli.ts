@@ -15,6 +15,18 @@ import { KalshiClient } from './kalshiClient.js';
 import { KalshiAccountClient } from './accountClient.js';
 import { ExitRunner } from './exitRunner.js';
 import { loadConfig } from './config.js';
+import {
+  loadActive,
+  redactKeyId,
+  upsertProfile,
+  setActive,
+  removeProfile,
+  listProfiles,
+  validateKeyFile,
+  defaultBaseUrlFor,
+  KeaNotConfiguredError,
+} from './credentials.js';
+import readline from 'node:readline/promises';
 import type { ExitConfig, Orderbook } from './types.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
@@ -218,6 +230,63 @@ async function cmdJournal(flags: Record<string, string>) {
   }
 }
 
+function cmdWhoami(): void {
+  try {
+    const a = loadActive();
+    const isDemo = a.baseUrl.includes('demo');
+    process.stdout.write(`profile: ${a.profileName}${a.profileName === 'env' ? ' (env vars)' : ''}\n`);
+    process.stdout.write(`key id : ${redactKeyId(a.keyId)}\n`);
+    process.stdout.write(`baseUrl: ${a.baseUrl}${isDemo ? '  [DEMO]' : '  [PROD]'}\n`);
+  } catch (e) {
+    if (e instanceof KeaNotConfiguredError) die(e.message);
+    throw e;
+  }
+}
+
+async function promptIfMissing(label: string, current: string | undefined, fallback?: string): Promise<string> {
+  if (current) return current;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(fallback ? `${label} [${fallback}]: ` : `${label}: `)).trim();
+    return answer || fallback || '';
+  } finally {
+    rl.close();
+  }
+}
+
+async function cmdLogin(flags: Record<string, string>): Promise<void> {
+  const profile = await promptIfMissing('profile name', flags.profile, 'prod');
+  if (!profile) die('profile name required');
+  const keyId = await promptIfMissing('access key id', flags['key-id']);
+  if (!keyId) die('key id required');
+  const keyFile = await promptIfMissing('path to RSA private key', flags['key-file']);
+  if (!keyFile) die('key file required');
+  await validateKeyFile(keyFile);
+  const baseUrl = flags['base-url'] ?? await promptIfMissing('base url', undefined, defaultBaseUrlFor(profile));
+  upsertProfile(profile, { keyId, keyPath: keyFile, baseUrl });
+  ok(`saved profile '${profile}'`);
+  cmdWhoami();
+}
+
+function cmdUse(rest: string[]): void {
+  const name = rest[0];
+  if (!name) die('usage: kea use <profile>');
+  setActive(name);
+  cmdWhoami();
+}
+
+function cmdLogout(flags: Record<string, string>): void {
+  if (flags.all === 'true') {
+    for (const name of listProfiles()) removeProfile(name);
+    ok('removed all profiles');
+    return;
+  }
+  const name = flags.profile;
+  if (!name) die('usage: kea logout --profile <name> | --all');
+  removeProfile(name);
+  ok(`removed profile '${name}'`);
+}
+
 function cmdHelp() {
   process.stdout.write(`
 kea — Kalshi Exit Assistant CLI
@@ -266,10 +335,10 @@ function makeMinimalConfig(ticker: string): ExitConfig {
 }
 
 // ── dispatch ──────────────────────────────────────────────────────────────────
-async function main() {
-  const argv = process.argv.slice(2);
+export async function runCli(argv: string[]): Promise<void> {
   const command = argv[0] ?? 'help';
-  const flags = parseFlags(argv.slice(1));
+  const rest = argv.slice(1);
+  const flags = parseFlags(rest);
 
   switch (command) {
     case 'preview': return cmdPreview(flags);
@@ -280,6 +349,10 @@ async function main() {
     case 'start': return cmdStart(flags);
     case 'resume': return cmdResume(flags);
     case 'journal': return cmdJournal(flags);
+    case 'whoami': return cmdWhoami();
+    case 'login': return cmdLogin(flags);
+    case 'use': return cmdUse(rest.filter((x) => !x.startsWith('--')));
+    case 'logout': return cmdLogout(flags);
     case 'help':
     case '--help':
     case '-h': return cmdHelp();
@@ -290,7 +363,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  process.stderr.write(`✗ ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  runCli(process.argv.slice(2)).catch((err) => {
+    process.stderr.write(`✗ ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}
