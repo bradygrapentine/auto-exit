@@ -147,6 +147,52 @@ describe('kea forbidden', () => {
   });
 });
 
+describe('kea report', () => {
+  it('prints TCA slippage table for a job with tca entries', async () => {
+    await withTempHome(async () => {
+      // Write a fake journal with 2 tca entries
+      const jobId = 'report-test-job';
+      const jobs = path.join(process.env.KEA_HOME!, 'jobs');
+      fs.mkdirSync(jobs, { recursive: true });
+      const entry1 = { ts: new Date().toISOString(), kind: 'tca', data: { jobId, ticker: 'KXTEST', side: 'sell', chunkIndex: 0, arrivalMidCents: 70, executedPriceCents: 69, slippageCents: -1, chunkSize: 200, depthTier: 1 } };
+      const entry2 = { ts: new Date().toISOString(), kind: 'tca', data: { jobId, ticker: 'KXTEST', side: 'sell', chunkIndex: 1, arrivalMidCents: 70, executedPriceCents: 68, slippageCents: -2, chunkSize: 200, depthTier: 1 } };
+      fs.writeFileSync(path.join(jobs, `${jobId}.jsonl`), JSON.stringify(entry1) + '\n' + JSON.stringify(entry2) + '\n');
+
+      const out: string[] = [];
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s: any) => { out.push(String(s)); return true; });
+      try {
+        await runCli(['report', jobId]);
+      } finally {
+        spy.mockRestore();
+      }
+      const joined = out.join('');
+      expect(joined).toContain('arrivalMid');
+      expect(joined).toContain('slippage');
+      expect(joined).toContain('KXTEST');
+      expect(joined).toContain('Chunks: 2');
+    });
+  });
+
+  it('prints "No TCA entries found" for a job without tca entries', async () => {
+    await withTempHome(async () => {
+      const jobId = 'no-tca-job';
+      const jobs = path.join(process.env.KEA_HOME!, 'jobs');
+      fs.mkdirSync(jobs, { recursive: true });
+      fs.writeFileSync(path.join(jobs, `${jobId}.jsonl`),
+        JSON.stringify({ ts: new Date().toISOString(), kind: 'loop_started', data: {} }) + '\n');
+
+      const out: string[] = [];
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s: any) => { out.push(String(s)); return true; });
+      try {
+        await runCli(['report', jobId]);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(out.join('')).toContain('No TCA entries found');
+    });
+  });
+});
+
 describe('kea logout', () => {
   it('removes one profile', async () => {
     await withTempHome(async () => {

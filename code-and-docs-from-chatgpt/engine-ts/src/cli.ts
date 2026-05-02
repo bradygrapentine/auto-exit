@@ -28,8 +28,9 @@ import {
 } from './credentials.js';
 import { getSafety, setSafety, listForbidden, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
 import { computeHarvestPlan } from './harvestPlanner.js';
+import { Journal } from './journal.js';
 import readline from 'node:readline/promises';
-import type { ExitConfig, Orderbook, RiskReductionRow } from './types.js';
+import type { ExitConfig, Orderbook, RiskReductionRow, TcaEntry } from './types.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
 function parseFlags(argv: string[]): Record<string, string> {
@@ -362,6 +363,58 @@ async function cmdPlan(ticker: string | undefined, flags: Record<string, string>
   out(`Suggested strategies: ${plan.suggestedStrategies.join(', ')}\n`);
 }
 
+// ── report command ────────────────────────────────────────────────────────────
+
+function cmdReport(positional: string[]): void {
+  const jobId = positional[0];
+  if (!jobId) die('report requires <jobId>');
+
+  const journal = new Journal(jobId);
+  const entries = journal.readAll();
+  const tcaEntries = entries
+    .filter((e) => e.kind === 'tca')
+    .map((e) => e.data as Omit<TcaEntry, 'kind' | 'ts'>);
+
+  if (tcaEntries.length === 0) {
+    process.stdout.write(`TCA Report — ${jobId}\nNo TCA entries found.\n`);
+    return;
+  }
+
+  const ticker = tcaEntries[0]?.ticker ?? 'unknown';
+  const side = tcaEntries[0]?.side ?? 'unknown';
+
+  process.stdout.write(`\nTCA Report — ${jobId}\n`);
+  process.stdout.write(`Ticker: ${ticker}\n`);
+  process.stdout.write(`Side: ${side}\n`);
+  process.stdout.write(`Chunks: ${tcaEntries.length}\n\n`);
+
+  const header = `${'Chunk'.padStart(5)}  ${'arrivalMid'.padStart(10)}  ${'executed'.padStart(8)}  ${'slippage'.padStart(8)}  ${'size'.padStart(6)}`;
+  process.stdout.write(header + '\n');
+  process.stdout.write(`${'─'.repeat(header.length)}\n`);
+
+  for (const e of tcaEntries) {
+    const idx = String(e.chunkIndex + 1).padStart(5);
+    const mid = fmtCents(e.arrivalMidCents).padStart(10);
+    const exec = fmtCents(e.executedPriceCents).padStart(8);
+    const slip = (e.slippageCents >= 0 ? '+' : '') + fmtCents(e.slippageCents);
+    process.stdout.write(`${idx}  ${mid}  ${exec}  ${slip.padStart(8)}  ${String(e.chunkSize).padStart(6)}\n`);
+  }
+
+  const avgSlippage = tcaEntries.reduce((s, e) => s + e.slippageCents, 0) / tcaEntries.length;
+  const totalFeesDollars = entries
+    .filter((e) => e.kind === 'loop_finished' || e.kind === 'buy_loop_finished')
+    .reduce((s, e) => {
+      const d = e.data as { feesIncurredDollars?: number };
+      return s + (d?.feesIncurredDollars ?? 0);
+    }, 0);
+
+  process.stdout.write(`\nAvg slippage: ${(avgSlippage >= 0 ? '+' : '') + fmtCents(avgSlippage)}\n`);
+  if (totalFeesDollars > 0) {
+    process.stdout.write(`Total fees est: ${fmtDollars(totalFeesDollars)}\n`);
+  }
+  process.stdout.write('\n');
+}
+
 function cmdHelp() {
   process.stdout.write(`
 kea — Kalshi Exit Assistant CLI
@@ -382,6 +435,7 @@ Read-only commands (no money moves):
   positions [--ticker <T>]           List held positions
   resting [--ticker <T>]             List our resting orders
   journal --job <id>                 Print a job's journal
+  report <jobId>                     Print TCA (slippage) report for a completed job
   plan <ticker> --position <n> --cost-basis-cents <n> --market-p <f> --private-p <f>
        --catalyst-type soft|hard [--catalyst-date <ISO>] [--payout-cents <n>]
                                      EV harvest vs hold analysis: EV table, risk-reduction, Greeks
@@ -526,6 +580,10 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'plan': {
       const ticker = rest.find((x) => !x.startsWith('--'));
       return cmdPlan(ticker, flags);
+    }
+    case 'report': {
+      const positional = rest.filter((x) => !x.startsWith('--'));
+      return cmdReport(positional);
     }
     case 'help':
     case '--help':

@@ -4,7 +4,7 @@ import { KalshiClient } from './kalshiClient.js';
 import { Journal, generateJobId } from './journal.js';
 import { buildSellPayload, centsFloatToDollarString, decideLosingExitOrder, normalizeLevels, oneTickBelowCents, projectFullExit } from './pricing.js';
 import { mergeIntoExitConfig, getSafety } from './safety.js';
-import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, Position } from './types.js';
+import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, Position, TcaEntry } from './types.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -381,6 +381,11 @@ export class ExitRunner {
         }
 
         const orderbook = await this.client.getOrderbook(this.config.marketTicker, this.config.orderbookDepth);
+        // Arrival mid: (top YES bid + top YES ask) / 2.
+        // YES ask = 100 - top NO bid. If either side is empty, fall back to 0.
+        const topYesBid = orderbook.yes[0]?.priceCents ?? 0;
+        const topYesAsk = orderbook.no[0] != null ? (100 - orderbook.no[0].priceCents) : 100;
+        const arrivalMidCents = (topYesBid + topYesAsk) / 2;
         const decision = decideLosingExitOrder(orderbook, this.status.remaining, this.config);
         const payload = buildSellPayload(this.config, decision);
         this.status.lastDecision = decision;
@@ -480,6 +485,25 @@ export class ExitRunner {
             requested: decision.chunkSize,
             remainingPosition: this.status.remaining,
           });
+
+          // ── Journal: TCA entry ─────────────────────────────────────────────
+          const executedPriceCents = decision.priceCentsExact;
+          const slippageCents = executedPriceCents - arrivalMidCents;
+          const depthTier = decision.cumulativeSizeAtPrice > 0
+            ? Math.ceil(decision.cumulativeSizeAtPrice / decision.chunkSize)
+            : 1;
+          this.journal.append('tca', {
+            jobId: this.journal.jobId,
+            ticker: this.config.marketTicker,
+            side: 'sell',
+            chunkIndex: this.status.ordersAttempted - 1,
+            arrivalMidCents,
+            executedPriceCents,
+            slippageCents,
+            chunkSize: decision.chunkSize,
+            depthTier,
+          } satisfies Omit<TcaEntry, 'kind' | 'ts'>);
+
           if (filled === 0 && reconciled.status === 'canceled') {
             this.log('warn', 'no_fill_on_chunk', { ordersAttempted: this.status.ordersAttempted });
           }

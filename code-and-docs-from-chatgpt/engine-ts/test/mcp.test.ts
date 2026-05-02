@@ -77,6 +77,7 @@ describe('MCP server — tool registration', () => {
       'kea_orderbook', 'kea_positions', 'kea_preview',
       'kea_replay', 'kea_resting_orders',
       'kea_safety_get', 'kea_safety_set',
+      'kea_tca_summary',
       'kea_whoami',
     ]);
     // No order-mutating tool is exposed in this slice.
@@ -542,5 +543,43 @@ describe('MCP server — kea_harvest_planner', () => {
       },
     });
     expect(res.isError).toBe(true);
+  });
+});
+
+describe('MCP server — kea_tca_summary', () => {
+  function writeTcaJournal(jobId: string, tcaEntries: object[]): void {
+    const jobs = path.join(keaHome, 'jobs');
+    fs.mkdirSync(jobs, { recursive: true });
+    const lines = tcaEntries.map((data) =>
+      JSON.stringify({ ts: new Date().toISOString(), kind: 'tca', data }),
+    ).join('\n') + '\n';
+    fs.writeFileSync(path.join(jobs, `${jobId}.jsonl`), lines);
+  }
+
+  it('returns chunks and avgSlippageCents for a job with 2 tca entries', async () => {
+    const jobId = 'tca-test-job';
+    writeTcaJournal(jobId, [
+      { jobId, ticker: 'KXTEST', side: 'sell', chunkIndex: 0, arrivalMidCents: 70, executedPriceCents: 69, slippageCents: -1, chunkSize: 200, depthTier: 1 },
+      { jobId, ticker: 'KXTEST', side: 'sell', chunkIndex: 1, arrivalMidCents: 70, executedPriceCents: 68, slippageCents: -2, chunkSize: 200, depthTier: 1 },
+    ]);
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_tca_summary', arguments: { jobId } });
+    const parsed = parseJsonResult(res);
+    expect(parsed.chunks).toBe(2);
+    expect(parsed.avgSlippageCents).toBeCloseTo(-1.5, 5);
+    expect(parsed.entries).toHaveLength(2);
+  });
+
+  it('returns chunks=0 when no tca entries in journal', async () => {
+    const jobId = 'empty-job';
+    const jobs = path.join(keaHome, 'jobs');
+    fs.mkdirSync(jobs, { recursive: true });
+    fs.writeFileSync(path.join(jobs, `${jobId}.jsonl`),
+      JSON.stringify({ ts: 't', kind: 'loop_started', data: {} }) + '\n');
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_tca_summary', arguments: { jobId } });
+    const parsed = parseJsonResult(res);
+    expect(parsed.chunks).toBe(0);
+    expect(parsed.entries).toEqual([]);
   });
 });

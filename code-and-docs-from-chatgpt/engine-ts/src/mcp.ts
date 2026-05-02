@@ -20,6 +20,7 @@
  *   kea_forbidden_add — add a ticker to the forbidden list
  *   kea_forbidden_remove — remove a ticker from the forbidden list
  *   kea_harvest_planner — EV-weighted harvest vs hold analysis
+ *   kea_tca_summary     — per-chunk slippage vs arrival mid for a completed job
  *
  * Run: `npx tsx src/mcp.ts` (stdio transport — register in your MCP host config).
  */
@@ -35,7 +36,8 @@ import { loadJournalReplay, replayAll } from './replay.js';
 import { loadActive } from './credentials.js';
 import { getSafety, setSafety, listForbidden, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
 import { computeHarvestPlan } from './harvestPlanner.js';
-import type { ExitConfig, Side } from './types.js';
+import { Journal } from './journal.js';
+import type { ExitConfig, Side, TcaEntry } from './types.js';
 
 function jsonContent(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
@@ -329,6 +331,28 @@ export function buildMcpServer(): McpServer {
         const orderbook = await fetchOrderbook(args.ticker);
         const plan = computeHarvestPlan({ ...args, side: 'sell' }, orderbook);
         return jsonContent(plan);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_tca_summary',
+    {
+      description: 'Returns TCA (Transaction Cost Analysis) for a completed job: per-chunk slippage, avg slippage vs arrival mid, estimated fees.',
+      inputSchema: { jobId: z.string() },
+    },
+    async ({ jobId }) => {
+      try {
+        const journal = new Journal(jobId);
+        const entries = journal.readAll();
+        const tcaEntries = entries
+          .filter((e) => e.kind === 'tca')
+          .map((e) => e.data as Omit<TcaEntry, 'kind' | 'ts'>);
+        if (tcaEntries.length === 0) {
+          return jsonContent({ jobId, chunks: 0, avgSlippageCents: 0, entries: [] });
+        }
+        const avgSlippageCents = tcaEntries.reduce((s, e) => s + e.slippageCents, 0) / tcaEntries.length;
+        return jsonContent({ jobId, chunks: tcaEntries.length, avgSlippageCents, entries: tcaEntries });
       } catch (err) { return errorContent(err); }
     },
   );
