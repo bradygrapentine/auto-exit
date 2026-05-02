@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { Journal, generateJobId } from './journal.js';
-import { getSafety } from './safety.js';
+import { getSafety, checkPreTradeRisk, appendRealizedLoss } from './safety.js';
 import { chooseChunkSize } from './runnerUtils.js';
 import type { BuyConfig, BuyResult, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, SafetyConfig, TcaEntry } from './types.js';
 
@@ -210,6 +210,17 @@ export class BuyRunner {
     let resultStatus: BuyResult['status'] = 'complete';
 
     try {
+      // ── Pre-trade risk checks ──────────────────────────────────────────────
+      // Use fallback price of 0.5 ($0.50) when no live price available.
+      const fallbackPriceCents = 50;
+      const sizeDollars = this.config.size * (fallbackPriceCents / 100);
+      await checkPreTradeRisk({
+        ticker: this.config.ticker,
+        sizeDollars,
+        portfolioNAVDollars: 0, // TODO: pass real NAV when fetchBalance is available
+        safety: safetySnapshot,
+      });
+
       while (this.remaining > 0) {
         if (this.stopRequested) break;
         if (this.killSwitchExists()) {
@@ -358,6 +369,18 @@ export class BuyRunner {
         filled: this.filled,
         status: resultStatus,
       });
+
+      // Record realized loss if avg fill price is below floor (safety.floorPriceCents)
+      if (this.filled > 0 && !this.config.dryRun) {
+        const avgFillCents = this.filled > 0
+          ? this.totalNotionalCents / this.filled
+          : 0;
+        const floorCents = safetySnapshot.floorPriceCents;
+        const pnlDollars = this.filled * (avgFillCents - floorCents) / 100;
+        if (pnlDollars < 0) {
+          appendRealizedLoss({ ticker: this.config.ticker, lossAmount: Math.abs(pnlDollars) });
+        }
+      }
     }
 
     return this.buildResult(resultStatus);
