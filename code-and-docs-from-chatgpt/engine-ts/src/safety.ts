@@ -138,6 +138,118 @@ export function removeForbiddenTicker(ticker: string): boolean {
   return true;
 }
 
+// ── Pre-trade risk checks ─────────────────────────────────────────────────────
+
+export class PreTradeRiskError extends Error {
+  constructor(
+    public readonly check: 'maxLoss' | 'dailyCircuitBreaker' | 'concentration',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'PreTradeRiskError';
+  }
+}
+
+/**
+ * Throws PreTradeRiskError if any configured pre-trade limit is breached.
+ * Call at the start of run() before placing any orders.
+ *
+ * @param ticker              - market ticker being traded
+ * @param sizeDollars         - projected notional value of the intended trade
+ * @param portfolioNAVDollars - current total portfolio NAV; pass 0 to skip concentration check
+ * @param safety              - safety config (defaults to getSafety() if omitted)
+ */
+export async function checkPreTradeRisk(params: {
+  ticker: string;
+  sizeDollars: number;
+  portfolioNAVDollars: number;
+  safety?: SafetyConfig;
+}): Promise<void> {
+  const { ticker, sizeDollars, portfolioNAVDollars } = params;
+  const safety = params.safety ?? getSafety();
+
+  // 1. maxLossPerTickerDollars
+  if (safety.maxLossPerTickerDollars !== undefined) {
+    if (sizeDollars > safety.maxLossPerTickerDollars) {
+      throw new PreTradeRiskError(
+        'maxLoss',
+        `projected loss of $${sizeDollars.toFixed(2)} exceeds maxLossPerTickerDollars ($${safety.maxLossPerTickerDollars.toFixed(2)}) for ${ticker}`,
+      );
+    }
+  }
+
+  // 2. dailyLossCircuitBreakerDollars
+  if (safety.dailyLossCircuitBreakerDollars !== undefined) {
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+    let totalRealizedLoss = 0;
+    try {
+      const raw = fs.readFileSync(auditPath(), 'utf8');
+      for (const line of raw.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const entry = JSON.parse(line) as { kind?: string; data?: { action?: string; date?: string; lossAmount?: number } };
+          if (
+            entry.kind === 'realized_loss' &&
+            entry.data?.action === 'realized_loss' &&
+            entry.data?.date === today &&
+            typeof entry.data?.lossAmount === 'number'
+          ) {
+            totalRealizedLoss += entry.data.lossAmount;
+          }
+        } catch {
+          // skip malformed lines
+        }
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      // ENOENT = no audit file yet — totalRealizedLoss stays 0
+    }
+    if (totalRealizedLoss > safety.dailyLossCircuitBreakerDollars) {
+      throw new PreTradeRiskError(
+        'dailyCircuitBreaker',
+        `daily realized losses $${totalRealizedLoss.toFixed(2)} exceed dailyLossCircuitBreakerDollars ($${safety.dailyLossCircuitBreakerDollars.toFixed(2)})`,
+      );
+    }
+  }
+
+  // 3. maxPositionConcentrationPct
+  if (safety.maxPositionConcentrationPct !== undefined && portfolioNAVDollars > 0) {
+    const concentrationPct = (sizeDollars / portfolioNAVDollars) * 100;
+    if (concentrationPct > safety.maxPositionConcentrationPct) {
+      throw new PreTradeRiskError(
+        'concentration',
+        `position size $${sizeDollars.toFixed(2)} is ${concentrationPct.toFixed(1)}% of NAV ($${portfolioNAVDollars.toFixed(2)}), exceeds limit ${safety.maxPositionConcentrationPct}%`,
+      );
+    }
+  }
+}
+
+/**
+ * Append a realized_loss entry to the audit log.
+ * Call at end of run() when fill result indicates a net loss vs floor price.
+ */
+export function appendRealizedLoss(params: {
+  ticker: string;
+  lossAmount: number;
+}): void {
+  const today = new Date().toISOString().slice(0, 10);
+  const entry = {
+    ts: new Date().toISOString(),
+    kind: 'realized_loss',
+    data: {
+      action: 'realized_loss',
+      ticker: params.ticker,
+      lossAmount: params.lossAmount,
+      date: today,
+    },
+  };
+  const dir = keaHome();
+  fs.mkdirSync(dir, { recursive: true });
+  fs.appendFileSync(auditPath(), JSON.stringify(entry) + '\n', 'utf8');
+}
+
+// ── Exit config merge ─────────────────────────────────────────────────────────
+
 /**
  * Merge persisted safety guard-rails into a job ExitConfig.
  * Guard-rails can only tighten: min for multipliers, max for floors, union for forbidden.

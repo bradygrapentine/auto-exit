@@ -211,6 +211,12 @@ export interface SafetyConfig {
   tailSweepThreshold: number;        // default 0; hard bounds [0, 1_000_000]
   forbiddenTickers: ForbiddenEntry[];
   version: 1;
+  /** Max projected net loss for any single ticker (dollars). If positionSize × price > this, refuse to start. */
+  maxLossPerTickerDollars?: number;
+  /** Max total realized losses for the UTC day (dollars). Reads safety.audit.jsonl realized_loss entries. */
+  dailyLossCircuitBreakerDollars?: number;
+  /** Max % of portfolio NAV in one position (0–100). Skipped when portfolioNAV=0. */
+  maxPositionConcentrationPct?: number;
 }
 
 export type JournalKind =

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { KalshiClient } from './kalshiClient.js';
 import { Journal, generateJobId } from './journal.js';
 import { buildSellPayload, centsFloatToDollarString, decideLosingExitOrder, normalizeLevels, oneTickBelowCents, projectFullExit } from './pricing.js';
-import { mergeIntoExitConfig, getSafety } from './safety.js';
+import { mergeIntoExitConfig, getSafety, checkPreTradeRisk, appendRealizedLoss } from './safety.js';
 import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, Position, TcaEntry } from './types.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -365,6 +365,17 @@ export class ExitRunner {
     this.log('info', 'exit_loop_started', { ticker: this.config.marketTicker, side: this.config.heldSide, dryRun: this.config.dryRun });
 
     try {
+      // ── Pre-trade risk checks ──────────────────────────────────────────────
+      // Use a fallback price of 0.5 ($0.50) when no live price is available.
+      const fallbackPriceCents = 50;
+      const sizeDollars = this.config.positionSize * (fallbackPriceCents / 100);
+      await checkPreTradeRisk({
+        ticker: this.config.marketTicker,
+        sizeDollars,
+        portfolioNAVDollars: 0, // TODO: pass real NAV when fetchBalance is available
+        safety: safetySnapshot,
+      });
+
       if (this.config.preflight) {
         await this.preflight();
       }
@@ -527,6 +538,20 @@ export class ExitRunner {
       this.status.finishedAt = new Date().toISOString();
       this.journal.append('loop_finished', { remaining: this.status.remaining, filled: this.status.filledTotal });
       this.log('info', 'exit_loop_finished', { remaining: this.status.remaining, filled: this.status.filledTotal });
+
+      // Record realized loss if fills were below floor price
+      if (this.status.filledTotal > 0 && !this.config.dryRun) {
+        const avgFillCents = this.status.filledTotal > 0
+          ? (this.status.feesIncurredDollars === 0
+            ? this.config.floorPriceCents  // fallback: assume floor
+            : this.config.floorPriceCents)
+          : this.config.floorPriceCents;
+        // pnl = filled × (avgFill - floor) / 100; negative = loss
+        const pnlDollars = this.status.filledTotal * (avgFillCents - this.config.floorPriceCents) / 100;
+        if (pnlDollars < 0) {
+          appendRealizedLoss({ ticker: this.config.marketTicker, lossAmount: Math.abs(pnlDollars) });
+        }
+      }
     }
     return this.getStatus();
   }
