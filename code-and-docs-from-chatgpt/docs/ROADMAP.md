@@ -63,15 +63,16 @@ Avoid cloud custody/execution in early versions.
 
 ## Algorithmic enhancement sequence (Phases 6–9)
 
-The remaining algorithmic work is sequenced into four waves. Each wave's
-stories are detailed in `BACKLOG.md`. Order is dependency-driven, not
-priority-driven — early waves unblock later ones.
+Restructured 2026-05-02 after multi-agent review (Codex C + Sonnet A + Sonnet B).
+The prior W2 / EW2 split has been collapsed: 5 mirror-pairs merged into
+single side-parameterized strategies; 3 strategies cleaned of agent-side
+decision logic; 4 new strategies added. The unified library is **S1–S16**.
+Each wave's stories are detailed in `BACKLOG.md`. Order is dependency-driven.
 
-**Mental model.** Users pick a *security* + a *discrete strategy*, hit
-execute. No mid-flow configuration questions. The strategy library (Phase 7)
-is the catalog of named strategies. Foundation (Phase 6) gives every strategy
-the same safety / measurement / risk primitives. Cross-cutting (Phase 8) and
-Decision (Phase 9) layer on top.
+**Mental model.** Agent (LLM via MCP) picks a *security* + *side* +
+*discrete strategy* + *size*, hits execute. No mid-flow configuration. The
+agent owns *whether* and *how much* (edge, sizing, news interpretation,
+portfolio decisions); the engine owns *how* (execution mode).
 
 ### Phase 6 — Foundation primitives
 
@@ -83,78 +84,80 @@ Prerequisites for everything else. Build first.
    `kea report`. Required to tune any later strategy empirically.
 3. **Pre-trade risk checks** — `maxLossPerTicker`, `dailyLossCircuitBreaker`,
    `maxPositionConcentrationPct`. Extends safety.json.
+4. 🚨 **Journal pre-call ordering bug fix (W1.4)** — `exitRunner.ts:350-363`
+   journals `order_placed` *after* the network call, defeating crash-safe
+   resume. Real-money correctness gap. Must ship before any new strategy.
+5. **Buy primitive (W1.5)** — `buyRunner` mirror of `exitRunner`. Pulled
+   forward (per Codex C review) to run in parallel with W1.2 / W1.3 once
+   W1.1 lands. Unblocks 12 of 16 S library strategies.
 
-### Phase 7 — Strategy library
+### Phase 7 — Strategy library (S1–S16)
 
-A catalog of *discrete*, no-config strategies. User selects one, engine
-executes. Each is a separate mode in `exitRunner` (or a sibling module for
-multi-leg/portfolio strategies).
+A unified, side-parameterized catalog. Where the same execution mode applies
+to entry and exit (S1, S2, S3, S4, S5, S8), `side` is a runtime parameter,
+not a separate strategy.
 
-4. **Winning exit** (passive-first; designed, not built)
-5. **Panic exit** (cross-the-spread, max speed)
-6. **Pre-resolution arbitrage exit** (capture last-cents convergence near expiry)
-7. **Scale-out ladder** (partial exits at price targets)
-8. **TWAP / scheduled bleed** (time-sliced over N intervals)
-9. **Pair / multi-leg unwind** (atomic close across linked tickers)
-10. **Stop-and-reverse** (exit + open opposite leg)
-11. **Cash-raise** (portfolio-sequenced to hit $ target)
-12. **Roll** (exit current + re-enter next cycle)
-13. **Stealth / adverse-selection** (small randomized chunks, hide size)
+6. **S1 Passive** — post-and-walk (was W2.1 winning + EW2.2 patient)
+7. **S2 Aggressive** — cross-the-spread max speed (was W2.2 panic + EW2.1)
+8. **S3 TWAP** — time-sliced (was W2.5 + EW2.4)
+9. **S4 Stealth** — anti-signaling randomized chunks (was W2.10 + EW2.5)
+10. **S5 Pair / multi-leg** — atomic across linked tickers (was W2.6 + EW2.6)
+11. **S6 Pre-resolution arbitrage** — cleaned of agent-side condition logic
+12. **S7 Scale-out ladder** — cleaned of embedded return-multiple defaults
+13. **S8 Limit ladder** — passive multi-rung GTC, side-parameterized
+14. **S9 Stop-and-reverse** — composes S2 + S2 sign-flipped
+15. **S10 Cash-raise sequencer** — cleaned; agent supplies ranking
+16. **S11 Roll** — composes S1 (exit) + S2 (entry) on different ticker
+17. **S12 Liquidity-providing** — two-sided market making
+18. **S13 Iceberg** ★ NEW — single visible quote, hide remaining
+19. **S14 Cross-resolution basis arb** ★ NEW — buy YES + NO on same market
+20. **S15 GTC-prepend then sweep** ★ NEW (promoted from Other deferred)
+21. **S16 Time-to-expiry emergency** ★ NEW — clock-driven escalation
 
-(Existing **Losing exit** is the Phase 0 baseline.)
+(Existing **Losing exit** is the Phase 0 baseline; survives as the default
+for sells when no strategy is named.)
 
 ### Phase 8 — Cross-cutting execution refinements
 
-Apply across multiple strategies. Build after the strategy library so each
+Apply across multiple S strategies. Build after the library so each
 refinement has multiple consumers.
 
-14. **Participation rate / POV pacing** — throttle by recent volume.
-15. **Anti-gaming randomization** — jitter chunk size + delay.
-16. **Pegged orders** — peg-to-mid for winning / scale-out / roll modes.
+22. **Participation rate / POV pacing** — throttle by recent volume.
+23. **Anti-gaming randomization (W3.2)** — jitter chunk size + delay.
+    Required by S4 stealth.
+24. **Pegged orders (W3.3)** — peg-to-mid for S1 / S7 / S11 / S12.
 
 ### Phase 9 — Decision + optimization layer
 
-Layered on top of an established strategy library.
+Layered on top of an established S library.
 
-17. **Trigger layer** — stop-loss, trailing stop, time-decay trigger,
-    probability-based auto-arm. Selects *when* a strategy runs.
-18. **Implementation Shortfall optimizer** — Almgren-Chriss schedule against
-    binary terminal value. Replaces heuristic chunk sizing inside strategies.
-19. **Portfolio liquidation sequencer** — ranks losers by `EV(hold) − mark`,
-    drives multi-position exits in priority order.
-20. **Smart Order Router** — multi-venue (Kalshi + Polymarket + …). Final
-    layer; only valuable after single-venue maturity is locked.
+25. **Trigger layer (W4.1)** — stop-loss, trailing stop, time-decay,
+    probability-based auto-arm. Selects *when* an S strategy runs and
+    fires it with agent-supplied inputs. Triggered entry / triggered
+    exit are both this story — no separate "entry trigger" needed.
+26. **Implementation Shortfall optimizer (W4.2)** — Almgren-Chriss schedule
+    against binary terminal value. Replaces heuristic chunk sizing inside
+    any loop-based S strategy. Sign-symmetric for buy and sell.
+27. **Portfolio liquidation sequencer (W4.3)** — ranks losers by
+    `EV(hold) − mark`, drives multi-position exits. Generalizes S10
+    cash-raise.
+28. **Smart Order Router (W4.4)** — multi-venue. Final layer; only valuable
+    after single-venue maturity is locked.
+29. **Harvest planner (W4.5)** — decision-support "what-if" panel: EV
+    crossover (`p* = avg_harvest_price / payout`), patient-vs-hold EV
+    table under market p and operator's private p, and risk-reduction
+    sizing table (incl. no-loss-floor row). Output framed in TradFi
+    vocabulary (Delta / Theta / Gamma proxy / Sleeve sizing) since Kalshi
+    binaries are digital options and patient-harvest = gamma scalping into
+    expiry + pre-event de-risking sleeve. Sits between the S library and
+    the trigger layer — agent calls this before invoking S1 (passive) or
+    S7 (scale-out). See `BACKLOG.md` W4.5.
 
-## Entry strategies (Phases 10–11)
+## Retired phases
 
-The agent (LLM via MCP) owns *whether* and *how much*. The engine owns
-*how to execute*. Edge estimation, Kelly sizing, news interpretation all
-live in the agent — not the engine. Entry strategies are pure execution
-patterns, parallel to the exit catalog.
-
-W3 (cross-cutting) and W4 (decision/optimization) absorb entries for free —
-participation rate, jitter, peg-to-mid, triggers, and the IS optimizer are
-all sign-symmetric. Only EW1 and EW2 are net-new work.
-
-### Phase 10 — Entry foundation (EW1)
-
-21. **Buy primitive (`buyRunner`)** — mirror of `exitRunner`: cross-spread
-    IoC, partial-fill reconciliation, journal+resume. Required by every
-    entry strategy *and* by exit stories W2.7 / W2.8 / W2.9.
-
-### Phase 11 — Entry strategy library (EW2)
-
-22. **Aggressive entry** — IoC sweep at ask
-23. **Patient entry** — post-and-walk passive
-24. **Limit ladder** — pre-placed GTC at price points
-25. **TWAP entry** — time-sliced over N intervals
-26. **Stealth entry** — small randomized chunks
-27. **Pair / multi-leg entry** — atomic open across linked tickers
-28. **Liquidity-providing** — two-sided quoting, inventory-capped
-
-Triggered-entry behavior (auto-fire on signal) reuses the W4.1 trigger
-layer — no new strategy needed. The agent supplies the trigger; the layer
-fires whichever of 22–28 the agent selected.
+- **Phase 4 (Winning exit)** — folded into S1 passive (side-parameterized).
+- **Phase 10 (Entry foundation EW1)** — folded into W1.5 buy primitive.
+- **Phase 11 (Entry strategy library EW2)** — merged into S1–S5 + S8 + S12.
 
 ## Phase 12 — Surface parity (extension / TUI / MCP)
 
@@ -166,9 +169,9 @@ explicitly out-of-scope for that surface. Today coverage is uneven:
 | Capability | Extension | TUI | MCP |
 |---|---|---|---|
 | Losing exit (existing) | ✅ via `/start` | ✅ | read-only preview |
-| Account / profile switching | ❌ | 🟡 (account-connect) | 🟡 (`kea_whoami`) |
+| Account / profile switching | ❌ (SP1.7) | ✅ (shipped 2026-05-02) | ✅ `kea_whoami` (shipped 2026-05-02) |
 | Safety + forbidden tickers | ❌ | 🟡 (W1.1) | 🟡 (W1.1) |
-| Named strategies (W2 / EW2) | ❌ | ❌ | ❌ |
+| Named strategies (S library) | ❌ | ❌ | ❌ |
 | Triggers (W4.1) | ❌ | ❌ | ❌ |
 | TCA / reports (W1.2) | ❌ | ❌ | ❌ |
 | Portfolio view (W4.3) | ❌ | ❌ | ❌ |
@@ -183,7 +186,7 @@ then TUI, then extension (richest UI).
     plus account/safety panels. Doesn't depend on new engine work; can
     start any time.
 30. **SP2 — Strategy launchers.** MCP / TUI / Extension launchers for the
-    W2 + EW2 catalog.
+    S library.
 31. **SP3 — Trigger configuration.** MCP / TUI / Extension surfaces for
     W4.1 triggers.
 32. **SP4 — Reports + portfolio.** MCP / TUI / Extension surfaces for W1.2

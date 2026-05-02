@@ -46,7 +46,23 @@ Heuristic only ever shrinks chunks — never grows beyond `chunkSize`. Worst cas
 
 ## Crash-safe resume
 
-`order_placed` is journaled before reconciliation. On `/resume`, engine reads the journal, calls `getOrder` for any orphaned order, reconciles fill state, and avoids double-submission. Live-validated 2026-05-01.
+### Pre-call order_intent (W1.4)
+
+Before calling `createOrder`, the engine writes an `order_intent` journal entry containing the full payload and `clientOrderId`. After `createOrder` returns successfully, the normal `order_placed` entry is appended.
+
+This two-entry protocol closes the crash window where the process could be killed between `createOrder` returning and `order_placed` being written. Without it, the order would exist on Kalshi with no journal trace — `pendingOrders()` would miss it, `remaining` would never be decremented, and an orphaned live order would persist.
+
+### Resume phases
+
+On `/resume`, the engine runs two reconcile phases:
+
+1. **Intent reconcile (`pendingIntents`)**: finds `order_intent` entries with no matching `order_placed` (i.e. the crash window was hit). For each, calls `findOrderByClientOrderId` on Kalshi:
+   - **Found**: synthesizes an `order_placed` entry with the discovered `orderId`, then falls through to phase 2.
+   - **Not found**: logs a warning; treats as never-placed (no fill credit, no decrement).
+
+2. **Placed reconcile (`pendingOrders`)**: the existing path — finds `order_placed` entries with no `order_reconciled`, calls `getOrder`, reconciles fill/cancel state.
+
+After both phases, `computeFilledTotal()` recomputes `remaining` from journal fills so the live loop picks up accurately.
 
 ## Runtime safety bounds
 

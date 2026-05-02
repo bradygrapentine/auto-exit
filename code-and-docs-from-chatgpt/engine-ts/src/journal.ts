@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { JournalEntry, JournalKind, OrderPlacedData } from './types.js';
+import type { JournalEntry, JournalKind, OrderIntentData, OrderPlacedData } from './types.js';
 
 export { JournalEntry };
 
@@ -88,6 +88,39 @@ export class Journal {
   }
 
   /**
+   * Return every `order_intent` entry whose clientOrderId has no matching
+   * `order_placed` entry. These represent orders that may have been placed on
+   * the exchange but were not durably journaled (process killed in the window
+   * between createOrder returning and order_placed being appended).
+   *
+   * On resume, callers should call `findOrderByClientOrderId` for each returned
+   * intent to determine whether the order actually landed on the exchange.
+   */
+  pendingIntents(): OrderIntentData[] {
+    const entries = this.readAll();
+    const placedClientOrderIds = new Set<string>();
+    for (const e of entries) {
+      if (e.kind === 'order_placed') {
+        const d = e.data as { payload?: { client_order_id?: string } };
+        if (d?.payload?.client_order_id) placedClientOrderIds.add(d.payload.client_order_id);
+      }
+    }
+    // Dedupe by clientOrderId — last entry wins
+    const intentMap = new Map<string, OrderIntentData>();
+    for (const e of entries) {
+      if (e.kind === 'order_intent') {
+        const d = e.data as OrderIntentData;
+        if (d?.clientOrderId) intentMap.set(d.clientOrderId, d);
+      }
+    }
+    const pending: OrderIntentData[] = [];
+    for (const [clientOrderId, d] of intentMap) {
+      if (!placedClientOrderIds.has(clientOrderId)) pending.push(d);
+    }
+    return pending;
+  }
+
+  /**
    * Compute filledTotal from journal entries so resume can set an accurate
    * `remaining` without trusting in-memory state.
    *
@@ -118,7 +151,9 @@ export class Journal {
   }
 }
 
-/** Generate a simple unique job ID: timestamp + 4-hex random suffix. */
+/** Generate a unique job ID: timestamp + 8-hex random suffix.
+ *  4-hex (16-bit) suffix had ~26% collision rate for 100 ids generated in the
+ *  same millisecond (birthday paradox); 8-hex (32-bit) drops that to ~1e-6. */
 export function generateJobId(): string {
   const rand = Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
   return `${Date.now()}-${rand}`;

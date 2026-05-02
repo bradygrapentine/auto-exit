@@ -149,10 +149,58 @@ export class ExitRunner {
       return true;
     }
 
+    // ── Phase 1: reconcile order_intent entries with no matching order_placed ────
+    // These represent the crash window: createOrder returned but the process was
+    // killed before order_placed was appended. Look up by clientOrderId to learn
+    // whether the order actually landed on the exchange.
+    const pendingIntents = this.journal.pendingIntents();
+    if (pendingIntents.length > 0) {
+      this.journal.append('resume_started', { jobId: this.jobId, pendingIntentCount: pendingIntents.length });
+      this.log('info', 'resume_intent_reconcile_started', { jobId: this.jobId, pendingIntentCount: pendingIntents.length });
+
+      for (const intent of pendingIntents) {
+        let found: OrderResult | null = null;
+        try {
+          found = await this.client.findOrderByClientOrderId(intent.clientOrderId);
+        } catch (err) {
+          this.log('warn', 'resume_find_by_client_order_id_failed', {
+            clientOrderId: intent.clientOrderId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        if (!found) {
+          // Order never reached the exchange — treat as never-placed.
+          this.log('warn', 'resume_intent_not_found', {
+            clientOrderId: intent.clientOrderId,
+            note: 'order likely never reached exchange; skipping decrement',
+          });
+          continue;
+        }
+
+        // Synthesize an order_placed entry so subsequent pendingOrders() picks it up
+        // and normal reconcile flow handles the fill/cancel state.
+        this.journal.append('order_placed', {
+          orderId: found.orderId,
+          payload: intent.payload,
+          decisionRequested: intent.payload.count,
+        });
+        this.log('info', 'resume_intent_recovered', {
+          clientOrderId: intent.clientOrderId,
+          orderId: found.orderId,
+          status: found.status,
+        });
+      }
+    }
+
+    // ── Phase 2: reconcile order_placed entries with no matching order_reconciled ─
     const pending = this.journal.pendingOrders();
-    if (pending.length > 0) {
-      this.journal.append('resume_started', { jobId: this.jobId, pendingCount: pending.length });
-      this.log('info', 'resume_started', { jobId: this.jobId, pendingCount: pending.length });
+    if (pending.length > 0 || pendingIntents.length > 0) {
+      if (pendingIntents.length === 0) {
+        // Only append resume_started if phase 1 didn't already do it
+        this.journal.append('resume_started', { jobId: this.jobId, pendingCount: pending.length });
+        this.log('info', 'resume_started', { jobId: this.jobId, pendingCount: pending.length });
+      }
 
       for (const op of pending) {
         let result: OrderResult;
@@ -346,6 +394,15 @@ export class ExitRunner {
             break;
           }
           this.status.submittedTotal += decision.chunkSize;
+
+          // ── Journal: order intent (pre-call, crash-safe) ─────────────────
+          // Written BEFORE createOrder so that if the process is killed between
+          // createOrder returning and order_placed being appended, resume can
+          // still find the order via clientOrderId lookup.
+          this.journal.append('order_intent', {
+            clientOrderId: payload.client_order_id,
+            payload,
+          });
 
           const created = await this.client.createOrder(payload);
           this.log('info', 'order_created', { orderId: created.orderId, status: created.status });

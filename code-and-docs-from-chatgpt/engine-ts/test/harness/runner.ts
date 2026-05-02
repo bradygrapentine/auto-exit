@@ -59,8 +59,9 @@ export async function runCase(client: Client, c: HarnessCase, state: Record<stri
     const r = await client.callTool({ name: c.name, arguments: args });
     const text = (r.content?.[0] as { text: string } | undefined)?.text ?? '';
     if (r.isError) {
-      // Skip gracefully when the engine has no credentials (matches smoke runner behavior).
-      // Lets CI without secrets stay green.
+      // Exact-match skip-gate for missing credentials in CI (mirrors mcp-smoke.ts NO_CREDS_MESSAGE).
+      // The harness can't validate schemas / drift / latency without a live MCP backend,
+      // so absence of credentials yields SKIP rather than FAIL.
       if (text.includes('No Kalshi credentials configured')) {
         return { name: c.name, status: 'SKIP', ms: Date.now() - t0 };
       }

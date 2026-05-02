@@ -131,6 +131,13 @@ export class MockKalshiClient implements KalshiClientLike {
     return this.toResult(state);
   }
 
+  async findOrderByClientOrderId(clientOrderId: string): Promise<OrderResult | null> {
+    this.events.push('findOrderByClientOrderId');
+    const state = this.orders.find((o) => o.payload.client_order_id === clientOrderId);
+    if (!state) return null;
+    return this.toResult(state);
+  }
+
   private toResult(state: MockOrderState): OrderResult {
     return {
       orderId: state.orderId,

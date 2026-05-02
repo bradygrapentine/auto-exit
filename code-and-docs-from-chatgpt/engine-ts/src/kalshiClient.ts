@@ -189,8 +189,10 @@ export class KalshiClient implements KalshiClientLike {
   /**
    * Search for an order by client_order_id via GET /portfolio/orders?client_order_id=<id>.
    * Returns the OrderResult if found, null otherwise.
+   * Used during crash-safe resume to reconcile orders whose order_intent was written
+   * but order_placed was not (process killed between createOrder returning and journal append).
    */
-  private async findOrderByClientOrderId(clientOrderId: string): Promise<OrderResult | null> {
+  async findOrderByClientOrderId(clientOrderId: string): Promise<OrderResult | null> {
     const path = `/portfolio/orders?client_order_id=${encodeURIComponent(clientOrderId)}`;
     let res: Response;
     try {

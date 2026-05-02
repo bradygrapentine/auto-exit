@@ -9,10 +9,16 @@ import type { ExitConfig } from '../src/types.js';
 // Generate a real RSA keypair so the signer doesn't error.
 const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
 const pemPath = path.join(os.tmpdir(), `kea-test-key-${Date.now()}.pem`);
+const isolatedKeaHome = path.join(os.tmpdir(), `kea-test-home-${Date.now()}`);
 let prevAccessKey: string | undefined;
 let prevKeyPath: string | undefined;
+let prevKeaHome: string | undefined;
 beforeAll(() => {
   fs.writeFileSync(pemPath, privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
+  // Isolate KEA_HOME so loadActive() can't find a real credentials.json on the dev
+  // machine (which would shadow the env-var fallback this test relies on).
+  prevKeaHome = process.env.KEA_HOME;
+  process.env.KEA_HOME = isolatedKeaHome;
   // loadActive() reads KALSHI_ACCESS_KEY / KALSHI_PRIVATE_KEY_PATH (env fallback when no
   // credentials.json present). Seed those so signing tests have credentials available.
   prevAccessKey = process.env.KALSHI_ACCESS_KEY;
@@ -22,6 +28,7 @@ beforeAll(() => {
 });
 afterAll(() => {
   fs.rmSync(pemPath);
+  if (prevKeaHome !== undefined) process.env.KEA_HOME = prevKeaHome; else delete process.env.KEA_HOME;
   if (prevAccessKey !== undefined) process.env.KALSHI_ACCESS_KEY = prevAccessKey; else delete process.env.KALSHI_ACCESS_KEY;
   if (prevKeyPath !== undefined) process.env.KALSHI_PRIVATE_KEY_PATH = prevKeyPath; else delete process.env.KALSHI_PRIVATE_KEY_PATH;
 });
