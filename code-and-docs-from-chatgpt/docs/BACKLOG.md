@@ -4,25 +4,32 @@ Last `/backlog-sync`: 2026-05-02
 
 | Status | Count |
 |--------|-------|
+| 🚨 Critical fix (W1.4 journal bug) | 1 |
 | 🟡 Plan ready | 1 |
-| 🧊 Exit sequence (W1–W4) | 20 |
-| 🧊 Entry sequence (EW1–EW2) | 8 |
+| 🧊 Foundation (W1) | 3 |
+| 🧊 Strategy library (S) | 16 |
+| 🧊 Cross-cutting (W3) | 3 |
+| 🧊 Decision + optimization (W4) | 4 |
 | 🧊 Surface parity (SP1–SP4) | 14 |
-| 🧊 Other deferred (off-sequence) | 6 |
+| 🧊 Other deferred (off-sequence) | 5 |
 | ✅ Shipped (this log) | 3 |
 
-This file is split into four sequences plus two ledgers. The **Exit
-sequence** (W1–W4) is the planned arc from current state to a full
-exit-strategy library. The **Entry strategy sequence** (EW1–EW2) is the
-parallel arc on the open side; it shares W3 cross-cutting and W4
-decision/optimization with the exit side. The **Surface parity sequence**
-(SP1–SP4) cascades each engine capability onto the browser extension,
-TUI, and MCP. **Other deferred** is the parking lot for off-sequence
-micro-tactics.
+This file is split into three sequences plus two ledgers. The
+**Algorithmic enhancement sequence** runs W1 (foundation) → S (unified
+strategy library) → W3 (cross-cutting refinements) → W4 (decision +
+optimization). The prior W2 / EW2 split has been retired (2026-05-02);
+exit and entry strategies that were mirror pairs are now single
+side-parameterized stories in the S library, and three strategies have
+been cleaned of agent-side decision logic that previously leaked into
+them. The **Surface parity sequence** (SP1–SP4) cascades each engine
+capability onto the browser extension, TUI, and MCP. **Other deferred**
+is the parking lot for off-sequence micro-tactics.
 
-The product surface is *discrete strategies*: agent picks a security + a
-named strategy + size, engine executes. No mid-flow configuration. The
-agent (LLM via MCP) owns *whether* and *how much*; the engine owns *how*.
+The product surface is *discrete strategies*: agent picks a security +
+a named strategy + side + size + per-strategy inputs, engine executes.
+No mid-flow configuration. The agent (LLM via MCP) owns *whether* and
+*how much* (edge, sizing, news interpretation, portfolio decisions);
+the engine owns *how*.
 
 ---
 
@@ -53,7 +60,7 @@ forbidden tickers). Append-only `safety.audit.jsonl` for every mutation;
 **Cost:** ~1.5 days. 11 tasks, TDD per task.
 
 **Why first:** unblocks W1.3 (pre-trade risk uses the same persistence) and
-every W2 strategy that needs an audited risk envelope.
+every S strategy that needs an audited risk envelope.
 
 ### 🧊 W1.2 — Post-trade TCA (arrival-price slippage logging)
 
@@ -92,197 +99,401 @@ CLI/MCP/TUI surfaces inherit from W1.1 patterns.
 
 **Cost:** ~1.5 days. Builds directly on W1.1.
 
-**Why third:** every strategy in W2 should refuse to start when a risk
+**Why third:** every strategy in S should refuse to start when a risk
 envelope is breached. Cleaner to add the check once, before each strategy.
+
+### 🚨 W1.4 — Journal pre-call ordering bug fix
+
+**Trigger (Sonnet A code review, 2026-05-02):** at `exitRunner.ts:350-363`,
+the `order_placed` journal entry is written *after* `createOrder` returns,
+not before. If the process is killed in the window between `createOrder`
+returning and the journal append (SIGKILL, OOM, hardware fault), the
+order exists on Kalshi but has no journal trace. On resume,
+`journal.pendingOrders()` will not see it, the engine will not reconcile,
+`remaining` is never decremented, and an orphaned live order persists on
+the exchange. The doc (`LOSING_EXIT_ALGORITHM.md:49`) sells crash-safe
+resume as a feature; this gap defeats it. The existing
+`deliberatePauseAfterPlaceMs` test only covers the crash *between*
+`order_placed` and `order_reconciled` — not before `order_placed`.
+Untested by the harness.
+
+**Proposed:** write a pre-call `order_intent` journal entry containing
+the full payload + `clientOrderId` *before* invoking `createOrder`. After
+the response returns, append `order_placed` with the resolved `orderId`.
+On resume, replay reads `order_intent` entries with no matching
+`order_placed` and queries Kalshi by `clientOrderId` to find any
+orphaned order (Kalshi supports client-order-id lookup). New journal
+kind `order_intent`; new resume path `reconcileByClientOrderId`.
+
+**Cost:** ~4 hours. New journal kind, pre-call hook in `exitRunner.run()`,
+resume path, fixture-based crash-window test (kill between intent and
+place).
+
+**Why critical:** real-money correctness gap in shipped code. Should land
+before any new strategy work; otherwise every new strategy inherits the
+defect.
+
+### 🧊 W1.5 — Buy primitive (`buyRunner`)
+
+**Trigger:** the engine has no buy loop today. `KalshiClient.placeOrder`
+exists but no equivalent of `exitRunner` for the open side: no chunked
+IoC buy loop, no partial-fill reconciliation, no journal+resume. Required
+by every strategy that opens a position (S2 aggressive, S5 pair, S9
+stop-and-reverse, S11 roll, S12 market-making, S13 iceberg, S14 basis,
+S15 GTC-prepend, plus side-parameterized S1/S3/S4 when used as entries).
+Highest-leverage prereq in the entire roadmap after W1.4.
+
+**Proposed:** new `src/buyRunner.ts` mirroring `exitRunner` shape. Same
+journal (with W1.4 pre-call ordering), same resume semantics, same safety
+merge. Crosses to the ask side instead of the bid side. Reuses
+cumulative-depth pricing, adaptive chunking, tail sweep,
+`safetySubmittedMultiple` cap. Primary work is extracting shared helpers
+from `exitRunner` cleanly so both runners stay aligned.
+
+**Cost:** ~2 days.
+
+**Recommended scheduling (per Codex C review, 2026-05-02):** runs in
+parallel with W1.2 / W1.3 once W1.1 lands. Not gated on TCA or pre-trade
+risk; only on the safety-persistence pattern from W1.1. Pulling W1.5
+forward unblocks 12 of 16 strategies in the S library.
+
+**Why second-to-last in W1:** every S strategy that opens a position
+depends on this. No parallel path through the library without it.
 
 ---
 
-## W2 — Strategy library (the catalog)
+## S — Strategy library (unified, side-parameterized)
 
-Each story below is a *named strategy* the user can pick from a TUI
-dropdown / CLI subcommand / MCP enum. No configuration questions at run
-time — the strategy embeds its own defaults, with `safety.json` as the
-guard rail.
+**Major restructure (2026-05-02 — Sonnet B + Codex C reviews):** the
+prior W2 (10 exit) + EW2 (7 entry) catalog had 5 mirror-pairs that were
+the same execution mode with sides flipped (winning↔patient, panic↔aggressive,
+twap↔twap, stealth↔stealth, pair↔pair). They've been merged into single
+*side-parameterized* strategies. Three strategies (former W2.3, W2.4, W2.8)
+had agent-side decision logic embedded; that logic has been lifted out
+(into the agent or W4 layer) and the strategies are now pure execution
+modes. Four new strategies were added to fill genuine gaps.
 
-### 🧊 W2.1 — Winning exit (passive-first)
+Each story below is a *named strategy* the agent picks from a TUI
+dropdown / CLI subcommand / MCP enum. Agent supplies `{ ticker, side,
+size, strategyName, ...strategy-specific inputs }`. No mid-flow
+configuration. Where `side` is meaningful, the same engine module handles
+both directions.
 
-**Trigger:** designed in `docs/WINNING_EXIT_ALGORITHM.md`, never built. Today
-the only mode is the losing-exit IoC sweep, which collapses price on
-positions you actually want to harvest patiently.
+### 🧊 S1 — Passive (post-and-walk, side-parameterized)
 
-**Proposed:** new mode `winning`. Steps:
+**Trigger:** agent has decided on a position (open or close) with no
+urgency and wants to harvest passive flow rather than crossing the
+spread. Was previously two stories (W2.1 winning exit + EW2.2 patient
+entry); collapsed because they share ~80% of code with only the side
+flipped.
 
-1. Read bid/ask. If spread < 1¢, fall through to losing exit.
-2. Post one chunk GTC at `ask − 1¢` (or pegged-to-mid once W3.3 lands).
-3. Timebox `winningTimeboxMs` (default 60s).
-4. Cancel unfilled remainder; on next iter post one tick lower.
-5. Floor at `floorPriceCents` from safety.json.
+**Proposed:** mode `passive`. Inputs: `{ ticker, side: 'buy'|'sell',
+size, maxPriceCents (sell) | minPriceCents (buy) }`. Steps:
 
-**Cost:** ~1.5 days. New `winningExit.ts` module sharing primitives with
-`exitRunner`, fixtures with wide-spread books, integration tests for
-post/timeout/cancel/replace cycle.
+1. Read bid/ask. If spread < 1¢, fall through to S2 aggressive.
+2. Post one chunk GTC at `ask − 1¢` (sell) or `bid + 1¢` (buy), or
+   pegged-to-mid once W3.3 lands.
+3. Timebox `passiveTimeboxMs` (default 60s).
+4. Cancel unfilled remainder; on next iter shift one tick toward the
+   spread (sell: down; buy: up).
+5. Floor / ceiling at the agent-supplied limit, with `safety.json`
+   guards still applying.
 
-**Why first in W2:** half the natural exit space is currently uncovered.
-Largest single value-unlock in the strategy library.
+**Cost:** ~1.5 days. New `passive.ts` module sharing primitives with
+`exitRunner` and `buyRunner` (W1.5).
 
-### 🧊 W2.2 — Panic exit (cross-the-spread, max speed)
+**Dependency:** W1.5 buy primitive (for buy side).
 
-**Trigger:** news drops, position must be flat *now*, price doesn't matter.
-Today the closest analogue is "set tight `floorPriceCents`, IoC sweep" — but
-the loop still respects chunking, adaptive, and inter-iter delay. A panic
-mode skips all of that.
+### 🧊 S2 — Aggressive (cross-the-spread, max speed)
 
-**Proposed:** new mode `panic`. One IoC order for the entire `positionSize`
-at `floorPriceCents = 0` (or 1¢ above worst-bid for slightly better fill
-behavior under venue rules). No chunking, no adaptive sizing, no inter-iter
-delay. `safetySubmittedMultiple` still applies as a runaway guard. Required
-explicit `--confirm panic` to start (or 2-keystroke confirm in TUI).
+**Trigger:** agent must execute *now* — news-driven exit, fresh
+conviction entry, or any case where speed > price. Was W2.2 panic +
+EW2.1 aggressive; same mode either side.
 
-**Cost:** ~4 hours. Trivial mode added to `exitRunner` with a hard early-out
-for chunking/adaptive/delay logic.
+**Proposed:** mode `aggressive`. One IoC order for the entire `size` at
+`bid` (sell) / `ask` (buy), or one tick into the book for slightly
+better fill behavior. No chunking, no adaptive sizing, no inter-iter
+delay. `safetySubmittedMultiple` still applies as runaway guard. CLI
+requires `--confirm aggressive`; TUI requires 2-keystroke confirm;
+extension requires modal. Mirror of how panic confirms today.
 
-**Why early in W2:** smallest implementation, largest psychological value.
-Real users will reach for this once during a market event and will not forget.
+**Cost:** ~4 hours after W1.5.
 
-### 🧊 W2.3 — Pre-resolution arbitrage exit
+**Dependency:** W1.5 buy primitive (for buy side).
 
-**Trigger:** market is hours from resolution, mid has converged near $1 or
-$0, but a few cents of spread remain because the book is thin. A patient
-winning-exit gets nothing (no buyers crossing); a losing-exit overpays in
-slippage. There's a narrow window where the right move is "cross 1-2 ticks
-to capture residual edge before settlement."
+### 🧊 S3 — TWAP (time-sliced, side-parameterized)
 
-**Proposed:** new mode `pre-resolution-arb`. Inputs: `timeToCloseHours`
-threshold (default 24). Behavior: aggressive IoC at `bid + 1¢` (giving up
-one tick of slippage to fill); if no fill within `arbTimeboxMs`, escalate
-to `bid` and sweep. Different from losing-exit because the chunks are
-*small* (preserve price discovery) and the floor is *high* (won't sweep
-into deep tail). Stops at `floorPriceCents = bestBid - 2`.
+**Trigger:** large position, no urgency, want predictable execution over
+hours/days regardless of price. Was W2.5 + EW2.4.
 
-**Cost:** ~1 day. New mode + book-shape guard (only allow start if
-`midToTerminal < 5¢`, else fall through to whichever of winning/losing
-fits).
+**Proposed:** mode `twap`. Inputs: `{ ticker, side, size,
+intervalMinutes, numIntervals }`. Engine computes per-interval target =
+size / numIntervals, runs one S1 (passive) chunk per interval, uses
+`safety.json` floor / ceiling. Pauses overnight (configurable session
+window). Sets up daemon-mode scaffolding W4.1 trigger layer reuses.
 
-### 🧊 W2.4 — Scale-out ladder (profit-taking)
+**Cost:** ~1 day after S1.
 
-**Trigger:** position is up — but not all-the-way up. User wants to take
-some off and let the rest run. Common in directional trading. Today this
-requires running winning-exit with a partial `positionSize`, then again
-later — manual.
+**Dependency:** S1 passive, W1.5 buy primitive.
 
-**Proposed:** new mode `scale-out`. Strategy embeds a default ladder:
-exit 25% at `entry × 1.5`, 25% at `entry × 2`, 25% at `entry × 3`, hold
-remaining 25% to expiry. Each rung uses winning-exit semantics (passive
-near ask). User-overridable rung table per strategy invocation.
+### 🧊 S4 — Stealth (anti-signaling, side-parameterized)
 
-**Cost:** ~1.5 days. New module orchestrating multiple winning-exit
-sub-runs against price triggers; depends on W4.1 trigger layer (or a
-simple polling loop until W4.1 lands — viable interim).
+**Trigger:** agent suspects informed flow or wants to accumulate /
+liquidate without showing intent. Standard chunking prints a recognizable
+pattern. Was W2.10 + EW2.5.
 
-**Dependency:** softly depends on W2.1 (winning exit).
+**Proposed:** mode `stealth`. Small randomized chunks (50–200 shares
+regardless of `chunkSize`), random inter-chunk delay (5–60s), no
+resting orders (would expose remaining). Slower; minimal footprint.
+Composes W3.2 jitter primitive.
 
-### 🧊 W2.5 — TWAP / scheduled bleed
+**Cost:** ~1 day after W3.2 + W1.5.
 
-**Trigger:** large position, no urgency, want to bleed it out predictably
-over hours/days regardless of price. Common institutional pattern. Today's
-phased plan (P1 phases) is a manual approximation.
+**Dependency:** W3.2 jitter primitive (gating per Codex C 2026-05-02).
+W1.5 buy primitive for buy side.
 
-**Proposed:** new mode `twap`. Inputs: `positionSize`, `intervalMinutes`,
-`numIntervals`. Engine computes per-interval target = positionSize/numIntervals,
-runs a single losing-exit chunk per interval, uses `safety.json` floor
-discipline. Pauses overnight (configurable session window).
+### 🧊 S5 — Pair / multi-leg (atomic, side-parameterized)
 
-**Cost:** ~1 day. Daemon-mode runner (similar to what W4.1 needs anyway),
-interval scheduler, journal kind `twap_interval`.
+**Trigger:** agent wants to open or close a multi-leg position
+(spread, hedge, range bet) atomically. Closing one leg without the other
+re-introduces directional risk; opening one leg ahead of the other
+exposes execution risk. Was W2.6 + EW2.6.
 
-**Dependency:** sets up daemon scaffolding W4.1 reuses.
-
-### 🧊 W2.6 — Pair / multi-leg unwind
-
-**Trigger:** position is one leg of a hedge or spread (e.g. P1 YES + P4 NO
-as a "0–6%" range bet). Closing one leg without the other re-introduces
-directional risk the user explicitly hedged out.
-
-**Proposed:** new mode `pair-unwind`. Inputs: list of `{ ticker, heldSide,
-positionSize }` legs. Engine runs all legs in parallel under one job-id,
-shares one journal, enforces atomicity-of-progress: if leg A is 50% done
-and leg B's book disappears, *halt all legs*, surface to user. No leg is
-allowed to outpace the others by more than `legSkewPct` (default 10%).
+**Proposed:** mode `pair`. Inputs: list of `{ ticker, side, size }`
+legs. Engine runs all legs in parallel under one job-id, shares one
+journal, enforces atomicity-of-progress: if any leg's book becomes
+unfillable, halt *all legs* and surface to agent. No leg outpaces others
+by more than `legSkewPct` (default 10%).
 
 **Cost:** ~2 days. Multi-leg job runner, parallel orderbook streams,
 skew-throttle logic, replay covering partial-leg-failure cases.
 
-**Dependency:** wants W1.2 TCA to detect skew impact.
+**Dependency:** W1.5 buy primitive, W1.2 TCA for skew impact.
 
-### 🧊 W2.7 — Stop-and-reverse
+### 🧊 S6 — Pre-resolution arbitrage exit
 
-**Trigger:** thesis flipped. User wants to exit YES *and* open NO in one
-atomic sequence. Currently two manual jobs with risk between them.
+**Trigger:** market is hours from resolution; mid has converged near $1
+or $0; a few cents of spread remain in a thin book. Patient passive
+gets nothing (no buyers crossing); standard losing exit overpays
+slippage. Cleaned of the entry-condition logic that previously lived
+here (was W2.3) — that's now a W4.1 trigger.
 
-**Proposed:** new mode `stop-and-reverse`. Inputs: existing position +
-`reverseSize` (NO position to open). Phase 1: panic-style exit of existing.
-Phase 2: aggressive-IoC buy on opposite side. Single journal. W1.3 risk
-checks apply to the open leg.
+**Proposed:** mode `pre-resolution-arb`. Aggressive IoC at `bid + 1¢`
+(giving up one tick of slippage to fill); if no fill within
+`arbTimeboxMs`, escalate to `bid` and sweep. Small chunks (preserve
+price discovery), high floor (won't sweep into deep tail).
 
-**Cost:** ~1.5 days. Composes panic-exit (W2.2) + a new buy primitive.
+**Engine-vs-agent line note (Sonnet B 2026-05-02):** the *condition*
+that this strategy is the right move (`timeToCloseHours < 24`,
+`midToTerminal < 5¢`) is an agent decision, not an engine guard. The
+engine receives a request to run S6 and executes; if the agent's
+condition is wrong, that's an agent-side bug. A W4.1 trigger named
+`pre-resolution-window` can encode the standard condition for agents
+that want it.
 
-**Dependency:** W2.2 panic exit, W1.3 pre-trade risk.
+**Cost:** ~1 day.
 
-### 🧊 W2.8 — Cash-raise (portfolio-sequenced to hit $ target)
+### 🧊 S7 — Scale-out ladder (rung-driven partial exits)
 
-**Trigger:** user needs $X in cash by deadline (margin call, withdrawal,
-external trade opportunity). Wants minimum total loss to free that cash.
-Today this is a manual ranking exercise.
+**Trigger:** agent wants to take partial size off at multiple price
+levels rather than all-or-nothing. Cleaned of embedded defaults that
+previously lived here (was W2.4) — `25% at entry × 1.5` etc. encoded a
+return-multiple opinion that's an agent judgment, not an execution
+pattern.
 
-**Proposed:** new mode `cash-raise`. Inputs: `targetCashDollars`,
-`deadline`. Engine reads all positions, computes `costToFreeOneDollar` per
-ticker (mark-to-bid impact / dollar freed), sorts ascending, runs
-losing-exit (or winning if conditions match) on cheapest-to-exit positions
-first until target met. Stops if target is reached mid-job.
+**Proposed:** mode `scale-out`. Inputs: `{ ticker, side: 'sell', size,
+rungs: [{ priceCents, sizePct }] }`. Engine receives the rung table from
+the agent — no defaults baked in. Each rung uses S1 (passive) semantics
+when the price is reached. Active polling loop checks price every N
+seconds against rung thresholds.
 
-**Cost:** ~2 days. Subset of W4.3 portfolio sequencer math, useful as a
-specific named strategy before the general optimizer ships.
+**Interim implementation (no W4.1):** in-process polling loop. Ships
+standalone.
 
-**Dependency:** W1.2 TCA for impact estimates.
+**Post-W4.1 migration:** replace polling loop with `profit-target`
+triggers that auto-arm each rung's S1 run. Same rung config; cleaner
+runtime semantics.
 
-### 🧊 W2.9 — Roll (exit current + re-enter next cycle)
+**Cost:** ~1.5 days after S1.
 
-**Trigger:** position thesis still holds but contract is expiring. Want to
-roll into the next cycle's equivalent (e.g. monthly inflation print, next
-election round, etc.) without going flat.
+**Dependency:** S1 passive. W4.1 is upgrade path, not blocker.
 
-**Proposed:** new mode `roll`. Inputs: current position + target ticker.
-Phase 1: exit current via winning-exit (preferred — minimize self-impact).
-Phase 2: aggressive-IoC buy of target. W1.3 concentration cap applies to
-phase 2.
+### 🧊 S8 — Limit ladder (passive multi-rung GTC, side-parameterized)
 
-**Cost:** ~1 day. Composes winning-exit + buy primitive.
+**Trigger:** agent wants pre-placed orders at multiple price points and
+to walk away. Useful when expecting mean-reversion or willing to average
+in / out. Was EW2.3. Distinct from S7 scale-out: S7 is *active*
+(price-triggered rung firing using passive semantics); S8 is *passive*
+(upfront multi-GTC placement, no iteration). Different state machines —
+keep separate per Sonnet B.
 
-**Dependency:** W2.1 winning exit, W2.7 buy primitive (shared).
+**Proposed:** mode `limit-ladder`. Inputs: list of `{ priceCents,
+sizePct }` rungs + side. Engine posts each as a GTC at start, monitors
+fills, journals each. No iteration loop after placement; relies on
+resume to reconcile fills on next session.
 
-### 🧊 W2.10 — Stealth / adverse-selection
+**Cost:** ~1 day after W1.5.
 
-**Trigger:** user suspects informed flow on the other side ("someone knows
-the result"). Wants out without showing intent. Standard losing-exit prints
-a recognizable pattern (uniform chunk, regular cadence).
+**Dependency:** W1.5 buy primitive (for buy side).
 
-**Proposed:** new mode `stealth`. Behavior: small randomized chunks
-(50–200 shares regardless of `chunkSize`), random inter-chunk delay
-(5–60s), no GTC tail (it would expose remaining size). Slower; fewer
-fills per minute; minimal footprint.
+### 🧊 S9 — Stop-and-reverse
 
-**Cost:** ~1 day. Composition of W3.2 randomization primitive +
-forced-small chunking. Cheap once W3.2 exists; can ship as a
-standalone strategy first using its own RNG.
+**Trigger:** thesis flipped. Agent wants to exit current position *and*
+open opposite in one atomic sequence. Was W2.7.
 
-**Dependency:** mostly independent; sharing W3.2 jitter primitive is
-cleaner if W3.2 ships first.
+**Proposed:** mode `stop-and-reverse`. Inputs: existing position +
+target side + target size. Phase 1: S2 aggressive exit of existing.
+Phase 2: S2 aggressive open of opposite side. Single journal. W1.3
+pre-trade risk applies to the open leg.
+
+**Cost:** ~1 day after S2.
+
+**Dependency:** S2 aggressive, W1.3 pre-trade risk, W1.5 buy primitive.
+
+### 🧊 S10 — Cash-raise sequencer
+
+**Trigger:** agent needs $X in cash by deadline. Cleaned of portfolio-
+ranking logic that previously lived here (was W2.8) — `costToFreeOneDollar`
+sorting is portfolio optimization, an agent decision (or W4.3 territory).
+
+**Proposed:** mode `cash-raise`. Inputs: ordered list of `{ ticker,
+size, strategyName }` from agent + `targetCashDollars` + `deadline`.
+Engine executes them sequentially, halting when target is met or
+deadline hits. The *ordering* arrives pre-computed; engine only
+sequences and respects the target.
+
+**Engine-vs-agent line note (Sonnet B 2026-05-02):** the agent (or W4.3)
+ranks positions; engine executes the sequence. Removes ranking math
+from the engine.
+
+**Cost:** ~1 day.
+
+**Dependency:** at least one of S1 / S2 to run individual positions.
+
+### 🧊 S11 — Roll (exit current + open next cycle)
+
+**Trigger:** position thesis still holds but contract is expiring. Roll
+into the next cycle's equivalent without going flat. Was W2.9.
+
+**Proposed:** mode `roll`. Inputs: current position + target ticker +
+target size. Phase 1: S1 passive exit of current (preferred — minimize
+self-impact). Phase 2: S2 aggressive open of target. W1.3 concentration
+cap applies to phase 2.
+
+**Cost:** ~1 day after S1 + S2.
+
+**Dependency:** S1, S2, W1.3, W1.5.
+
+### 🧊 S12 — Liquidity-providing (two-sided market making)
+
+**Trigger:** agent wants to make markets on a stable, wide-spread market —
+post both sides inside the spread, harvest fills, manage inventory toward
+a target. Was EW2.7.
+
+**Proposed:** mode `market-make`. Inputs: ticker, `targetInventory`,
+`maxInventory`, `quoteOffsetCents`. Engine maintains two resting GTCs,
+cancels and reposts on book moves (uses W3.3 peg-to-mid when
+available). Cuts off when inventory hits `maxInventory` on either side;
+reposts the *opposite* side aggressively to flatten back toward
+`targetInventory`.
+
+**Cost:** ~3 days. Significant new state machine; needs careful
+inventory accounting and fill-reconciliation.
+
+**Dependency:** W1.5 buy primitive, W3.3 peg-to-mid (preferred).
+
+**Why scope-risk-flagged:** Codex C pre-mortem candidate — complex state
+machine that may grow if real users want richer inventory rules. Watch
+for scope creep during implementation.
+
+### 🧊 S13 — Iceberg (single visible quote)
+
+**Trigger (NEW per Sonnet B 2026-05-02):** agent wants to accumulate or
+liquidate a large position without revealing total size. Distinct from
+S4 stealth — stealth varies chunk size and timing; iceberg hides total
+remaining behind a single visible quote.
+
+**Proposed:** mode `iceberg`. Inputs: `{ ticker, side, size, visibleSize,
+priceCents }`. Engine posts a `visibleSize` GTC at `priceCents`. On
+fill, immediately reposts another `visibleSize` at the same price.
+Continues until full `size` is filled or agent cancels. Total remaining
+is never visible to the book.
+
+**Cost:** ~1 day after W1.5.
+
+**Dependency:** W1.5 buy primitive.
+
+### 🧊 S14 — Cross-resolution basis arbitrage
+
+**Trigger (NEW per Sonnet B 2026-05-02):** when YES and NO on the *same*
+market both trade below $1 (e.g. YES at 60¢ + NO at 38¢ = 98¢), buying
+both sides simultaneously locks a $1 terminal payoff for 98¢, a 2¢
+risk-free arbitrage. Engine has no mode that buys two correlated legs
+of the *same* market expecting collapse to terminal value.
+
+**Proposed:** mode `basis-arb`. Inputs: ticker, total dollar budget.
+Engine simultaneously buys YES at best ask + NO at best ask in
+proportional sizes, halts if total cost ≥ $1 per pair (no longer
+arbitrage). Single journal; both legs share atomicity-of-progress like
+S5 pair.
+
+**Engine-vs-agent line note:** the *decision* that an arbitrage exists
+right now is the agent's call (read both sides, do math). The engine's
+job is to execute both buys atomically once told to. Hard fail if the
+arb closes mid-execution.
+
+**Cost:** ~1.5 days after W1.5 + S5.
+
+**Dependency:** W1.5, S5 multi-leg primitive.
+
+### 🧊 S15 — GTC-prepend then sweep (hybrid passive→aggressive)
+
+**Trigger:** promoted from "Other deferred" per Sonnet B 2026-05-02 —
+this is a distinct hybrid mode (passive window → aggressive sweep for
+remainder), not a configuration variant of S1 or S2. On markets with
+moderate natural flow, the passive window captures top-of-book pricing
+while the sweep guarantees completion.
+
+**Proposed:** mode `prepend-then-sweep`. Inputs: `{ ticker, side, size,
+prependWindowMs }`. Phase 1: post one GTC at `ask − 1¢` (sell) /
+`bid + 1¢` (buy) for full size. Wait `prependWindowMs`. Phase 2: cancel
+unfilled portion; decrement remaining by what filled. Phase 3: run S2
+aggressive on remainder. Race conditions managed: cancel must complete
+before sweep starts (else a resting GTC could fill mid-cancel and
+double-execute).
+
+**Cost:** ~1 day after S1 + S2.
+
+**Dependency:** S1, S2, W1.5.
+
+### 🧊 S16 — Time-to-expiry emergency unwind
+
+**Trigger (NEW per Sonnet B 2026-05-02):** position approaches contract
+close where the book may freeze. Distinct from S2 aggressive — S2
+ignores price; S16 tracks remaining time and *escalates urgency as time
+compresses*, eventually crossing any available bid regardless of floor.
+Clock-driven rather than operator-triggered.
+
+**Proposed:** mode `time-emergency`. Inputs: `{ ticker, side: 'sell',
+size, contractCloseTimestamp }`. Engine schedules increasing-urgency
+chunks: T-60min uses S1, T-30min uses S7-style ladder, T-10min uses S2,
+T-2min crosses any bid regardless of floor. `safetySubmittedMultiple`
+still binds.
+
+**Engine-vs-agent line note:** clock-driven escalation is an execution
+pattern, not a decision — once the agent says "use S16 by T", the
+escalation schedule is mechanical. Distinct from W4.1 stop-loss
+triggers which are price-driven.
+
+**Cost:** ~1.5 days after S1 + S2 + S7.
+
+**Dependency:** S1, S2, S7.
 
 ---
 
 ## W3 — Cross-cutting execution refinements
 
-Apply across multiple W2 strategies. Worth building after the strategy
+Apply across multiple S strategies. Worth building after the strategy
 library so each refinement has multiple consumers from day one.
 
 ### 🧊 W3.1 — Participation-rate / POV pacing
@@ -309,7 +520,7 @@ footprint. Adversarial flow can detect the pattern and front-run.
 At each iteration, `effectiveChunk = chunkSize × (1 ± rand×0.15)` and
 `effectiveDelay = loopDelayMs × (1 ± rand×0.30)`. Bounded so we never
 exceed `safetySubmittedMultiple`. Active across every loop-based strategy;
-required by W2.10 stealth.
+required by S4 stealth.
 
 **Cost:** ~3 hours. Bounded-clamp helper + 2 tests.
 
@@ -323,9 +534,9 @@ without per-iteration cancel-replace overhead.
 `floor(midpointCents) ± offset` and re-posts only when the desired price
 *changes*. Reduces API churn vs naive cancel-replace.
 
-**Cost:** ~1 day on top of W2.1 winning exit.
+**Cost:** ~1 day on top of S1 passive.
 
-**Dependency:** W2.1 winning exit (primary consumer).
+**Dependency:** S1 passive (primary consumer).
 
 ---
 
@@ -358,7 +569,7 @@ to invoke.
 **Cost:** ~3 days. Module + daemon + trigger config schema + unit tests
 with synthetic price walks.
 
-**Dependency:** W2 catalog (triggers select named strategies; need
+**Dependency:** S library (triggers select named strategies; need
 strategies first), W1.2 TCA (calibrate thresholds).
 
 ### 🧊 W4.2 — Implementation Shortfall optimizer (Almgren-Chriss)
@@ -383,7 +594,7 @@ from triggers).
 ### 🧊 W4.3 — Portfolio liquidation sequencer
 
 **Trigger:** when multiple losers exist — or under cash-raise pressure —
-the question is *which to exit first*. W2.8 solved one specific case
+the question is *which to exit first*. S10 solved one specific case
 (cash-raise); this generalizes.
 
 **Proposed:** new `kea portfolio plan` subcommand. Reads positions, computes
@@ -392,10 +603,10 @@ midProbability` per ticker, ranks by `markToBid − EV(hold)` (most-overvalued-
 to-hold first), emits a recommended sequence with named strategies per
 position. Optional `--auto-execute` runs them sequentially.
 
-**Cost:** ~2 days. Reads existing position/orderbook primitives + W2 strategy
-selection logic.
+**Cost:** ~2 days. Reads existing position/orderbook primitives + S
+library selection logic.
 
-**Dependency:** W2 catalog complete (sequencer routes each position to a
+**Dependency:** S library complete (sequencer routes each position to a
 strategy).
 
 ### 🧊 W4.4 — Smart Order Router (multi-venue)
@@ -417,136 +628,14 @@ venue is a multiplier, not a foundation.
 
 ---
 
-# Entry strategy sequence
+# Entry strategy sequence — RETIRED (2026-05-02)
 
-Parallel to the exit waves. The agent (your model, via MCP) decides
-*whether* and *how much*; the engine offers a menu of *how to execute*.
-Edge / Kelly / probability live in the agent — not here. EW3 and EW4 reuse
-W3 and W4 (jitter, POV, peg-to-mid, triggers, IS optimizer all
-sign-symmetric).
-
-## EW1 — Foundation
-
-### 🧊 EW1.1 — Buy primitive (`buyRunner`)
-
-**Trigger:** the engine has no buy loop today. `KalshiClient.placeOrder`
-exists but no equivalent of `exitRunner` for the open side: no chunked
-IoC buy loop, no partial-fill reconciliation, no journal+resume. Required
-by every entry strategy below *and* by exit stories W2.7 stop-and-reverse,
-W2.8 cash-raise, W2.9 roll. Highest-leverage prereq in the entire roadmap.
-
-**Proposed:** new `src/buyRunner.ts` mirroring `exitRunner` shape. Same
-journal, same resume semantics, same safety merge. Crosses to the ask side
-instead of the bid side. Reuses cumulative-depth pricing, adaptive
-chunking, tail sweep, `safetySubmittedMultiple` cap.
-
-**Cost:** ~2 days. Most logic factored from `exitRunner`; primary work is
-extracting shared helpers cleanly.
-
-**Why first:** unblocks 7 entry strategies *and* 3 exit strategies. No
-parallel path through the rest of EW2 without it.
-
-## EW2 — Entry strategy library
-
-Each story is a *named strategy* the agent selects. No mid-flow questions —
-agent supplies inputs, engine executes.
-
-### 🧊 EW2.1 — Aggressive entry
-
-**Trigger:** agent has decided to enter *now* — fresh edge, news-driven, or
-manual conviction. Speed > price. Today no buy loop exists at all.
-
-**Proposed:** mode `aggressive`. One-shot IoC at the ask for full
-`positionSize`. No chunking, no delay, no patience. `safetySubmittedMultiple`
-applies. Mirror of exit `panic`.
-
-**Cost:** ~3 hours on top of EW1.1.
-
-### 🧊 EW2.2 — Patient entry (post-and-walk)
-
-**Trigger:** agent has high conviction but no urgency. Wants to minimize
-cost basis by harvesting passive flow rather than crossing the spread.
-
-**Proposed:** mode `patient`. Steps:
-1. Read bid/ask. If spread < 1¢, fall through to aggressive.
-2. Post one chunk GTC at `bid + 1¢` (or pegged-to-mid once W3.3 lands).
-3. Timebox `patientTimeboxMs` (default 60s).
-4. Cancel unfilled remainder; on next iter post one tick higher.
-5. Cap at `maxPriceCents` from agent input.
-
-Mirror of exit `winning`. Shares ~80% of code with W2.1.
-
-**Cost:** ~1 day after EW1.1 + W2.1.
-
-### 🧊 EW2.3 — Limit ladder
-
-**Trigger:** agent wants pre-placed bids at multiple price points and to
-walk away. Useful when expecting mean-reversion or willing to average down.
-
-**Proposed:** mode `limit-ladder`. Inputs: list of `{ priceCents, sizePct }`
-rungs. Engine posts each as a GTC at start, monitors fills, journals
-each. No iteration loop after placement; relies on resume to reconcile
-fills on next session. Mirror of exit `scale-out`.
-
-**Cost:** ~1 day. New module; reuses `placeOrder` + journal primitives.
-
-### 🧊 EW2.4 — TWAP entry
-
-**Trigger:** large position, no urgency, want predictable accumulation
-over hours/days regardless of price.
-
-**Proposed:** mode `twap`. Inputs: `positionSize`, `intervalMinutes`,
-`numIntervals`. Engine computes per-interval target = positionSize/numIntervals,
-runs a single aggressive-buy chunk per interval, respects safety floors.
-Pauses overnight (configurable session window). Mirror of exit W2.5.
-
-**Cost:** ~1 day. Reuses daemon scaffolding from exit W2.5 if landed first.
-
-### 🧊 EW2.5 — Stealth entry
-
-**Trigger:** large position, agent wants to accumulate without showing
-intent. Standard chunked-buy prints a recognizable pattern.
-
-**Proposed:** mode `stealth`. Small randomized chunks (50–200 shares
-regardless of `chunkSize`), random inter-chunk delay (5–60s), no GTC
-ladder (would expose remaining size). Slower; minimal footprint. Mirror of
-exit W2.10.
-
-**Cost:** ~1 day. Composition of W3.2 jitter + forced-small chunking.
-
-### 🧊 EW2.6 — Pair / multi-leg entry
-
-**Trigger:** agent wants to open a spread or range bet atomically (e.g.
-YES on P1 + NO on P4 to bet "0–6%"). Opening one leg without the other
-re-introduces directional risk the agent explicitly hedged.
-
-**Proposed:** mode `pair-entry`. Inputs: list of `{ ticker, side, size }`
-legs. Engine opens all legs in parallel under one job-id, shares one
-journal, enforces leg-skew throttle (no leg outpaces others by more than
-`legSkewPct`, default 10%). On unrecoverable book disappearance for any
-leg, halt all. Mirror of exit W2.6.
-
-**Cost:** ~2 days. Multi-leg job runner shared with exit W2.6 if both
-under the same author.
-
-### 🧊 EW2.7 — Liquidity-providing (two-sided quoting)
-
-**Trigger:** agent wants to make markets on a stable, wide-spread market —
-post both YES bid and NO bid (or YES bid + YES ask) inside the spread,
-harvest fills, manage inventory toward a target.
-
-**Proposed:** mode `market-make`. Inputs: ticker, `targetInventory`,
-`maxInventory`, `quoteOffsetCents` (how far inside the spread to post).
-Engine maintains two resting GTCs, cancels and reposts on book moves
-(uses W3.3 peg-to-mid when available). Cuts off when inventory hits
-`maxInventory` on either side; reposts the *opposite* side aggressively
-to flatten back toward `targetInventory`.
-
-**Cost:** ~3 days. Significant new state machine; needs careful inventory
-accounting and fill-reconciliation.
-
-**Why last in EW2:** highest complexity, narrowest use case. No agent has
-asked for it yet.
+The prior entry/exit split has been collapsed into the single,
+side-parameterized **S — Strategy library** above. EW1.1 (buy primitive)
+has been relocated to **W1.5**. EW2.1–EW2.7 have been merged into
+S1–S5 (mirror pairs) or kept as distinct strategies (S8 limit ladder,
+S12 market-making) inside the unified library. See the major-restructure
+note in the S section header.
 
 ---
 
@@ -666,7 +755,7 @@ tickers with add/remove (add requires reason). Posts to a new
 
 ---
 
-## SP2 — Strategy launchers (W2 / EW2 catalog)
+## SP2 — Strategy launchers (S library)
 
 Once the strategy library exists, every surface needs a way to launch any
 named strategy with the right inputs.
@@ -686,7 +775,7 @@ reads.
 **Cost:** ~1 day per 3 strategies once at least one of each shape
 (single-leg / multi-leg / market-making) exists.
 
-**Dependency:** at least W2.1 + EW2.1 landed.
+**Dependency:** at least S1 + S2 landed.
 
 ### 🧊 SP2.2 — TUI: strategy picker tab
 
@@ -702,7 +791,7 @@ the running job.
 **Cost:** ~1.5 days. Shares the form-component pattern with the planned
 Account / Safety tabs.
 
-**Dependency:** at least W2.1 landed.
+**Dependency:** at least S1 landed.
 
 ### 🧊 SP2.3 — Extension: strategy picker
 
@@ -851,36 +940,6 @@ pacing to it.
 market presents the refill pattern; spec'ing against a hypothetical book is
 how you get the wrong abstraction.
 
-## 🧊 GTC-prepend before IoC sweep ("post-then-sweep")
-
-**Idea:** before the IoC main loop runs, post a single GTC at our side's ask
-(or one tick under) for the full position. Wait `prependGtcWindowMs`. Cancel
-unfilled portion. Decrement remaining by what filled. Then run the existing
-IoC loop for the rest.
-
-**Upside:** capture top-of-ask pricing for any shares that fill during the
-window. On a market with active buyer flow, this can be meaningful — e.g.
-P1 had ~30k shares of 24h volume and a 0.4¢ spread; even partial capture at
-ask price would have added $30-100 to a 95k-share exit.
-
-**When it's worth it:** large position + decent natural volume + patience
-(minutes to hours). When isn't: dust, urgent exits, dead markets.
-
-**Risks:**
-- Time cost; market can move adversely during the wait
-- Another seller can undercut your resting offer, taking flow
-- Race conditions: cancel must complete before IoC starts, else the sweep
-  could double-execute against a resting GTC that fills mid-cancel
-
-**Cost to build:** ~1 day. New config knobs, pre-loop posting + cancel logic
-in `exitRunner.run()`, integration tests for fill-during-window and
-cancel-failed-during-window cases.
-
-**Why deferred:** existing IoC + tail-GTC covers the high-value cases (fast
-exit + passive remainder). Prepend-GTC is a strategy lever, not a missing
-feature; build it when you have a specific exit where the math says yes.
-W2.1 winning-exit may subsume this.
-
 ## 🧊 Min-chunk-value guard (avoid the $0.01-per-fill minimum tax)
 
 **Problem:** Kalshi rounds taker fees UP to $0.01 per fill. For a chunk worth
@@ -962,7 +1021,7 @@ from current GTC (one-shot, exit loop after placement).
 re-posts on adverse moves.
 
 **Why deferred:** No concrete use case yet. Current GTC is a "leave it and
-come back" tool, which fits the user's pattern. W2.1 winning-exit + W3.3
+come back" tool, which fits the user's pattern. S1 passive + W3.3
 peg-to-mid will likely subsume the use cases this targets.
 
 ---
