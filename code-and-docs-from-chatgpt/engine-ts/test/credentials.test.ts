@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { KeaNotConfiguredError, validateKeyFile, upsertProfile, loadActive, getActive, listProfiles, setActive, removeProfile, DEMO_BASE_URL, PROD_BASE_URL } from '../src/credentials.js';
+import { KeaNotConfiguredError, validateKeyFile, upsertProfile, loadActive, getActive, listProfiles, setActive, removeProfile, DEMO_BASE_URL, PROD_BASE_URL, redactKeyId } from '../src/credentials.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -134,5 +134,14 @@ describe('atomic write durability', () => {
       const after = fs.readFileSync(path.join(process.env.KEA_HOME!, 'credentials.json'), 'utf8');
       expect(after).toBe(before);
     });
+  });
+});
+
+describe('redactKeyId', () => {
+  it('shows last 4 with ellipsis', () => {
+    expect(redactKeyId('AKID-VERY-LONG-WXYZ')).toBe('…WXYZ');
+  });
+  it('masks short ids entirely', () => {
+    expect(redactKeyId('abc')).toBe('****');
   });
 });

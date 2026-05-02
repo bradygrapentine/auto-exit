@@ -125,3 +125,8 @@ export function loadActive(): ActiveCredentials {
   }
   throw new KeaNotConfiguredError('No Kalshi credentials configured. Run `kea login` to connect.');
 }
+
+export function redactKeyId(keyId: string): string {
+  if (keyId.length <= 4) return '****';
+  return `…${keyId.slice(-4)}`;
+}
