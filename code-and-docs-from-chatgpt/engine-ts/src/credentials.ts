@@ -96,6 +96,12 @@ export function removeProfile(name: string): void {
   const file = readFile();
   if (!file) return;
   delete file.profiles[name];
+  if (Object.keys(file.profiles).length === 0) {
+    // Empty file would leave loadActive() with active='' and no profiles, which
+    // is a confusing intermediate state. Unlink so env-var fallback kicks in cleanly.
+    fs.unlinkSync(credentialsPath());
+    return;
+  }
   if (file.active === name) {
     file.active = Object.keys(file.profiles)[0] ?? '';
   }
