@@ -1,0 +1,35 @@
+name: mcp-smoke
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'code-and-docs-from-chatgpt/engine-ts/src/mcp.ts'
+      - 'code-and-docs-from-chatgpt/engine-ts/src/tui/api.ts'
+      - 'code-and-docs-from-chatgpt/engine-ts/src/credentials.ts'
+      - 'code-and-docs-from-chatgpt/engine-ts/scripts/mcp-smoke*.ts'
+      - 'code-and-docs-from-chatgpt/engine-ts/src/replay.ts'
+      - 'code-and-docs-from-chatgpt/engine-ts/src/journal.ts'
+      - 'code-and-docs-from-chatgpt/engine-ts/src/exitRunner.ts'
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: code-and-docs-from-chatgpt/engine-ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm', cache-dependency-path: code-and-docs-from-chatgpt/engine-ts/package-lock.json }
+      - run: npm ci
+      - name: write credentials
+        env:
+          KALSHI_ACCESS_KEY: ${{ secrets.KALSHI_PROD_ACCESS_KEY }}
+          KALSHI_PRIVATE_KEY: ${{ secrets.KALSHI_PROD_PRIVATE_KEY }}
+        run: |
+          mkdir -p $HOME/.kalshi-exit-assistant
+          echo "$KALSHI_PRIVATE_KEY" > $HOME/.kalshi-exit-assistant/prod.pem
+          chmod 600 $HOME/.kalshi-exit-assistant/prod.pem
+          # Use env-fallback path: smoke runs against env vars when no credentials.json present.
+          echo "KALSHI_ACCESS_KEY=$KALSHI_ACCESS_KEY" >> $GITHUB_ENV
+          echo "KALSHI_PRIVATE_KEY_PATH=$HOME/.kalshi-exit-assistant/prod.pem" >> $GITHUB_ENV
+      - run: npm run smoke:mcp
