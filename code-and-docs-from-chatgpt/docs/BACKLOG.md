@@ -4,7 +4,7 @@ Last `/backlog-sync`: 2026-05-01
 
 | Status | Count |
 |--------|-------|
-| 🧊 Deferred | 3 |
+| 🧊 Deferred | 5 |
 | ✅ Shipped (this log) | 2 |
 
 Features deferred until a concrete need surfaces. Don't build speculatively.
@@ -70,6 +70,58 @@ cancel-failed-during-window cases.
 **Why deferred:** existing IoC + tail-GTC covers the high-value cases (fast
 exit + passive remainder). Prepend-GTC is a strategy lever, not a missing
 feature; build it when you have a specific exit where the math says yes.
+
+## 🧊 Min-chunk-value guard (avoid the $0.01-per-fill minimum tax)
+
+**Problem:** Kalshi rounds taker fees UP to $0.01 per fill. For a chunk worth
+less than ~$0.15, the formula fee is below $0.01, so the minimum binds and
+the effective fee rate balloons. Worst case: 1 share × 1¢ = $0.01 trade pays
+$0.01 fee = 100% fee rate.
+
+**Proposal:** new config `minChunkValueDollars: number` (default 0.15).
+`decideLosingExitOrder` refuses to emit a chunk where
+`chunk × decision.priceCentsExact / 100 < minChunkValueDollars`. Engine
+logs `chunk_too_small_for_fee_threshold` and falls through to next iter (or
+stops if remaining is the same shape).
+
+**Where this matters:** tail-sweep + cancel-stale loops on cheap markets,
+fractional remainders, and any exit where chunkSize × bid_price falls under
+the threshold.
+
+**Where it doesn't:** our P1 chunks were 2000 shares × 0.1-0.8¢ = $2-16 per
+chunk, well above $0.15. Already fine.
+
+**Cost:** ~2 hours. One pricing.ts change + 3 test cases.
+
+**Why deferred:** P1 didn't trigger the failure mode. Build when a future
+exit hits a cheap-market dust scenario where the per-fill minimum is the
+dominant cost.
+
+## 🧊 Fee-aware /preview and status
+
+**Problem:** before running an exit, the user doesn't see expected total
+fees. After running, fees are reported by Kalshi but not aggregated/surfaced
+in status. So you only learn the fee bill after the fact.
+
+**Proposal:**
+1. Add `estimatedFeesDollars` to `/preview` output, computed as
+   `Σ chunk × max(0.07 × p × (1-p), 0.0001)` over the projected chunks
+   walking the orderbook.
+2. Add `feesIncurred` to JobStatus, populated from each `order_reconciled`'s
+   `taker_fees_dollars` field (already in Kalshi's response).
+3. Optional: refuse to start if estimated fees exceed `maxFeeRatio` of
+   gross recovery (default off; opt-in safety).
+
+**Where this matters:** any exit where the user wants to compare engine cost
+vs. alternative strategies (manual, GTC drip, hold-to-expiration) before
+committing.
+
+**Cost:** ~3 hours. New preview field + new status field + one optional
+config flag + tests.
+
+**Why deferred:** post-hoc fee analysis (P1_EXIT_REPORT.md) showed the cost.
+Worth building before the *next* large exit so the user has the number
+upfront.
 
 ## 🧊 Cancel-replace GTC drip mode
 
