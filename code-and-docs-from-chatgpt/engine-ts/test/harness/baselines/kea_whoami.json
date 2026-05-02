@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "properties": {
+    "activeProfile": {
+      "type": "string"
+    },
+    "keyIdLast4": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4
+    },
+    "baseUrl": {
+      "type": "string",
+      "format": "uri"
+    },
+    "isDemo": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "activeProfile",
+    "keyIdLast4",
+    "baseUrl",
+    "isDemo"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

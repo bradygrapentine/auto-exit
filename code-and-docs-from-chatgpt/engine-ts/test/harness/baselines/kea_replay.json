@@ -1,0 +1,72 @@
+{
+  "type": "object",
+  "properties": {
+    "jobId": {
+      "type": "string"
+    },
+    "ticker": {
+      "type": "string"
+    },
+    "side": {
+      "type": "string",
+      "enum": [
+        "yes",
+        "no"
+      ]
+    },
+    "initialPosition": {
+      "type": "number"
+    },
+    "replayed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "skipped": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mismatches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {
+            "type": "string"
+          },
+          "orderId": {
+            "type": "string"
+          },
+          "recordedDecision": {},
+          "recomputedDecision": {},
+          "diff": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ts",
+          "orderId",
+          "diff"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "allMatch": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "jobId",
+    "ticker",
+    "side",
+    "initialPosition",
+    "replayed",
+    "skipped",
+    "mismatches",
+    "allMatch"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

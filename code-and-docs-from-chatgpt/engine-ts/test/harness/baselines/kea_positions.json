@@ -1,0 +1,50 @@
+{
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "ticker": {
+        "type": "string"
+      },
+      "rawPosition": {
+        "type": "number"
+      },
+      "side": {
+        "type": "string",
+        "enum": [
+          "YES",
+          "NO"
+        ]
+      },
+      "quantity": {
+        "type": "number",
+        "minimum": 0
+      },
+      "exposureDollars": {
+        "type": "number"
+      },
+      "feesPaidDollars": {
+        "type": "number"
+      },
+      "realizedPnlDollars": {
+        "type": "number"
+      },
+      "restingOrdersCount": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "required": [
+      "ticker",
+      "rawPosition",
+      "side",
+      "quantity",
+      "exposureDollars",
+      "feesPaidDollars",
+      "realizedPnlDollars",
+      "restingOrdersCount"
+    ],
+    "additionalProperties": false
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

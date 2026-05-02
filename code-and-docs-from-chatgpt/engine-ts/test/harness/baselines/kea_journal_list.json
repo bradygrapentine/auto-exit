@@ -1,0 +1,44 @@
+{
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "jobId": {
+        "type": "string"
+      },
+      "filePath": {
+        "type": "string"
+      },
+      "startedAt": {
+        "type": "string"
+      },
+      "lastTs": {
+        "type": "string"
+      },
+      "ticker": {
+        "type": "string"
+      },
+      "lastKind": {
+        "type": "string"
+      },
+      "finished": {
+        "type": "boolean"
+      },
+      "entries": {
+        "type": "number"
+      }
+    },
+    "required": [
+      "jobId",
+      "filePath",
+      "startedAt",
+      "lastTs",
+      "ticker",
+      "lastKind",
+      "finished",
+      "entries"
+    ],
+    "additionalProperties": true
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
