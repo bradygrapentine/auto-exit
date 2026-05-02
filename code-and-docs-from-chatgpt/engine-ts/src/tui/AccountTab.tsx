@@ -11,6 +11,7 @@ import {
 
 export function AccountTab(): JSX.Element {
   const [, setVersion] = useState(0);
+  const [error, setError] = useState<string | null>(null);
   const profiles = listProfiles();
   const active = getActive();
 
@@ -18,8 +19,13 @@ export function AccountTab(): JSX.Element {
     if (input === 's' && profiles.length > 1) {
       const idx = profiles.indexOf(active ?? '');
       const next = profiles[(idx + 1) % profiles.length];
-      setActive(next);
-      setVersion((v) => v + 1);
+      try {
+        setActive(next);
+        setError(null);
+        setVersion((v) => v + 1);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
     }
   });
 
@@ -61,6 +67,7 @@ export function AccountTab(): JSX.Element {
       <Text dimColor>
         press <Text bold>s</Text> to switch profile ({profiles.join(', ')})
       </Text>
+      {error && <Text color="red">{error}</Text>}
     </Box>
   );
 }
