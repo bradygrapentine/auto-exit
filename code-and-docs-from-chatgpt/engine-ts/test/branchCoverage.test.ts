@@ -456,8 +456,6 @@ describe('KalshiClient.createOrder retry branches', () => {
       publicKeyEncoding: { type: 'pkcs1', format: 'pem' },
     });
     writeFileSync(tmpKey, privateKey);
-    process.env.TEST_KEY = 'fake-key';
-    process.env.TEST_KEY_PATH = tmpKey;
     // loadActive() reads KALSHI_ACCESS_KEY / KALSHI_PRIVATE_KEY_PATH directly now
     // (the cfg.apiKeyEnv / privateKeyPathEnv fields are no longer consulted by the
     // signing block). Seed the canonical env vars so the real KalshiClient signs.
