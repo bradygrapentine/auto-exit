@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { JournalEntry, JournalKind, OrderPlacedData } from './types.js';
+import type { JournalEntry, JournalKind, OrderIntentData, OrderPlacedData } from './types.js';
 
 export { JournalEntry };
 
@@ -83,6 +83,39 @@ export class Journal {
     const pending: OrderPlacedData[] = [];
     for (const [orderId, d] of placedMap) {
       if (!reconciledIds.has(orderId)) pending.push(d);
+    }
+    return pending;
+  }
+
+  /**
+   * Return every `order_intent` entry whose clientOrderId has no matching
+   * `order_placed` entry. These represent orders that may have been placed on
+   * the exchange but were not durably journaled (process killed in the window
+   * between createOrder returning and order_placed being appended).
+   *
+   * On resume, callers should call `findOrderByClientOrderId` for each returned
+   * intent to determine whether the order actually landed on the exchange.
+   */
+  pendingIntents(): OrderIntentData[] {
+    const entries = this.readAll();
+    const placedClientOrderIds = new Set<string>();
+    for (const e of entries) {
+      if (e.kind === 'order_placed') {
+        const d = e.data as { payload?: { client_order_id?: string } };
+        if (d?.payload?.client_order_id) placedClientOrderIds.add(d.payload.client_order_id);
+      }
+    }
+    // Dedupe by clientOrderId — last entry wins
+    const intentMap = new Map<string, OrderIntentData>();
+    for (const e of entries) {
+      if (e.kind === 'order_intent') {
+        const d = e.data as OrderIntentData;
+        if (d?.clientOrderId) intentMap.set(d.clientOrderId, d);
+      }
+    }
+    const pending: OrderIntentData[] = [];
+    for (const [clientOrderId, d] of intentMap) {
+      if (!placedClientOrderIds.has(clientOrderId)) pending.push(d);
     }
     return pending;
   }

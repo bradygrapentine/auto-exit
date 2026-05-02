@@ -189,12 +189,16 @@ export interface KalshiClientLike {
    *  The `position.restingOrdersCount` field from /portfolio/positions is NOT reliable
    *  (observed returning 0 even when a GTC was actively resting on the book). */
   getRestingOrderCount(ticker: string): Promise<number>;
+  /** Look up an order by client_order_id. Returns null if not found or on network error.
+   *  Used during crash-safe resume to reconcile orders that were placed but not journaled. */
+  findOrderByClientOrderId(clientOrderId: string): Promise<OrderResult | null>;
 }
 
 // ── Journal types ──────────────────────────────────────────────────────────────
 
 export type JournalKind =
   | 'loop_started'
+  | 'order_intent'
   | 'order_placed'
   | 'order_reconciled'
   | 'loop_finished'
@@ -208,6 +212,14 @@ export interface JournalEntry {
   ts: string;
   kind: JournalKind;
   data: unknown;
+}
+
+/** Stored with every `order_intent` entry — written BEFORE createOrder is called.
+ *  Enables crash-safe resume via clientOrderId lookup when only the intent was written
+ *  (process killed between createOrder returning and order_placed being appended). */
+export interface OrderIntentData {
+  clientOrderId: string;
+  payload: OrderPayload;
 }
 
 /** Stored with every `order_placed` entry — enough to call getOrder on resume.
