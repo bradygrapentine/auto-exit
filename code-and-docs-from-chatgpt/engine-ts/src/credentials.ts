@@ -39,3 +39,10 @@ function homeDir(): string {
 export function credentialsPath(): string {
   return path.join(homeDir(), 'credentials.json');
 }
+
+export async function validateKeyFile(keyPath: string): Promise<void> {
+  await fs.promises.access(keyPath, fs.constants.R_OK);
+  const pem = await fs.promises.readFile(keyPath, 'utf8');
+  // Throws if not a parseable private key.
+  crypto.createPrivateKey(pem);
+}
