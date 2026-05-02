@@ -3,6 +3,7 @@
 // negative = short YES (= long NO). Verified against prod fixture test/fixtures/positions.real.json.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { loadActive } from './credentials.js';
 import type { ExitConfig, Position } from './types.js';
 
 interface RawMarketPosition {
@@ -37,11 +38,9 @@ export class KalshiAccountClient {
   constructor(private config: ExitConfig) {}
 
   private authHeaders(method: string, endpointPath: string): Record<string, string> {
-    const apiKey = process.env[this.config.apiKeyEnv];
-    const keyPath = process.env[this.config.privateKeyPathEnv];
-    if (!apiKey || !keyPath) {
-      throw new Error(`Missing ${this.config.apiKeyEnv} or ${this.config.privateKeyPathEnv}`);
-    }
+    const a = loadActive();
+    const apiKey = a.keyId;
+    const keyPath = a.keyPath;
     const timestamp = Date.now().toString();
     const privateKey = fs.readFileSync(keyPath, 'utf8');
     // Kalshi requires the FULL URL path (including /trade-api/v2 prefix) in the signed message

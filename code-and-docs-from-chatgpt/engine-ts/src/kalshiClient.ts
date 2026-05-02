@@ -11,6 +11,7 @@ import type {
   PriceLevel,
 } from './types.js';
 import { KalshiAccountClient } from './accountClient.js';
+import { loadActive } from './credentials.js';
 import { withRetry, HttpError, NonRetryableError, parseRetryAfterMs, computeBackoffMs } from './retry.js';
 
 function dollarsToCents(value: string | number): number {
@@ -131,9 +132,9 @@ export class KalshiClient implements KalshiClientLike {
   }
 
   private authHeaders(method: string, endpointPath: string): Record<string, string> {
-    const apiKey = process.env[this.config.apiKeyEnv];
-    const keyPath = process.env[this.config.privateKeyPathEnv];
-    if (!apiKey || !keyPath) throw new Error(`Missing ${this.config.apiKeyEnv} or ${this.config.privateKeyPathEnv}`);
+    const a = loadActive();
+    const apiKey = a.keyId;
+    const keyPath = a.keyPath;
     const timestamp = Date.now().toString();
     const privateKey = fs.readFileSync(keyPath, 'utf8');
     // Kalshi requires the FULL URL path (including /trade-api/v2 prefix) in the signed message.
