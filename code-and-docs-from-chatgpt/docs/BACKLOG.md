@@ -39,6 +39,7 @@ the engine owns *how*.
 Prerequisites for every strategy. Build first.
 
 ### 🟡 W1.1 — Safety persistence + MCP/TUI write surfaces
+**Tags:** shared [engine, ext, tui-mcp]
 
 **Trigger:** safety guards (`safetySubmittedMultiple`, `floorPriceCents`,
 `tailSweepThreshold`, `forbiddenTickers`) live only in hand-edited per-job
@@ -62,6 +63,7 @@ forbidden tickers). Append-only `safety.audit.jsonl` for every mutation;
 every S strategy that needs an audited risk envelope.
 
 ### 🧊 W1.2 — Post-trade TCA (arrival-price slippage logging)
+**Tags:** shared [engine, tui-mcp]
 
 **Trigger:** can't tune `chunkSize` / `mildAdaptive` / `minLevelSize` —
 let alone any new strategy — without measuring realized slippage. Today we
@@ -79,6 +81,7 @@ theoretical full-depth projection. New MCP tool `kea_tca_summary`.
 TCA, optimizer work in W4 (Almgren-Chriss) has nothing to calibrate against.
 
 ### 🧊 W1.3 — Pre-trade risk checks (max-loss + circuit breaker + concentration)
+**Tags:** shared [engine]
 
 **Trigger:** today the only pre-trade check is `forbiddenTickers`. A buggy
 config or an over-eager trigger could blow through risk limits the user
@@ -102,6 +105,7 @@ CLI/MCP/TUI surfaces inherit from W1.1 patterns.
 envelope is breached. Cleaner to add the check once, before each strategy.
 
 ### 🟡 W1.4 — Journal pre-call ordering bug fix
+**Tags:** shared [engine]
 
 **Status:** in flight as `chore/dispatch-journal-bug-fix`.
 
@@ -135,6 +139,7 @@ before any new strategy work; otherwise every new strategy inherits the
 defect.
 
 ### 🧊 W1.5 — Buy primitive (`buyRunner`)
+**Tags:** shared [engine]
 
 **Trigger:** the engine has no buy loop today. `KalshiClient.placeOrder`
 exists but no equivalent of `exitRunner` for the open side: no chunked
@@ -181,6 +186,7 @@ configuration. Where `side` is meaningful, the same engine module handles
 both directions.
 
 ### 🧊 S1 — Passive (post-and-walk, side-parameterized)
+**Tags:** engine
 
 **Trigger:** agent has decided on a position (open or close) with no
 urgency and wants to harvest passive flow rather than crossing the
@@ -206,6 +212,7 @@ size, maxPriceCents (sell) | minPriceCents (buy) }`. Steps:
 **Dependency:** W1.5 buy primitive (for buy side).
 
 ### 🧊 S2 — Aggressive (cross-the-spread, max speed)
+**Tags:** engine
 
 **Trigger:** agent must execute *now* — news-driven exit, fresh
 conviction entry, or any case where speed > price. Was W2.2 panic +
@@ -223,6 +230,7 @@ extension requires modal. Mirror of how panic confirms today.
 **Dependency:** W1.5 buy primitive (for buy side).
 
 ### 🧊 S3 — TWAP (time-sliced, side-parameterized)
+**Tags:** engine
 
 **Trigger:** large position, no urgency, want predictable execution over
 hours/days regardless of price. Was W2.5 + EW2.4.
@@ -238,6 +246,7 @@ window). Sets up daemon-mode scaffolding W4.1 trigger layer reuses.
 **Dependency:** S1 passive, W1.5 buy primitive.
 
 ### 🧊 S4 — Stealth (anti-signaling, side-parameterized)
+**Tags:** engine
 
 **Trigger:** agent suspects informed flow or wants to accumulate /
 liquidate without showing intent. Standard chunking prints a recognizable
@@ -254,6 +263,7 @@ Composes W3.2 jitter primitive.
 W1.5 buy primitive for buy side.
 
 ### 🧊 S5 — Pair / multi-leg (atomic, side-parameterized)
+**Tags:** engine
 
 **Trigger:** agent wants to open or close a multi-leg position
 (spread, hedge, range bet) atomically. Closing one leg without the other
@@ -272,6 +282,7 @@ skew-throttle logic, replay covering partial-leg-failure cases.
 **Dependency:** W1.5 buy primitive, W1.2 TCA for skew impact.
 
 ### 🧊 S6 — Pre-resolution arbitrage exit
+**Tags:** engine
 
 **Trigger:** market is hours from resolution; mid has converged near $1
 or $0; a few cents of spread remain in a thin book. Patient passive
@@ -295,6 +306,7 @@ that want it.
 **Cost:** ~1 day.
 
 ### 🧊 S7 — Scale-out ladder (rung-driven partial exits)
+**Tags:** engine
 
 **Trigger:** agent wants to take partial size off at multiple price
 levels rather than all-or-nothing. Cleaned of embedded defaults that
@@ -320,6 +332,7 @@ runtime semantics.
 **Dependency:** S1 passive. W4.1 is upgrade path, not blocker.
 
 ### 🧊 S8 — Limit ladder (passive multi-rung GTC, side-parameterized)
+**Tags:** engine
 
 **Trigger:** agent wants pre-placed orders at multiple price points and
 to walk away. Useful when expecting mean-reversion or willing to average
@@ -338,6 +351,7 @@ resume to reconcile fills on next session.
 **Dependency:** W1.5 buy primitive (for buy side).
 
 ### 🧊 S9 — Stop-and-reverse
+**Tags:** engine
 
 **Trigger:** thesis flipped. Agent wants to exit current position *and*
 open opposite in one atomic sequence. Was W2.7.
@@ -352,6 +366,7 @@ pre-trade risk applies to the open leg.
 **Dependency:** S2 aggressive, W1.3 pre-trade risk, W1.5 buy primitive.
 
 ### 🧊 S10 — Cash-raise sequencer
+**Tags:** engine
 
 **Trigger:** agent needs $X in cash by deadline. Cleaned of portfolio-
 ranking logic that previously lived here (was W2.8) — `costToFreeOneDollar`
@@ -372,6 +387,7 @@ from the engine.
 **Dependency:** at least one of S1 / S2 to run individual positions.
 
 ### 🧊 S11 — Roll (exit current + open next cycle)
+**Tags:** engine
 
 **Trigger:** position thesis still holds but contract is expiring. Roll
 into the next cycle's equivalent without going flat. Was W2.9.
@@ -386,6 +402,7 @@ cap applies to phase 2.
 **Dependency:** S1, S2, W1.3, W1.5.
 
 ### 🧊 S12 — Liquidity-providing (two-sided market making)
+**Tags:** engine
 
 **Trigger:** agent wants to make markets on a stable, wide-spread market —
 post both sides inside the spread, harvest fills, manage inventory toward
@@ -408,6 +425,7 @@ machine that may grow if real users want richer inventory rules. Watch
 for scope creep during implementation.
 
 ### 🧊 S13 — Iceberg (single visible quote)
+**Tags:** engine
 
 **Trigger (NEW per Sonnet B 2026-05-02):** agent wants to accumulate or
 liquidate a large position without revealing total size. Distinct from
@@ -425,6 +443,7 @@ is never visible to the book.
 **Dependency:** W1.5 buy primitive.
 
 ### 🧊 S14 — Cross-resolution basis arbitrage
+**Tags:** engine
 
 **Trigger (NEW per Sonnet B 2026-05-02):** when YES and NO on the *same*
 market both trade below $1 (e.g. YES at 60¢ + NO at 38¢ = 98¢), buying
@@ -448,6 +467,7 @@ arb closes mid-execution.
 **Dependency:** W1.5, S5 multi-leg primitive.
 
 ### 🧊 S15 — GTC-prepend then sweep (hybrid passive→aggressive)
+**Tags:** engine
 
 **Trigger:** promoted from "Other deferred" per Sonnet B 2026-05-02 —
 this is a distinct hybrid mode (passive window → aggressive sweep for
@@ -468,6 +488,7 @@ double-execute).
 **Dependency:** S1, S2, W1.5.
 
 ### 🧊 S16 — Time-to-expiry emergency unwind
+**Tags:** engine
 
 **Trigger (NEW per Sonnet B 2026-05-02):** position approaches contract
 close where the book may freeze. Distinct from S2 aggressive — S2
@@ -498,6 +519,7 @@ Apply across multiple S strategies. Worth building after the strategy
 library so each refinement has multiple consumers from day one.
 
 ### 🧊 W3.1 — Participation-rate / POV pacing
+**Tags:** engine [shared]
 
 **Trigger:** chunks fire as fast as the loop runs. On thin/quiet markets the
 engine can become a meaningful fraction of recent volume and signal its own
@@ -513,6 +535,7 @@ Active across losing/winning/TWAP/scale-out modes.
 tests against synthetic flow.
 
 ### 🧊 W3.2 — Anti-gaming randomization (chunk + timing jitter)
+**Tags:** engine [shared]
 
 **Trigger:** fixed `chunkSize` and fixed `loopDelayMs` create a predictable
 footprint. Adversarial flow can detect the pattern and front-run.
@@ -526,6 +549,7 @@ required by S4 stealth.
 **Cost:** ~3 hours. Bounded-clamp helper + 2 tests.
 
 ### 🧊 W3.3 — Pegged orders (peg-to-mid)
+**Tags:** engine [shared]
 
 **Trigger:** winning-exit / scale-out / roll all post static "ask − 1¢"
 quotes that go stale as the book moves. Pegged-to-mid tracks market motion
@@ -547,6 +571,7 @@ Layered on top of an established strategy library. These don't add
 strategies; they choose, optimize, and orchestrate the existing ones.
 
 ### 🧊 W4.1 — Trigger layer (auto-arm strategies)
+**Tags:** engine [shared, tui-mcp]
 
 **Trigger:** the engine executes exits the user has already decided on. It
 has no opinion about *when* to start. P1 was triggered by hand —
@@ -574,6 +599,7 @@ with synthetic price walks.
 strategies first), W1.2 TCA (calibrate thresholds).
 
 ### 🧊 W4.2 — Implementation Shortfall optimizer (Almgren-Chriss)
+**Tags:** engine
 
 **Trigger:** binaries have a *known terminal date and known terminal value*
 ($0 or $1). That collapses the optimal-execution problem to a closed-form
@@ -593,6 +619,7 @@ analytic solutions.
 from triggers).
 
 ### 🧊 W4.3 — Portfolio liquidation sequencer
+**Tags:** engine [tui-mcp]
 
 **Trigger:** when multiple losers exist — or under cash-raise pressure —
 the question is *which to exit first*. S10 solved one specific case
@@ -611,6 +638,7 @@ library selection logic.
 strategy).
 
 ### 🧊 W4.4 — Smart Order Router (multi-venue)
+**Tags:** engine [shared]
 
 **Trigger:** prediction markets exist on Kalshi, Polymarket, PredictIt (some
 markets), Manifold. Same-question pricing diverges. Best execution requires
@@ -628,6 +656,7 @@ contract-equivalence mapping (matching tickers across venues).
 venue is a multiplier, not a foundation.
 
 ### 🧊 W4.5 — Harvest planner (decision-support tool)
+**Tags:** shared [engine, tui-mcp, ext]
 
 **TradFi analog:** options-MM Greeks dashboard for digital options. The
 operator framing — "delta-hedged exit of a deep ITM binary held against a
@@ -730,6 +759,7 @@ follows on its engine capability landing.
 Independent of new engine work. Can start any time.
 
 ### 🧊 SP1.1 — Extension: auto-detect market ticker
+**Tags:** ext
 
 **Trigger:** today the user types/pastes the ticker into the extension
 panel. The panel runs on a Kalshi market page — the ticker is right there
@@ -742,6 +772,7 @@ Surface the detected ticker prominently with a "use this" button.
 **Cost:** ~3 hours.
 
 ### 🧊 SP1.2 — Extension: read position size from page
+**Tags:** ext
 
 **Trigger:** Kalshi market pages show the user's current position when
 logged in. Re-typing the size into the panel is friction *and* a vector
@@ -754,6 +785,7 @@ is ambiguous; never silently overwrite a user-entered value.
 **Cost:** ~4 hours including DOM-stability tests.
 
 ### 🧊 SP1.3 — Extension: live-mode confirmation modal
+**Tags:** ext
 
 **Trigger:** flipping `dryRun: false` through the panel today is a single
 toggle. The asymmetric blast radius (irreversible orders) deserves a
@@ -767,6 +799,7 @@ dry-run. Mirror the `--confirm` discipline already used in CLI panic mode.
 **Cost:** ~4 hours.
 
 ### 🧊 SP1.4 — Extension: progress bar
+**Tags:** ext
 
 **Trigger:** today the panel shows a status string. For a long exit
 (phased P1, large TWAP) a visual progress indicator makes monitoring
@@ -779,6 +812,7 @@ existing `/status` endpoint; no engine change.
 **Cost:** ~3 hours.
 
 ### 🧊 SP1.5 — Extension: execution summary report
+**Tags:** ext
 
 **Trigger:** when an exit finishes the panel just shows "done." For
 post-trade review, users want a summary: actual gross/fees/net, vs.
@@ -792,6 +826,7 @@ notes.
 **Cost:** ~6 hours. Some overlap with SP4.3 (extension TCA viewer).
 
 ### 🧊 SP1.6 — Extension: persistent saved presets
+**Tags:** ext
 
 **Trigger:** the same exit shape (e.g. "phased P1 phase 2 settings")
 gets re-typed every time. Presets reduce both friction and typo risk.
@@ -803,6 +838,7 @@ non-secret config only — no API keys, no per-job state.
 **Cost:** ~6 hours.
 
 ### 🧊 SP1.7 — Extension: account/profile switcher
+**Tags:** ext
 
 **Trigger:** the in-flight account-connect work adds named profiles to
 CLI/TUI/MCP. Extension is the only surface still tied to whatever is in
@@ -818,6 +854,7 @@ at all times.
 **Dependency:** account-connect plan (in flight).
 
 ### 🧊 SP1.8 — Extension: safety panel + forbidden tickers UI
+**Tags:** ext [shared]
 
 **Trigger:** W1.1 adds safety persistence with MCP/TUI editors. Extension
 has no equivalent. Adding a forbidden ticker should be possible from the
@@ -840,6 +877,7 @@ Once the strategy library exists, every surface needs a way to launch any
 named strategy with the right inputs.
 
 ### 🧊 SP2.1 — MCP: `kea_strategy_run` unified launcher
+**Tags:** tui-mcp [shared]
 
 **Trigger:** today the only writer-style MCP tool is whatever W1.1 ships.
 Once strategies exist, the agent should be able to launch any of them
@@ -857,6 +895,7 @@ reads.
 **Dependency:** at least S1 + S2 landed.
 
 ### 🧊 SP2.2 — TUI: strategy picker tab
+**Tags:** tui-mcp
 
 **Trigger:** the TUI today is mostly an account/safety/journal viewer.
 Once strategies exist, the most natural place to launch one is from a
@@ -873,6 +912,7 @@ Account / Safety tabs.
 **Dependency:** at least S1 landed.
 
 ### 🧊 SP2.3 — Extension: strategy picker
+**Tags:** ext [tui-mcp]
 
 **Trigger:** the extension today only knows about losing-exit. Same
 launcher pattern as SP2.2 but adapted for the panel's narrower vertical
@@ -895,6 +935,7 @@ Once the trigger layer exists, every surface needs CRUD over trigger
 rules.
 
 ### 🧊 SP3.1 — MCP: trigger CRUD tools
+**Tags:** tui-mcp [shared]
 
 **Trigger:** the W4.1 trigger layer is policy. Policy lives best where
 the agent can read and edit it. Without MCP coverage, the agent can't
@@ -910,6 +951,7 @@ pattern). Each mutation appends to the audit log.
 **Dependency:** W4.1 trigger layer.
 
 ### 🧊 SP3.2 — TUI: triggers tab
+**Tags:** tui-mcp
 
 **Trigger:** triggers are long-lived rules; the TUI is the natural place
 to keep an eye on them at a glance.
@@ -923,6 +965,7 @@ the tab as they happen.
 **Dependency:** SP3.1, W4.1.
 
 ### 🧊 SP3.3 — Extension: triggers panel
+**Tags:** ext [tui-mcp]
 
 **Trigger:** extension users on Kalshi pages should be able to set up a
 "if YES on this market drops below X, fire patient entry" trigger
@@ -940,6 +983,7 @@ the current market ticker. Lists triggers with active/paused state.
 ## SP4 — Reports + portfolio (W1.2 / W4.3)
 
 ### 🧊 SP4.1 — MCP: TCA + portfolio tools
+**Tags:** tui-mcp [shared]
 
 **Trigger:** TCA (W1.2) and portfolio plan (W4.3) emit data the agent
 benefits from reading. Without MCP coverage, the agent can't reason
@@ -954,6 +998,7 @@ liquidation sequence. Both read-only.
 **Dependency:** W1.2 for TCA, W4.3 for portfolio.
 
 ### 🧊 SP4.2 — TUI: reports tab
+**Tags:** tui-mcp
 
 **Trigger:** post-job review and portfolio overview are natural keyboard-
 first workflows.
@@ -967,6 +1012,7 @@ Reuses the journal-list selector for picking jobs.
 **Dependency:** SP4.1, W1.2.
 
 ### 🧊 SP4.3 — Extension: reports panel
+**Tags:** ext [tui-mcp]
 
 **Trigger:** the SP1.5 execution summary is the simplest version of
 this. After W1.2 lands, the summary becomes a richer TCA card. The
@@ -987,6 +1033,7 @@ Micro-tactics not part of the algo sequence above. Each has a specific
 trigger condition that hasn't materialized yet.
 
 ## 🧊 Refill-rate harvest mode
+**Tags:** engine
 
 **Trigger:** market where another participant (MM or bot) keeps refreshing the
 top bid level after we take it. Current engine harvests these refills via the
@@ -1020,6 +1067,7 @@ market presents the refill pattern; spec'ing against a hypothetical book is
 how you get the wrong abstraction.
 
 ## 🧊 Min-chunk-value guard (avoid the $0.01-per-fill minimum tax)
+**Tags:** engine [shared]
 
 **Problem:** Kalshi rounds taker fees UP to $0.01 per fill. For a chunk worth
 less than ~$0.15, the formula fee is below $0.01, so the minimum binds and
@@ -1046,6 +1094,7 @@ exit hits a cheap-market dust scenario where the per-fill minimum is the
 dominant cost.
 
 ## 🧊 Single-shot capture-and-execute scanner
+**Tags:** engine [shared]
 
 **Trigger:** the multi-market test (2026-05-01, see `MULTIMARKET_TEST_REPORT.md`)
 revealed that interesting book shapes — especially thin-top + cliff — evaporate
@@ -1073,6 +1122,7 @@ candidate book actually appears. Build before the next attempt at
 multi-market validation, not as urgent infrastructure.
 
 ## 🧊 Multi-market validation sweep — DEFERRED INDEFINITELY
+**Tags:** engine
 
 **Original plan:** test the engine across 4 market characteristic buckets
 (cheap-tail, mid-priced, high-priced, thin-cliff) for projection accuracy
@@ -1092,6 +1142,7 @@ might find 4+ usable candidates simultaneously.
 exists; just needs market conditions.
 
 ## 🧊 Cancel-replace GTC drip mode
+**Tags:** engine
 
 **Trigger:** posting GTC at top-of-book and re-quoting when undercut. Different
 from current GTC (one-shot, exit loop after placement).
