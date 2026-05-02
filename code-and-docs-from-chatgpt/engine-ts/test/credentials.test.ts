@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { KeaNotConfiguredError, validateKeyFile, upsertProfile, loadActive, getActive, listProfiles } from '../src/credentials.js';
+import { KeaNotConfiguredError, validateKeyFile, upsertProfile, loadActive, getActive, listProfiles, setActive, removeProfile, DEMO_BASE_URL, PROD_BASE_URL } from '../src/credentials.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -105,6 +105,34 @@ describe('credentials file round-trip', () => {
         delete process.env.KALSHI_ACCESS_KEY;
         delete process.env.KALSHI_PRIVATE_KEY_PATH;
       }
+    });
+  });
+});
+
+describe('setActive errors', () => {
+  it('throws on unknown profile', async () => {
+    await withTempHome(async () => {
+      upsertProfile('demo', { keyId: 'D', keyPath: FIXTURE, baseUrl: DEMO_BASE_URL });
+      expect(() => setActive('nope')).toThrow(/not found/);
+    });
+  });
+});
+
+describe('atomic write durability', () => {
+  it('leaves prior file intact on tmp-rename failure', async () => {
+    await withTempHome(async () => {
+      upsertProfile('demo', { keyId: 'D', keyPath: FIXTURE, baseUrl: DEMO_BASE_URL });
+      const before = fs.readFileSync(path.join(process.env.KEA_HOME!, 'credentials.json'), 'utf8');
+      // simulate failure: pre-create a directory at the tmp path so writeFileSync throws
+      const tmp = path.join(process.env.KEA_HOME!, 'credentials.json.tmp');
+      fs.mkdirSync(tmp);
+      try {
+        expect(() => upsertProfile('prod', { keyId: 'P', keyPath: FIXTURE, baseUrl: PROD_BASE_URL })).toThrow();
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+      const after = fs.readFileSync(path.join(process.env.KEA_HOME!, 'credentials.json'), 'utf8');
+      expect(after).toBe(before);
     });
   });
 });
