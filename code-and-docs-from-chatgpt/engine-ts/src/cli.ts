@@ -291,6 +291,16 @@ function cmdHelp() {
   process.stdout.write(`
 kea — Kalshi Exit Assistant CLI
 
+Account commands:
+  login [--profile <name>] [--key-id <id>] [--key-file <path>] [--base-url <url>]
+                                     Connect a Kalshi profile (prompts for missing fields)
+  use <profile>                      Switch active profile
+  whoami                             Show active profile (key id last-4 only)
+  logout [--profile <name>] [--all]  Remove a profile
+
+Credentials are stored at $KEA_HOME/credentials.json (chmod 600).
+File takes precedence over KALSHI_* env vars; env vars are a fallback.
+
 Read-only commands (no money moves):
   preview --config <path>            Project the full exit: gross, fees, net, per-level fills
   book --ticker <T> [--depth N]      Display orderbook
