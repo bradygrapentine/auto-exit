@@ -8,7 +8,10 @@
     "dev": "tsx src/cli.ts --config ./config.example.json",
     "server": "tsx src/server.ts --config ./config.example.json",
     "test": "vitest run",
-    "smoke:mcp": "tsx scripts/mcp-smoke.ts"
+    "smoke:mcp": "tsx scripts/mcp-smoke.ts",
+    "harness:read-only": "HARNESS=1 vitest run test/harness/read-only.harness.test.ts",
+    "harness:update-baselines": "tsx scripts/harness-update-baselines.ts",
+    "harness:mutation": "HARNESS=1 HARNESS_SUITE=mutation vitest run test/harness/mutation.harness.test.ts"
   },
   "devDependencies": {
     "@types/node": "20.14.10",

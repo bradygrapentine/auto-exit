@@ -1,0 +1,41 @@
+{
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "orderId": {
+        "type": "string"
+      },
+      "ticker": {
+        "type": "string"
+      },
+      "side": {
+        "type": "string"
+      },
+      "action": {
+        "type": "string"
+      },
+      "remaining": {
+        "type": "number",
+        "minimum": 0
+      },
+      "priceDollars": {
+        "type": "string"
+      },
+      "createdTime": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "orderId",
+      "ticker",
+      "side",
+      "action",
+      "remaining",
+      "priceDollars",
+      "createdTime"
+    ],
+    "additionalProperties": false
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

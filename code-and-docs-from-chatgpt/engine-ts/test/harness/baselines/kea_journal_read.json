@@ -1,0 +1,45 @@
+{
+  "type": "object",
+  "properties": {
+    "jobId": {
+      "type": "string"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ts": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "loop_started",
+              "order_placed",
+              "order_reconciled",
+              "loop_finished",
+              "loop_error",
+              "resume_started",
+              "resume_reconciled",
+              "gtc_resting",
+              "tail_gtc_posted"
+            ]
+          },
+          "data": {}
+        },
+        "required": [
+          "ts",
+          "kind"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "jobId",
+    "entries"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

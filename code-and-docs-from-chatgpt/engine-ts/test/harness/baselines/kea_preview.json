@@ -1,0 +1,76 @@
+{
+  "type": "object",
+  "properties": {
+    "topBidCents": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "decisionSize": {
+      "type": "number"
+    },
+    "decisionPriceDollars": {
+      "type": "string"
+    },
+    "decisionReason": {
+      "type": "string"
+    },
+    "grossDollars": {
+      "type": "number"
+    },
+    "feesDollars": {
+      "type": "number"
+    },
+    "netDollars": {
+      "type": "number"
+    },
+    "effectiveRatePct": {
+      "type": "number"
+    },
+    "perLevel": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "priceCents": {
+            "type": "number"
+          },
+          "size": {
+            "type": "number"
+          },
+          "fillCount": {
+            "type": "number"
+          },
+          "revenueDollars": {
+            "type": "number"
+          },
+          "feesDollars": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "priceCents",
+          "size",
+          "fillCount",
+          "revenueDollars",
+          "feesDollars"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "topBidCents",
+    "decisionSize",
+    "decisionPriceDollars",
+    "decisionReason",
+    "grossDollars",
+    "feesDollars",
+    "netDollars",
+    "effectiveRatePct",
+    "perLevel"
+  ],
+  "additionalProperties": true,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
