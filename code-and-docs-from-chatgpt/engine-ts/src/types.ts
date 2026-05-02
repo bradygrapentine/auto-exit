@@ -235,7 +235,11 @@ export type JournalKind =
   | 'buy_loop_started'
   | 'buy_loop_finished'
   | 'buy_loop_error'
-  | 'tca';
+  | 'tca'
+  | 'passive_spread_too_tight'
+  | 'passive_floor_hit'
+  | 'passive_ceiling_hit'
+  | 'passive_walk_tick';
 
 export interface TcaEntry {
   kind: 'tca';
