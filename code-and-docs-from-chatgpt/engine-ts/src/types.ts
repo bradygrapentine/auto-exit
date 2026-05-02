@@ -196,6 +196,23 @@ export interface KalshiClientLike {
 
 // ── Journal types ──────────────────────────────────────────────────────────────
 
+// ── Safety config types ────────────────────────────────────────────────────────
+
+export interface ForbiddenEntry {
+  ticker: string;
+  reason: string;
+  addedAt: string;   // ISO 8601
+  addedBy: string;   // 'cli' | 'mcp' | 'tui'
+}
+
+export interface SafetyConfig {
+  safetySubmittedMultiple: number;   // default 1.1; hard bounds [1.0, 1.2]
+  floorPriceCents: number;           // default 0; hard bounds [0, 99]
+  tailSweepThreshold: number;        // default 0; hard bounds [0, 1_000_000]
+  forbiddenTickers: ForbiddenEntry[];
+  version: 1;
+}
+
 export type JournalKind =
   | 'loop_started'
   | 'order_intent'
@@ -206,7 +223,9 @@ export type JournalKind =
   | 'resume_started'
   | 'resume_reconciled'
   | 'gtc_resting'
-  | 'tail_gtc_posted';
+  | 'tail_gtc_posted'
+  | 'safety_config_changed'
+  | 'safety_loaded';
 
 export interface JournalEntry {
   ts: string;
