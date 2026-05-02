@@ -262,7 +262,7 @@ async function cmdLogin(flags: Record<string, string>): Promise<void> {
   const keyFile = await promptIfMissing('path to RSA private key', flags['key-file']);
   if (!keyFile) die('key file required');
   await validateKeyFile(keyFile);
-  const baseUrl = flags['base-url'] ?? await promptIfMissing('base url', undefined, defaultBaseUrlFor(profile));
+  const baseUrl = flags['base-url'] ?? defaultBaseUrlFor(profile);
   upsertProfile(profile, { keyId, keyPath: keyFile, baseUrl });
   ok(`saved profile '${profile}'`);
   cmdWhoami();

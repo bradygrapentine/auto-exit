@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { upsertProfile } from '../src/credentials.js';
+import { upsertProfile, listProfiles, getActive, loadActive } from '../src/credentials.js';
 import { runCli } from '../src/cli.js';
 
 const FIXTURE = path.resolve(__dirname, 'fixtures/test-rsa.pem');
@@ -34,6 +34,42 @@ describe('kea whoami', () => {
       expect(joined).toContain('prod');
       expect(joined).toContain('…WXYZ');
       expect(joined).not.toContain('AKID-PROD-WXYZ');
+    });
+  });
+});
+
+describe('kea login (flags only)', () => {
+  it('writes profile from flags and makes it active when first', async () => {
+    await withTempHome(async () => {
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      try {
+        await runCli(['login', '--profile', 'prod', '--key-id', 'AKID-FLAGS-1234', '--key-file', FIXTURE]);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(listProfiles()).toEqual(['prod']);
+      expect(getActive()).toBe('prod');
+      expect(loadActive().baseUrl).toBe('https://api.elections.kalshi.com/trade-api/v2');
+    });
+  });
+
+  it('respects --base-url override', async () => {
+    await withTempHome(async () => {
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      try {
+        await runCli(['login', '--profile', 'demo', '--key-id', 'X', '--key-file', FIXTURE, '--base-url', 'https://custom.example/v2']);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(loadActive().baseUrl).toBe('https://custom.example/v2');
+    });
+  });
+
+  it('rejects unreadable key file', async () => {
+    await withTempHome(async () => {
+      await expect(
+        runCli(['login', '--profile', 'prod', '--key-id', 'X', '--key-file', '/no/such/file']),
+      ).rejects.toThrow();
     });
   });
 });
