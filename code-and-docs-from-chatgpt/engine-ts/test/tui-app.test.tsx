@@ -342,3 +342,44 @@ describe('Account tab', () => {
     });
   });
 });
+
+describe.runIf(process.env.LIVE_TUI === '1')('live smoke', () => {
+  function copyActiveProfileToTemp(): string {
+    const realHome = process.env.KEA_HOME ?? path.join(os.homedir(), '.kalshi-exit-assistant');
+    const realCreds = path.join(realHome, 'credentials.json');
+    if (!fs.existsSync(realCreds)) throw new Error('No real credentials to copy. Run `kea login` first.');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kea-tui-smoke-'));
+    fs.copyFileSync(realCreds, path.join(tmp, 'credentials.json'));
+    fs.chmodSync(path.join(tmp, 'credentials.json'), 0o600);
+    // Copy the referenced key file too.
+    const creds = JSON.parse(fs.readFileSync(realCreds, 'utf8'));
+    for (const p of Object.values<{ keyPath: string }>(creds.profiles ?? {})) {
+      if (fs.existsSync(p.keyPath)) {
+        const dest = path.join(tmp, path.basename(p.keyPath));
+        fs.copyFileSync(p.keyPath, dest);
+      }
+    }
+    return tmp;
+  }
+
+  it('renders each tab without crashing', async () => {
+    const tmpHome = copyActiveProfileToTemp();
+    const prev = process.env.KEA_HOME;
+    process.env.KEA_HOME = tmpHome;
+    try {
+      const { App } = await import('../src/tui/App.js');
+      const { lastFrame, stdin } = render(<App />);
+      // Navigate through every keystroke in the tab bar (1=dashboard, 2=preview, 3=book, 4=journal, a=account).
+      for (const key of ['1', '2', '3', '4', 'a']) {
+        stdin.write(key);
+        await new Promise((r) => setTimeout(r, 50));
+        const frame = lastFrame() ?? '';
+        expect(frame).not.toMatch(/Error:/i);
+        expect(frame.length).toBeGreaterThan(0);
+      }
+    } finally {
+      process.env.KEA_HOME = prev;
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+});
