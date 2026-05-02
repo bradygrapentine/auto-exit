@@ -313,7 +313,7 @@ Mutating commands (live):
   resume --job <id> --config <path>  Resume a journaled job
   cancel-resting --order-id <id>     Cancel a specific resting order
 
-Env required for live commands:
+Env fallback (used only when no profile is configured via \`kea login\`):
   KALSHI_ACCESS_KEY                  access key id
   KALSHI_PRIVATE_KEY_PATH            absolute path to RSA private key
   KALSHI_BASE_URL                    e.g. https://api.elections.kalshi.com/trade-api/v2
