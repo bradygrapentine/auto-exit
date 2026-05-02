@@ -151,8 +151,10 @@ export class Journal {
   }
 }
 
-/** Generate a simple unique job ID: timestamp + 4-hex random suffix. */
+/** Generate a unique job ID: timestamp + 8-hex random suffix.
+ *  4-hex (16-bit) suffix had ~26% collision rate for 100 ids generated in the
+ *  same millisecond (birthday paradox); 8-hex (32-bit) drops that to ~1e-6. */
 export function generateJobId(): string {
-  const rand = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  const rand = Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
   return `${Date.now()}-${rand}`;
 }
