@@ -312,9 +312,14 @@ Env required for live commands:
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+function tryLoadBaseUrl(): string {
+  try { return loadActive().baseUrl; }
+  catch { return process.env.KALSHI_BASE_URL ?? 'https://api.elections.kalshi.com/trade-api/v2'; }
+}
+
 function makeMinimalConfig(ticker: string): ExitConfig {
   return {
-    baseUrl: process.env.KALSHI_BASE_URL ?? 'https://api.elections.kalshi.com/trade-api/v2',
+    baseUrl: tryLoadBaseUrl(),
     localServerPort: 0,
     marketTicker: ticker,
     heldSide: 'yes',
