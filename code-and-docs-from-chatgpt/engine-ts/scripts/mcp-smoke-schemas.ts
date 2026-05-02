@@ -3,7 +3,7 @@ import { z } from 'zod';
 // kea_whoami
 export const WhoamiSchema = z.object({
   activeProfile: z.string(),
-  keyIdLast4: z.string().length(4),
+  keyIdLast4: z.string().min(1).max(4),
   baseUrl: z.string().url(),
   isDemo: z.boolean(),
 });
