@@ -58,6 +58,9 @@ export async function runCase(client: Client, c: HarnessCase, state: Record<stri
   try {
     const r = await client.callTool({ name: c.name, arguments: args });
     const text = (r.content?.[0] as { text: string } | undefined)?.text ?? '';
+    if (r.isError) {
+      return { name: c.name, status: 'FAIL', ms: Date.now() - t0, schemaError: `MCP tool error: ${text}` };
+    }
     parsed = JSON.parse(text);
   } catch (e) {
     return { name: c.name, status: 'FAIL', ms: Date.now() - t0, schemaError: e instanceof Error ? e.message : String(e) };
@@ -96,6 +99,20 @@ export async function runCase(client: Client, c: HarnessCase, state: Record<stri
 //   1. type:'object' with `properties`  — recurse into each property
 //   2. type:'array'  with `items`       — recurse into items with `[]` suffix
 //   3. Leaf (string/number/boolean/…)   — compare types and enum arrays
+function sameType(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    const sa = [...a].sort();
+    const sb = [...b].sort();
+    return sa.every((v, i) => v === sb[i]);
+  }
+  return a === b;
+}
+
+function formatType(t: unknown): string {
+  return Array.isArray(t) ? t.join(',') : String(t);
+}
+
 export function diffKeys(a: unknown, b: unknown, prefix = ''): string[] {
   const out: string[] = [];
   const ao = (a ?? {}) as Record<string, unknown>;
@@ -123,8 +140,8 @@ export function diffKeys(a: unknown, b: unknown, prefix = ''): string[] {
     const subPath = prefix ? `${prefix}.${k}` : k;
     if (!ak) { out.push(`+ ${subPath}`); continue; }
     if (!bk) { out.push(`- ${subPath}`); continue; }
-    if (ak.type !== bk.type) {
-      out.push(`~ ${subPath}: ${ak.type} -> ${bk.type}`);
+    if (!sameType(ak.type, bk.type)) {
+      out.push(`~ ${subPath}: ${formatType(ak.type)} -> ${formatType(bk.type)}`);
       continue;
     }
     // Enum-vs-string drift: one side has enum constraints, the other doesn't

@@ -15,7 +15,7 @@ const CASES: HarnessCase[] = [
   { name: 'kea_orderbook',      schema: OrderbookSchema,
     argsResolver: (s) => s.firstTicker ? { ticker: s.firstTicker, depth: 5 } : null },
   { name: 'kea_preview',        schema: PreviewSchema,
-    argsResolver: (s) => s.firstTicker ? { ticker: s.firstTicker, side: 'yes', positionSize: 1 } : null },
+    argsResolver: (s) => s.firstTicker ? { ticker: s.firstTicker, side: 'yes', size: 1 } : null },
   { name: 'kea_journal_read',   schema: JournalReadSchema,
     argsResolver: (s) => s.firstJobId ? { jobId: s.firstJobId } : null },
   { name: 'kea_replay',         schema: ReplaySchema,
