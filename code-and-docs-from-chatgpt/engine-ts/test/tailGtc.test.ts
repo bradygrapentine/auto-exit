@@ -49,6 +49,7 @@ describe('oneTickBelowCents', () => {
 // Mock client that captures every order it receives.
 class CapturingClient implements KalshiClientLike {
   public submitted: OrderPayload[] = [];
+  public restingCount = 0;
   constructor(private orderbook: Orderbook) {}
   async getOrderbook(): Promise<Orderbook> { return this.orderbook; }
   async createOrder(payload: OrderPayload): Promise<OrderResult> {
@@ -63,6 +64,7 @@ class CapturingClient implements KalshiClientLike {
     return { orderId: 'mock-1', status: 'canceled', filledCount: 0, remainingCount: 50 };
   }
   async getPosition(): Promise<Position> { return { ticker: 'KXTEST', side: 'yes', quantity: 100 }; }
+  async getRestingOrderCount(): Promise<number> { return this.restingCount; }
 }
 
 describe('tailGtcOnFinish: posts a resting GTC for the remainder after main loop ends', () => {
@@ -125,6 +127,7 @@ describe('tailGtcOnFinish: posts a resting GTC for the remainder after main loop
       getOrder: async () => ({ orderId: 'x', status: 'filled', filledCount: 50, remainingCount: 0 }),
       cancelOrder: async () => ({ orderId: 'x', status: 'canceled', filledCount: 0, remainingCount: 0 }),
       getPosition: async () => ({ ticker: 'KXTEST', side: 'yes', quantity: 100 }),
+      getRestingOrderCount: async () => 0,
     };
     const cfg: ExitConfig = { ...baseCfg, tailGtcOnFinish: true, chunkSize: 100, maxOrders: 1 };
     const runner = new ExitRunner(cfg, client);
@@ -137,6 +140,10 @@ describe('tailGtcOnFinish: posts a resting GTC for the remainder after main loop
     // This is the regression test for the duplicate-post bug. Re-running the engine
     // while a prior tail-GTC is still resting would post a second sell, and GTC drops
     // reduce_only — both filling could flip the position short.
+    //
+    // The signal comes from getRestingOrderCount (queries /portfolio/orders), NOT
+    // from position.restingOrdersCount which Kalshi returns as 0 even when orders
+    // are actively resting.
     const ob: Orderbook = {
       yes: [],
       no: [{ priceCents: 95, size: 1000 }],
@@ -150,8 +157,9 @@ describe('tailGtcOnFinish: posts a resting GTC for the remainder after main loop
       },
       getOrder: async () => ({ orderId: 'x', status: 'canceled', filledCount: 0, remainingCount: 0 }),
       cancelOrder: async () => ({ orderId: 'x', status: 'canceled', filledCount: 0, remainingCount: 0 }),
-      // Position has 1 resting order from a previous run
-      getPosition: async () => ({ ticker: 'KXTEST', side: 'yes', quantity: 100, restingOrdersCount: 1 }),
+      getPosition: async () => ({ ticker: 'KXTEST', side: 'yes', quantity: 100 }),
+      // Authoritative signal: 1 resting order on this ticker from a previous run
+      getRestingOrderCount: async () => 1,
     };
     const cfg: ExitConfig = {
       ...baseCfg,
@@ -172,14 +180,15 @@ describe('tailGtcOnFinish: posts a resting GTC for the remainder after main loop
     expect(gtcSubmissions).toHaveLength(0);
   });
 
-  it('skips when getPosition lookup fails before the tail post (defensive)', async () => {
+  it('skips when getRestingOrderCount lookup fails before the tail post (defensive)', async () => {
     const ob: Orderbook = { yes: [], no: [{ priceCents: 95, size: 1000 }] };
     const client: KalshiClientLike = {
       getOrderbook: async () => ob,
       createOrder: async () => ({ orderId: 'm-1', status: 'resting', filledCount: 0, remainingCount: 0 }),
       getOrder: async () => ({ orderId: 'x', status: 'canceled', filledCount: 0, remainingCount: 0 }),
       cancelOrder: async () => ({ orderId: 'x', status: 'canceled', filledCount: 0, remainingCount: 0 }),
-      getPosition: async () => { throw new Error('account_api_unavailable'); },
+      getPosition: async () => ({ ticker: 'KXTEST', side: 'yes', quantity: 100 }),
+      getRestingOrderCount: async () => { throw new Error('orders_api_unavailable'); },
     };
     const cfg: ExitConfig = {
       ...baseCfg,
@@ -190,7 +199,7 @@ describe('tailGtcOnFinish: posts a resting GTC for the remainder after main loop
     const runner = new ExitRunner(cfg, client);
     const status = await runner.run();
 
-    expect(status.events.some((e) => e.message === 'tail_gtc_skipped_position_lookup_failed')).toBe(true);
+    expect(status.events.some((e) => e.message === 'tail_gtc_skipped_resting_count_lookup_failed')).toBe(true);
     expect(status.events.some((e) => e.message === 'tail_gtc_posted')).toBe(false);
   });
 
@@ -207,6 +216,7 @@ describe('tailGtcOnFinish: posts a resting GTC for the remainder after main loop
       cancelOrder: async () => ({ orderId: 'x', status: 'canceled', filledCount: 0, remainingCount: 0 }),
       // Fractional position (e.g. fee dust)
       getPosition: async () => ({ ticker: 'KXTEST', side: 'yes', quantity: 1386.59 }),
+      getRestingOrderCount: async () => 0,
     };
     const cfg: ExitConfig = {
       ...baseCfg,

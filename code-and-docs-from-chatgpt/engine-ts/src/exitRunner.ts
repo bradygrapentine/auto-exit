@@ -201,17 +201,23 @@ export class ExitRunner {
     // Without this, re-running the engine while a previous tail-GTC is still
     // resting would post a second sell — and since GTC drops reduce_only, both
     // filling could flip the position short.
+    //
+    // Source-of-truth note: /portfolio/orders (queried via getRestingOrderCount)
+    // is authoritative. The position.restingOrdersCount field returned by
+    // /portfolio/positions has been observed reporting 0 while orders WERE
+    // actively resting on the book — using it here would silently allow
+    // double-posts. See the 2026-05-01 P1 cleanup investigation for the trace.
     try {
-      const observed = await this.client.getPosition(this.config.marketTicker);
-      if ((observed.restingOrdersCount ?? 0) > 0) {
+      const restingCount = await this.client.getRestingOrderCount(this.config.marketTicker);
+      if (restingCount > 0) {
         this.log('warn', 'tail_gtc_skipped_existing_resting_order', {
           ticker: this.config.marketTicker,
-          restingOrdersCount: observed.restingOrdersCount,
+          restingCount,
         });
         return;
       }
     } catch (err) {
-      this.log('warn', 'tail_gtc_skipped_position_lookup_failed', {
+      this.log('warn', 'tail_gtc_skipped_resting_count_lookup_failed', {
         error: err instanceof Error ? err.message : String(err),
       });
       return;

@@ -42,9 +42,21 @@ export class MockKalshiClient implements KalshiClientLike {
     this.behaviors = opts.behaviors ?? [];
   }
 
+  private restingOrderCounts = new Map<string, number>();
+
   /** Set a synthetic position for use in preflight tests. */
   setPosition(ticker: string, side: Side, quantity: number): void {
     this.positionStore.set(ticker, { side, quantity });
+  }
+
+  /** Set a synthetic resting-order count for use in tail-GTC guard tests. */
+  setRestingOrderCount(ticker: string, count: number): void {
+    this.restingOrderCounts.set(ticker, count);
+  }
+
+  async getRestingOrderCount(ticker: string): Promise<number> {
+    this.events.push('getRestingOrderCount');
+    return this.restingOrderCounts.get(ticker) ?? 0;
   }
 
   async getPosition(ticker: string): Promise<Position> {

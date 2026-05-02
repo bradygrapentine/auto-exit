@@ -273,4 +273,24 @@ export class KalshiClient implements KalshiClientLike {
   async getPosition(ticker: string): Promise<Position> {
     return this.accountClient.getPosition(ticker);
   }
+
+  /**
+   * Count how many of OUR resting orders exist on `ticker`. Queries /portfolio/orders
+   * (no query string — Kalshi rejects ?ticker= on this signed path) and filters
+   * client-side by ticker + status='resting'. First page only — for accounts with
+   * many open orders across many markets, pagination may be needed (TODO).
+   */
+  async getRestingOrderCount(ticker: string): Promise<number> {
+    return withRetry(async () => {
+      const path = '/portfolio/orders';
+      const res = await fetchChecked(
+        this.fetchFn,
+        this.config.baseUrl + path,
+        { headers: this.authHeaders('GET', path) },
+      );
+      const json = (await res.json()) as { orders?: Array<{ ticker?: string; status?: string }> };
+      const orders = json.orders ?? [];
+      return orders.filter((o) => o.ticker === ticker && o.status === 'resting').length;
+    });
+  }
 }

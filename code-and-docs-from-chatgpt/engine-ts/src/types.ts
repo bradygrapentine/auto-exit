@@ -185,6 +185,10 @@ export interface KalshiClientLike {
   getOrder(orderId: string): Promise<OrderResult>;
   cancelOrder(orderId: string): Promise<OrderResult>;
   getPosition(ticker: string): Promise<Position>;
+  /** Count of our resting orders on this ticker. Authoritative — queries /portfolio/orders.
+   *  The `position.restingOrdersCount` field from /portfolio/positions is NOT reliable
+   *  (observed returning 0 even when a GTC was actively resting on the book). */
+  getRestingOrderCount(ticker: string): Promise<number>;
 }
 
 // ── Journal types ──────────────────────────────────────────────────────────────
