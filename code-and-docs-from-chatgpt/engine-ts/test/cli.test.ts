@@ -73,3 +73,47 @@ describe('kea login (flags only)', () => {
     });
   });
 });
+
+describe('kea use', () => {
+  it('flips active profile', async () => {
+    await withTempHome(async () => {
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      try {
+        await runCli(['login', '--profile', 'demo', '--key-id', 'D', '--key-file', FIXTURE]);
+        await runCli(['login', '--profile', 'prod', '--key-id', 'P', '--key-file', FIXTURE]);
+        await runCli(['use', 'prod']);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(getActive()).toBe('prod');
+    });
+  });
+});
+
+describe('kea logout', () => {
+  it('removes one profile', async () => {
+    await withTempHome(async () => {
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      try {
+        await runCli(['login', '--profile', 'demo', '--key-id', 'D', '--key-file', FIXTURE]);
+        await runCli(['login', '--profile', 'prod', '--key-id', 'P', '--key-file', FIXTURE]);
+        await runCli(['logout', '--profile', 'demo']);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(listProfiles()).toEqual(['prod']);
+    });
+  });
+  it('--all clears everything', async () => {
+    await withTempHome(async () => {
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      try {
+        await runCli(['login', '--profile', 'demo', '--key-id', 'D', '--key-file', FIXTURE]);
+        await runCli(['logout', '--all']);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(listProfiles()).toEqual([]);
+    });
+  });
+});
