@@ -1,6 +1,23 @@
 import React from 'react';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from 'ink-testing-library';
+import { upsertProfile, setActive } from '../src/credentials.js';
+
+function withTempHome<T>(fn: () => Promise<T> | T): Promise<T> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kea-home-'));
+  const prev = process.env.KEA_HOME;
+  process.env.KEA_HOME = dir;
+  return Promise.resolve()
+    .then(() => fn())
+    .finally(() => {
+      if (prev === undefined) delete process.env.KEA_HOME;
+      else process.env.KEA_HOME = prev;
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+}
 
 // Mock the api module before importing App.
 vi.mock('../src/tui/api.js', () => {
@@ -266,5 +283,62 @@ describe('TUI App — error and empty states', () => {
     await flush();
     expect(lastFrame()).toContain('(empty)');
     unmount();
+  });
+});
+
+describe('Account tab', () => {
+  it('shows active profile name and base URL', async () => {
+    await withTempHome(async () => {
+      const FIXTURE = path.resolve(__dirname, 'fixtures/test-rsa.pem');
+      upsertProfile('prod', { keyId: 'AKID-WXYZ', keyPath: FIXTURE, baseUrl: 'https://api.elections.kalshi.com/trade-api/v2' });
+      const { App } = await import('../src/tui/App.js');
+      const { lastFrame, stdin, unmount } = render(<App />);
+      await flush();
+      stdin.write('a');
+      await flush();
+      expect(lastFrame()).toMatch(/prod/);
+      expect(lastFrame()).toMatch(/PROD/i);
+      unmount();
+    });
+  });
+
+  it("renders 'Run kea login' when no profiles configured", async () => {
+    await withTempHome(async () => {
+      const prevKey = process.env.KALSHI_ACCESS_KEY;
+      const prevPath = process.env.KALSHI_PRIVATE_KEY_PATH;
+      delete process.env.KALSHI_ACCESS_KEY;
+      delete process.env.KALSHI_PRIVATE_KEY_PATH;
+      try {
+        const { App } = await import('../src/tui/App.js');
+        const { lastFrame, stdin, unmount } = render(<App />);
+        await flush();
+        stdin.write('a');
+        await flush();
+        expect(lastFrame()).toMatch(/kea login/);
+        unmount();
+      } finally {
+        if (prevKey !== undefined) process.env.KALSHI_ACCESS_KEY = prevKey;
+        if (prevPath !== undefined) process.env.KALSHI_PRIVATE_KEY_PATH = prevPath;
+      }
+    });
+  });
+
+  it("'s' keystroke cycles to next profile", async () => {
+    await withTempHome(async () => {
+      const FIXTURE = path.resolve(__dirname, 'fixtures/test-rsa.pem');
+      upsertProfile('demo', { keyId: 'D', keyPath: FIXTURE, baseUrl: 'https://demo-api.kalshi.co/trade-api/v2' });
+      upsertProfile('prod', { keyId: 'P', keyPath: FIXTURE, baseUrl: 'https://api.elections.kalshi.com/trade-api/v2' });
+      setActive('demo');
+      const { App } = await import('../src/tui/App.js');
+      const { lastFrame, stdin, unmount } = render(<App />);
+      await flush();
+      stdin.write('a');
+      await flush();
+      expect(lastFrame()).toMatch(/profile: demo/);
+      stdin.write('s');
+      await flush();
+      expect(lastFrame()).toMatch(/profile: prod/);
+      unmount();
+    });
   });
 });

@@ -5,8 +5,9 @@ import {
   type BalanceData, type PositionRow, type RestingOrderRow, type PreviewResult, type JournalSummary,
 } from './api.js';
 import type { Orderbook } from '../types.js';
+import { AccountTab } from './AccountTab.js';
 
-type Tab = 'dashboard' | 'preview' | 'book' | 'journal';
+type Tab = 'dashboard' | 'preview' | 'book' | 'journal' | 'account';
 
 interface DashboardState {
   balance?: BalanceData;
@@ -57,6 +58,7 @@ export function App() {
       else if (input === '2') setTab('preview');
       else if (input === '3') setTab('book');
       else if (input === '4') setTab('journal');
+      else if (input === 'a' || input === 'A') setTab('account');
       else if (input === 'r' || input === 'R') refreshDashboard();
       else if (tab === 'dashboard') {
         if (key.upArrow) setDash((s) => ({ ...s, cursor: Math.max(0, s.cursor - 1) }));
@@ -81,6 +83,7 @@ export function App() {
       {tab === 'preview' && <PreviewView target={target} />}
       {tab === 'book' && <BookView target={target} />}
       {tab === 'journal' && <JournalView />}
+      {tab === 'account' && <AccountTab />}
       <Footer tab={tab} />
     </Box>
   );
@@ -126,15 +129,18 @@ function TabBar({ tab }: { tab: Tab }) {
       {item('1', 'dashboard', 'dashboard')}<Text> </Text>
       {item('2', 'preview', 'preview')}<Text> </Text>
       {item('3', 'book', 'book')}<Text> </Text>
-      {item('4', 'journal', 'journal')}
+      {item('4', 'journal', 'journal')}<Text> </Text>
+      {item('a', 'account', 'account')}
     </Box>
   );
 }
 
 function Footer({ tab }: { tab: Tab }) {
   const hint = tab === 'dashboard'
-    ? '[↑↓] select   [enter] preview selected   [r] refresh   [1-4] tabs   [q] quit'
-    : '[1-4] tabs   [r] refresh   [q] quit';
+    ? '[↑↓] select   [enter] preview selected   [r] refresh   [1-4/a] tabs   [q] quit'
+    : tab === 'account'
+    ? '[s] switch profile   [1-4/a] tabs   [q] quit'
+    : '[1-4/a] tabs   [r] refresh   [q] quit';
   return (
     <Box marginTop={1}><Text color="gray">{hint}</Text></Box>
   );
