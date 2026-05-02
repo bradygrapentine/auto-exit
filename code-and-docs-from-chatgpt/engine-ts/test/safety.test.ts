@@ -101,6 +101,16 @@ describe('setSafety — atomic write durability', () => {
   });
 });
 
+describe('getSafety — corrupt file handling', () => {
+  it('throws with "corrupt" message when safety.json is invalid JSON', async () => {
+    await withTempHome(async (dir) => {
+      fs.writeFileSync(path.join(dir, 'safety.json'), '{ invalid json', 'utf8');
+      const { getSafety } = await importSafety();
+      expect(() => getSafety()).toThrow(/corrupt/);
+    });
+  });
+});
+
 describe('addForbiddenTicker / listForbidden / removeForbiddenTicker', () => {
   it('add → list → remove round-trip', async () => {
     await withTempHome(async () => {
@@ -141,6 +151,15 @@ describe('addForbiddenTicker / listForbidden / removeForbiddenTicker', () => {
       // Should not throw
       expect(() => removeForbiddenTicker('DOES-NOT-EXIST')).not.toThrow();
       expect(listForbidden()).toHaveLength(0);
+    });
+  });
+
+  it('removeForbiddenTicker returns true when removed, false when not found', async () => {
+    await withTempHome(async () => {
+      const { addForbiddenTicker, removeForbiddenTicker } = await importSafety();
+      addForbiddenTicker('KXTEST-R', 'test', 'cli');
+      expect(removeForbiddenTicker('KXTEST-R')).toBe(true);
+      expect(removeForbiddenTicker('KXTEST-R')).toBe(false);
     });
   });
 });
@@ -203,5 +222,20 @@ describe('mergeIntoExitConfig — guard-rail merge', () => {
       expect(merged.forbiddenTickers).toContain('EXISTING');
       expect(merged.forbiddenTickers).toContain('SAFETY-TICKER');
     });
+  });
+
+  it('accepts a direct safety arg, bypassing file read', async () => {
+    const { mergeIntoExitConfig } = await importSafety();
+    const directSafety = {
+      version: 1 as const,
+      safetySubmittedMultiple: 1.05,
+      floorPriceCents: 20,
+      tailSweepThreshold: 100,
+      forbiddenTickers: [{ ticker: 'DIRECT', reason: 'test', addedAt: '', addedBy: 'test' }],
+    };
+    const merged = mergeIntoExitConfig({ ...baseCfg, safetySubmittedMultiple: 1.5, floorPriceCents: 5 }, directSafety);
+    expect(merged.safetySubmittedMultiple).toBe(1.05);
+    expect(merged.floorPriceCents).toBe(20);
+    expect(merged.forbiddenTickers).toContain('DIRECT');
   });
 });

@@ -37,10 +37,19 @@ const DEFAULTS: SafetyConfig = {
 // ── file I/O ──────────────────────────────────────────────────────────────────
 
 function readSafetyFile(): SafetyConfig | null {
-  const p = safetyPath();
-  if (!fs.existsSync(p)) return null;
-  const raw = fs.readFileSync(p, 'utf8');
-  return JSON.parse(raw) as SafetyConfig;
+  try {
+    const raw = fs.readFileSync(safetyPath(), 'utf8');
+    try {
+      const parsed = JSON.parse(raw) as SafetyConfig;
+      if (parsed.version !== 1) throw new Error(`Unsupported safety.json version: ${String(parsed.version)}`);
+      return parsed;
+    } catch (parseErr) {
+      throw new Error(`safety.json is corrupt: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
 }
 
 function writeSafetyFileAtomic(data: SafetyConfig): void {
@@ -63,7 +72,7 @@ function appendAudit(action: string, context: Record<string, unknown>): void {
 
 /** Returns persisted safety config or DEFAULTS when no file exists. */
 export function getSafety(): SafetyConfig {
-  return readSafetyFile() ?? { ...DEFAULTS, forbiddenTickers: [] };
+  return readSafetyFile() ?? { ...DEFAULTS };
 }
 
 /** Patch one or more scalar fields. Returns the updated config. */
@@ -120,39 +129,33 @@ export function addForbiddenTicker(
   return entry;
 }
 
-export function removeForbiddenTicker(ticker: string): void {
+export function removeForbiddenTicker(ticker: string): boolean {
   const current = getSafety();
-  const before = current.forbiddenTickers.length;
-  const updated: SafetyConfig = {
-    ...current,
-    forbiddenTickers: current.forbiddenTickers.filter((e) => e.ticker !== ticker),
-  };
-  if (updated.forbiddenTickers.length === before) {
-    // no-op: ticker not found
-    return;
-  }
-  writeSafetyFileAtomic(updated);
+  const next = current.forbiddenTickers.filter((e) => e.ticker !== ticker);
+  if (next.length === current.forbiddenTickers.length) return false;
+  writeSafetyFileAtomic({ ...current, forbiddenTickers: next });
   appendAudit('removeForbiddenTicker', { ticker });
+  return true;
 }
 
 /**
  * Merge persisted safety guard-rails into a job ExitConfig.
  * Guard-rails can only tighten: min for multipliers, max for floors, union for forbidden.
  */
-export function mergeIntoExitConfig(config: ExitConfig): ExitConfig {
-  const safety = getSafety();
+export function mergeIntoExitConfig(config: ExitConfig, safety?: SafetyConfig): ExitConfig {
+  const s = safety ?? getSafety();
   const merged: ExitConfig = {
     ...config,
     safetySubmittedMultiple: Math.min(
       config.safetySubmittedMultiple ?? Infinity,
-      safety.safetySubmittedMultiple,
+      s.safetySubmittedMultiple,
     ),
-    floorPriceCents: Math.max(config.floorPriceCents, safety.floorPriceCents),
-    tailSweepThreshold: Math.max(config.tailSweepThreshold, safety.tailSweepThreshold),
+    floorPriceCents: Math.max(config.floorPriceCents, s.floorPriceCents),
+    tailSweepThreshold: Math.max(config.tailSweepThreshold, s.tailSweepThreshold),
     forbiddenTickers: Array.from(
       new Set([
         ...(config.forbiddenTickers ?? []),
-        ...safety.forbiddenTickers.map((e) => e.ticker),
+        ...s.forbiddenTickers.map((e) => e.ticker),
       ]),
     ),
   };

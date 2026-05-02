@@ -343,6 +343,10 @@ function cmdSafety(subcommand: string | undefined, flags: Record<string, string>
     if (flags['tail-sweep-threshold'] !== undefined) {
       patch.tailSweepThreshold = Number(flags['tail-sweep-threshold']);
     }
+    if (Object.keys(patch).length === 0) {
+      console.error('error: no fields specified. Use --floor-price-cents, --safety-submitted-multiple, or --tail-sweep-threshold');
+      process.exit(2);
+    }
     const updated = setSafety(patch);
     ok(`safety updated`);
     process.stdout.write(`safetySubmittedMultiple: ${updated.safetySubmittedMultiple}\n`);
@@ -377,8 +381,9 @@ function cmdForbidden(subcommand: string | undefined, positional: string[], flag
   if (subcommand === 'remove') {
     const ticker = positional[0];
     if (!ticker) die('usage: kea forbidden remove <ticker>');
-    removeForbiddenTicker(ticker);
-    ok(`removed ${ticker} from forbidden list`);
+    const removed = removeForbiddenTicker(ticker);
+    if (removed) ok(`removed ${ticker} from forbidden list`);
+    else process.stdout.write(`${ticker} was not on the forbidden list — no change\n`);
     return;
   }
   die(`unknown forbidden subcommand: ${subcommand}`);

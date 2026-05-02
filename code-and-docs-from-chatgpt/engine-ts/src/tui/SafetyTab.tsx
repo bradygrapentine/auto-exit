@@ -7,6 +7,7 @@ export function SafetyTab() {
   const [safety, setSafetyState] = useState<SafetyConfig>(() => getSafety());
   const [cursor, setCursor] = useState(0);
   const [msg, setMsg] = useState<string | undefined>();
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const stdinInfo = useStdin();
   const isInteractive = stdinInfo.isRawModeSupported;
@@ -21,11 +22,16 @@ export function SafetyTab() {
       } else if (input === 'd' || input === 'D') {
         const entry = entries[cursor];
         if (entry) {
-          removeForbiddenTicker(entry.ticker);
-          const updated = getSafety();
-          setSafetyState(updated);
-          setCursor((c) => Math.min(c, Math.max(0, updated.forbiddenTickers.length - 1)));
-          setMsg(`removed ${entry.ticker}`);
+          try {
+            removeForbiddenTicker(entry.ticker);
+            const updated = getSafety();
+            setSafetyState(updated);
+            setCursor((c) => Math.min(c, Math.max(0, updated.forbiddenTickers.length - 1)));
+            setMsg(`removed ${entry.ticker}`);
+            setErrorMsg(null);
+          } catch (e) {
+            setErrorMsg(e instanceof Error ? e.message : 'Failed to remove ticker');
+          }
         }
       }
     },
@@ -64,6 +70,7 @@ export function SafetyTab() {
         )}
       </Box>
       {msg && <Box marginTop={1}><Text color="green">{msg}</Text></Box>}
+      {errorMsg && <Box marginTop={1}><Text color="red">{errorMsg}</Text></Box>}
       <Box marginTop={1}><Text color="gray">[↑↓] select   [d] remove highlighted   [1-4/a/5] tabs</Text></Box>
     </Box>
   );

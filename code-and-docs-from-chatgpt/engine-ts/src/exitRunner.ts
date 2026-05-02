@@ -326,7 +326,7 @@ export class ExitRunner {
 
     // ── Load and merge safety guard-rails (always, before forbidden check) ──
     const safetySnapshot = getSafety();
-    this.config = mergeIntoExitConfig(this.config);
+    this.config = mergeIntoExitConfig(this.config, safetySnapshot);
 
     // Forbidden-ticker check — defense in depth even if config validation was bypassed
     const forbidden = this.config.forbiddenTickers ?? [];
