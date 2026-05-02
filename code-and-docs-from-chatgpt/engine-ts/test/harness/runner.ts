@@ -59,6 +59,11 @@ export async function runCase(client: Client, c: HarnessCase, state: Record<stri
     const r = await client.callTool({ name: c.name, arguments: args });
     const text = (r.content?.[0] as { text: string } | undefined)?.text ?? '';
     if (r.isError) {
+      // Skip gracefully when the engine has no credentials (matches smoke runner behavior).
+      // Lets CI without secrets stay green.
+      if (text.includes('No Kalshi credentials configured')) {
+        return { name: c.name, status: 'SKIP', ms: Date.now() - t0 };
+      }
       return { name: c.name, status: 'FAIL', ms: Date.now() - t0, schemaError: `MCP tool error: ${text}` };
     }
     parsed = JSON.parse(text);
