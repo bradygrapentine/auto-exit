@@ -26,6 +26,7 @@ import {
   defaultBaseUrlFor,
   KeaNotConfiguredError,
 } from './credentials.js';
+import { getSafety, setSafety, listForbidden, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
 import readline from 'node:readline/promises';
 import type { ExitConfig, Orderbook } from './types.js';
 
@@ -320,6 +321,74 @@ Env fallback (used only when no profile is configured via \`kea login\`):
 `);
 }
 
+// ── safety commands ───────────────────────────────────────────────────────────
+
+function cmdSafety(subcommand: string | undefined, flags: Record<string, string>): void {
+  if (!subcommand || subcommand === 'get') {
+    const s = getSafety();
+    process.stdout.write(`safetySubmittedMultiple: ${s.safetySubmittedMultiple}\n`);
+    process.stdout.write(`floorPriceCents:         ${s.floorPriceCents}\n`);
+    process.stdout.write(`tailSweepThreshold:      ${s.tailSweepThreshold}\n`);
+    process.stdout.write(`forbiddenTickers:        ${s.forbiddenTickers.length}\n`);
+    return;
+  }
+  if (subcommand === 'set') {
+    const patch: Parameters<typeof setSafety>[0] = {};
+    if (flags['safety-submitted-multiple'] !== undefined) {
+      patch.safetySubmittedMultiple = Number(flags['safety-submitted-multiple']);
+    }
+    if (flags['floor-price-cents'] !== undefined) {
+      patch.floorPriceCents = Number(flags['floor-price-cents']);
+    }
+    if (flags['tail-sweep-threshold'] !== undefined) {
+      patch.tailSweepThreshold = Number(flags['tail-sweep-threshold']);
+    }
+    if (Object.keys(patch).length === 0) {
+      console.error('error: no fields specified. Use --floor-price-cents, --safety-submitted-multiple, or --tail-sweep-threshold');
+      process.exit(2);
+    }
+    const updated = setSafety(patch);
+    ok(`safety updated`);
+    process.stdout.write(`safetySubmittedMultiple: ${updated.safetySubmittedMultiple}\n`);
+    process.stdout.write(`floorPriceCents:         ${updated.floorPriceCents}\n`);
+    process.stdout.write(`tailSweepThreshold:      ${updated.tailSweepThreshold}\n`);
+    return;
+  }
+  die(`unknown safety subcommand: ${subcommand}`);
+}
+
+function cmdForbidden(subcommand: string | undefined, positional: string[], flags: Record<string, string>): void {
+  if (!subcommand || subcommand === 'list') {
+    const entries = listForbidden();
+    if (entries.length === 0) {
+      process.stdout.write('(no forbidden tickers)\n');
+      return;
+    }
+    for (const e of entries) {
+      process.stdout.write(`${e.ticker.padEnd(40)}  ${e.addedBy.padEnd(5)}  ${e.addedAt.slice(0, 19)}  ${e.reason}\n`);
+    }
+    return;
+  }
+  if (subcommand === 'add') {
+    const ticker = positional[0];
+    if (!ticker) die('usage: kea forbidden add <ticker> --reason <r>');
+    const reason = flags.reason;
+    if (!reason) die('--reason is required');
+    const entry = addForbiddenTicker(ticker, reason, 'cli');
+    ok(`added ${entry.ticker} to forbidden list`);
+    return;
+  }
+  if (subcommand === 'remove') {
+    const ticker = positional[0];
+    if (!ticker) die('usage: kea forbidden remove <ticker>');
+    const removed = removeForbiddenTicker(ticker);
+    if (removed) ok(`removed ${ticker} from forbidden list`);
+    else process.stdout.write(`${ticker} was not on the forbidden list — no change\n`);
+    return;
+  }
+  die(`unknown forbidden subcommand: ${subcommand}`);
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 function tryLoadBaseUrl(): string {
@@ -368,6 +437,15 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'login': return cmdLogin(flags);
     case 'use': return cmdUse(rest.filter((x) => !x.startsWith('--')));
     case 'logout': return cmdLogout(flags);
+    case 'safety': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      return cmdSafety(sub, flags);
+    }
+    case 'forbidden': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      const positional = rest.filter((x) => !x.startsWith('--') && x !== sub);
+      return cmdForbidden(sub, positional, flags);
+    }
     case 'help':
     case '--help':
     case '-h': return cmdHelp();

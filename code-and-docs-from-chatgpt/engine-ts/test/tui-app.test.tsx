@@ -19,6 +19,25 @@ function withTempHome<T>(fn: () => Promise<T> | T): Promise<T> {
     });
 }
 
+// Mock the safety module so SafetyTab renders predictable data.
+vi.mock('../src/safety.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/safety.js')>('../src/safety.js');
+  return {
+    ...actual,
+    getSafety: vi.fn(() => ({
+      version: 1 as const,
+      safetySubmittedMultiple: 1.1,
+      floorPriceCents: 3,
+      tailSweepThreshold: 50,
+      forbiddenTickers: [
+        { ticker: 'KXBLOCKED', reason: 'test block', addedAt: '2026-01-01T00:00:00.000Z', addedBy: 'cli' },
+      ],
+    })),
+    removeForbiddenTicker: vi.fn(),
+    mergeIntoExitConfig: (config: object) => config,
+  };
+});
+
 // Mock the api module before importing App.
 vi.mock('../src/tui/api.js', () => {
   return {
@@ -340,6 +359,34 @@ describe('Account tab', () => {
       expect(lastFrame()).toMatch(/profile: prod/);
       unmount();
     });
+  });
+});
+
+describe('Safety tab', () => {
+  it('renders safety values and forbidden ticker', async () => {
+    const { lastFrame, stdin, unmount } = await mount();
+    await flush();
+    stdin.write('5');
+    await flush();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('Safety config');
+    expect(frame).toContain('1.1');
+    expect(frame).toContain('3');
+    expect(frame).toContain('50');
+    expect(frame).toContain('KXBLOCKED');
+    expect(frame).toContain('test block');
+    unmount();
+  });
+
+  it('navigates to safety tab with 5 key', async () => {
+    const { lastFrame, stdin, unmount } = await mount();
+    await flush();
+    stdin.write('5');
+    await flush();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('Safety config');
+    expect(frame).toContain('Forbidden tickers');
+    unmount();
   });
 });
 
