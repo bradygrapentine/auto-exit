@@ -11,9 +11,14 @@
   },
   "devDependencies": {
     "@types/node": "20.14.10",
+    "@types/react": "^18.3.28",
     "@vitest/coverage-v8": "^1.6.0",
     "tsx": "4.16.2",
     "typescript": "5.5.3",
     "vitest": "1.6.0"
+  },
+  "dependencies": {
+    "ink": "^5.2.1",
+    "react": "^18.3.1"
   }
 }
