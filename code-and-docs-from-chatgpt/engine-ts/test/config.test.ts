@@ -72,16 +72,16 @@ describe('mergeConfig validation', () => {
     expect(() => mergeConfig({ ...baseCfg, chunkSize: -5 }, {} as any)).toThrow(/chunkSize/);
   });
 
-  it('rejects chunkSize > 500', () => {
-    expect(() => mergeConfig({ ...baseCfg, chunkSize: 501 }, {} as any)).toThrow(/<= 500/);
+  it('rejects chunkSize > 2000', () => {
+    expect(() => mergeConfig({ ...baseCfg, chunkSize: 2001 }, {} as any)).toThrow(/<= 2000/);
   });
 
   it('rejects non-positive maxOrders', () => {
     expect(() => mergeConfig({ ...baseCfg, maxOrders: 0 }, {} as any)).toThrow(/maxOrders must be positive/);
   });
 
-  it('rejects maxOrders > 50', () => {
-    expect(() => mergeConfig({ ...baseCfg, maxOrders: 51, positionSize: 10000 }, {} as any)).toThrow(/<= 50/);
+  it('rejects maxOrders > 100', () => {
+    expect(() => mergeConfig({ ...baseCfg, maxOrders: 101, positionSize: 1_000_000 }, {} as any)).toThrow(/<= 100/);
   });
 
   it('rejects safetySubmittedMultiple < 1', () => {

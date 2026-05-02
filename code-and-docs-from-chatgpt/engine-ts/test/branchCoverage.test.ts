@@ -271,6 +271,37 @@ describe('MockKalshiClient: unknown orderId throws', () => {
   });
 });
 
+// ── pricing.ts buildSellPayload: count must be integer (Kalshi rejects floats) ──
+import { buildSellPayload } from '../src/pricing.js';
+
+describe('buildSellPayload: count is always integer', () => {
+  it('floors fractional chunkSize to integer count', () => {
+    const cfg: ExitConfig = { ...baseCfg };
+    const payload = buildSellPayload(cfg, {
+      chunkSize: 1386.59, // fractional position remainder, e.g. after fee deductions
+      priceCents: 0.1,
+      priceCentsExact: 0.1,
+      priceDollars: '0.0010',
+      reason: 'test',
+      cumulativeSizeAtPrice: 1386,
+    });
+    expect(payload.count).toBe(1386);
+    expect(Number.isInteger(payload.count)).toBe(true);
+  });
+
+  it('preserves integer chunkSize unchanged', () => {
+    const payload = buildSellPayload(baseCfg, {
+      chunkSize: 500,
+      priceCents: 5,
+      priceCentsExact: 5,
+      priceDollars: '0.0500',
+      reason: 'test',
+      cumulativeSizeAtPrice: 1000,
+    });
+    expect(payload.count).toBe(500);
+  });
+});
+
 // ── pricing.ts L78: chooseChunkSize falls through to fixed when book empties post-normalize ──
 import { chooseChunkSize } from '../src/pricing.js';
 

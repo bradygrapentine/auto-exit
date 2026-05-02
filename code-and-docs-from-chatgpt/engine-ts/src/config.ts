@@ -11,9 +11,12 @@ export function mergeConfig(base: ExitConfig, patch: Partial<ExitConfigPatch>): 
   if (merged.heldSide !== 'yes' && merged.heldSide !== 'no') throw new Error('heldSide must be yes or no');
   if (!Number.isFinite(merged.positionSize) || merged.positionSize <= 0) throw new Error('positionSize must be positive');
   if (!Number.isFinite(merged.chunkSize) || merged.chunkSize <= 0) throw new Error('chunkSize must be positive');
-  if (merged.chunkSize > 500) throw new Error('chunkSize must be <= 500 for V1 safety');
+  // Bumped from 500 → 2000 on 2026-05-01 after extensive live validation across
+  // Phase 1 + smoke + resume tests. The safetySubmittedMultiple cap below is the
+  // real protection; chunkSize is just an upper bound on per-order size.
+  if (merged.chunkSize > 2000) throw new Error('chunkSize must be <= 2000');
   if (!Number.isFinite(merged.maxOrders) || merged.maxOrders <= 0) throw new Error('maxOrders must be positive');
-  if (merged.maxOrders > 50) throw new Error('maxOrders must be <= 50 for V1 safety; raise floorPriceCents/chunkSize instead');
+  if (merged.maxOrders > 100) throw new Error('maxOrders must be <= 100; raise floorPriceCents/chunkSize instead');
   // Sanity bound — protects against parser/fill misreads where the engine retries executed orders.
   // Total possible submitted volume = chunkSize * maxOrders. Cap it at positionSize * multiple.
   const multiple = merged.safetySubmittedMultiple ?? 1.5;

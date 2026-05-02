@@ -118,7 +118,10 @@ export function buildSellPayload(config: ExitConfig, decision: PriceDecision): O
     ticker: config.marketTicker,
     action: 'sell',
     side: config.heldSide,
-    count: decision.chunkSize,
+    // Kalshi's CreateOrderRequest.count is `int` — fractional values are rejected with
+    // "cannot unmarshal number X into Go struct field CreateOrderRequest.count of type int".
+    // Positions can be fractional (Kalshi deducts fees in shares), so floor here.
+    count: Math.floor(decision.chunkSize),
     type: 'limit',
     reduce_only: reduceOnly,
     time_in_force: tif,
