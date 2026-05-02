@@ -114,7 +114,7 @@ export interface PriceDecision {
 
 export interface OrderPayload {
   ticker: string;
-  action: 'sell';
+  action: 'sell' | 'buy';
   side: Side;
   count: number;
   type: 'limit';
@@ -225,7 +225,10 @@ export type JournalKind =
   | 'gtc_resting'
   | 'tail_gtc_posted'
   | 'safety_config_changed'
-  | 'safety_loaded';
+  | 'safety_loaded'
+  | 'buy_loop_started'
+  | 'buy_loop_finished'
+  | 'buy_loop_error';
 
 export interface JournalEntry {
   ts: string;
@@ -260,6 +263,37 @@ export interface OrderPlacedData {
     cumulativeSizeAtPrice: number;
     reason: string;
   };
+}
+
+// ── Buy runner types ───────────────────────────────────────────────────────────
+
+export interface BuyConfig {
+  ticker: string;
+  side: 'buy';
+  size: number;              // contracts to buy
+  maxPriceCents?: number;    // ceiling — don't pay more than this per contract
+  chunkSize?: number;
+  loopDelayMs?: number;
+  dryRun?: boolean;
+  jobId?: string;            // for resume
+  // mirrored from ExitConfig pattern:
+  baseUrl?: string;
+  orderbookDepth?: number;
+  minAdaptiveChunk?: number;
+  maxOrders?: number;
+  killSwitchPath?: string;
+  apiKeyEnv?: string;
+  privateKeyPathEnv?: string;
+  preflight?: boolean;
+}
+
+export interface BuyResult {
+  jobId: string;
+  filled: number;
+  avgPriceCents: number;
+  feesIncurredDollars: number;
+  remaining: number;
+  status: 'complete' | 'partial' | 'error';
 }
 
 // ── Harvest planner types ──────────────────────────────────────────────────────
