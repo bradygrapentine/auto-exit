@@ -145,17 +145,22 @@ export function diffKeys(a: unknown, b: unknown, prefix = ''): string[] {
   return out;
 }
 
-export function recordLatency(name: string, ms: number): void {
-  const file = LATENCY_FILE;
+export function recordLatency(name: string, ms: number, latencyFile = LATENCY_FILE): void {
+  const file = latencyFile;
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
   const entry = data[name] ?? { samples: [], budgetMs: 5000 };
   entry.samples.push(ms);
   if (entry.samples.length > 30) entry.samples = entry.samples.slice(-30);
-  // p95 of samples
-  const sorted = [...entry.samples].sort((x: number, y: number) => x - y);
-  const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? 5000;
-  entry.budgetMs = Math.max(p95 * 2, 1000); // at least 1s budget
+  // Only compute p95-based budget once we have a statistically meaningful window.
+  // With fewer than 20 samples the p95 estimate is too noisy — keep the 5s default.
+  if (entry.samples.length >= 20) {
+    const sorted = [...entry.samples].sort((x: number, y: number) => x - y);
+    const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? 5000;
+    entry.budgetMs = Math.max(p95 * 2, 1000); // at least 1s budget
+  } else {
+    entry.budgetMs = 5000; // not enough data yet — keep safe default
+  }
   data[name] = entry;
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
