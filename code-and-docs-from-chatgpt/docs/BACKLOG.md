@@ -4,8 +4,8 @@ Last `/backlog-sync`: 2026-05-01
 
 | Status | Count |
 |--------|-------|
-| 🧊 Deferred | 5 |
-| ✅ Shipped (this log) | 2 |
+| 🧊 Deferred | 4 |
+| ✅ Shipped (this log) | 3 |
 
 Features deferred until a concrete need surfaces. Don't build speculatively.
 
@@ -97,32 +97,6 @@ chunk, well above $0.15. Already fine.
 exit hits a cheap-market dust scenario where the per-fill minimum is the
 dominant cost.
 
-## 🧊 Fee-aware /preview and status
-
-**Problem:** before running an exit, the user doesn't see expected total
-fees. After running, fees are reported by Kalshi but not aggregated/surfaced
-in status. So you only learn the fee bill after the fact.
-
-**Proposal:**
-1. Add `estimatedFeesDollars` to `/preview` output, computed as
-   `Σ chunk × max(0.07 × p × (1-p), 0.0001)` over the projected chunks
-   walking the orderbook.
-2. Add `feesIncurred` to JobStatus, populated from each `order_reconciled`'s
-   `taker_fees_dollars` field (already in Kalshi's response).
-3. Optional: refuse to start if estimated fees exceed `maxFeeRatio` of
-   gross recovery (default off; opt-in safety).
-
-**Where this matters:** any exit where the user wants to compare engine cost
-vs. alternative strategies (manual, GTC drip, hold-to-expiration) before
-committing.
-
-**Cost:** ~3 hours. New preview field + new status field + one optional
-config flag + tests.
-
-**Why deferred:** post-hoc fee analysis (P1_EXIT_REPORT.md) showed the cost.
-Worth building before the *next* large exit so the user has the number
-upfront.
-
 ## 🧊 Cancel-replace GTC drip mode
 
 **Trigger:** posting GTC at top-of-book and re-quoting when undercut. Different
@@ -150,3 +124,11 @@ come back" tool, which fits the user's pattern.
   resting-orders guard (skips if `restingOrdersCount > 0`) to prevent
   double-posting across re-runs. Live-validated draining 1,386 P1 shares.
   See `exitRunner.ts::postTailGtcOrder`, `tailGtc.test.ts`.
+
+- **2026-05-01 — Fee-aware preview + status.** `projectFullExit` walks the
+  book level-by-level and returns gross/fees/net/feeRatio/chunks/unfillable
+  with per-segment breakdown. Surfaced via `/preview`. `JobStatus.feesIncurredDollars`
+  accumulates actuals from each order's `taker_fees_dollars`. Validated
+  against current P1 book (7.56% feeRatio, matches structural rate). See
+  `pricing.ts::projectFullExit`, `feeAware.test.ts`. (Optional `maxFeeRatio`
+  refuse-to-start gate not built — would be separate item.)
