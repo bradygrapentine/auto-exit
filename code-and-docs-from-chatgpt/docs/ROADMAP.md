@@ -143,6 +143,15 @@ Layered on top of an established S library.
     cash-raise.
 28. **Smart Order Router (W4.4)** — multi-venue. Final layer; only valuable
     after single-venue maturity is locked.
+29. **Harvest planner (W4.5)** — decision-support "what-if" panel: EV
+    crossover (`p* = avg_harvest_price / payout`), patient-vs-hold EV
+    table under market p and operator's private p, and risk-reduction
+    sizing table (incl. no-loss-floor row). Output framed in TradFi
+    vocabulary (Delta / Theta / Gamma proxy / Sleeve sizing) since Kalshi
+    binaries are digital options and patient-harvest = gamma scalping into
+    expiry + pre-event de-risking sleeve. Sits between the S library and
+    the trigger layer — agent calls this before invoking S1 (passive) or
+    S7 (scale-out). See `BACKLOG.md` W4.5.
 
 ## Retired phases
 

@@ -8,7 +8,7 @@ Last `/backlog-sync`: 2026-05-02
 | 🧊 Foundation (W1) | 3 |
 | 🧊 Strategy library (S) | 16 |
 | 🧊 Cross-cutting (W3) | 3 |
-| 🧊 Decision + optimization (W4) | 4 |
+| 🧊 Decision + optimization (W4) | 5 |
 | 🧊 Surface parity (SP1–SP4) | 17 |
 | 🧊 Other deferred (off-sequence) | 5 |
 | ✅ Shipped (this log) | 7 |
@@ -626,6 +626,84 @@ contract-equivalence mapping (matching tickers across venues).
 
 **Why last:** the entire algo sequence lands on Kalshi-only first. Multi-
 venue is a multiplier, not a foundation.
+
+### 🧊 W4.5 — Harvest planner (decision-support tool)
+
+**TradFi analog:** options-MM Greeks dashboard for digital options. The
+operator framing — "delta-hedged exit of a deep ITM binary held against a
+soft catalyst" — is what this tool surfaces. Combines the decision math
+that an experienced options market-maker does in their head before sizing
+a pre-event de-risking sleeve.
+
+**Trigger:** an agent or operator holds an appreciated position (cost
+basis << current bid) and wants to choose between three actions: pure
+hold, EV-maximizing harvest, or risk-reduction harvest. Today there is no
+tool — the math has to be done by hand in markdown (see worked example
+`docs/strategies/2026-05-02-winning-exit-mvvr-p4.md`). That doc surfaced
+two distinct features that should compose into one tool:
+
+1. **EV-weighted harvest-vs-hold calculator** — given `{ ticker, side,
+   position, cost basis, market_p, private_p }`, returns the EV crossover
+   `p* = avg_harvest_price / payout` and EV under each branch (patient
+   scale-out, pure hold, sweep-now). Tells the operator whether harvest is
+   EV-positive or EV-negative at their private p.
+
+2. **Risk-reduction harvest sizer** — when private_p > p*, ANY harvest is
+   EV-negative. Quantifies the variance-reduction trade: for harvest
+   fractions {10%, 25%, 50%, 75%}, returns `{cash_locked,
+   ev_give_up, sigma_reduction}` plus a special "no-loss-floor" row that
+   harvests exactly `(cost_basis + fees) / S` (locks in cost-basis-plus-
+   fees regardless of resolution).
+
+**Proposed:** new MCP tool `kea_harvest_planner` + CLI `kea plan
+--ticker T --side S --private-p X` + TUI "what-if" panel surfaced before
+any S1 (passive) or S7 (scale-out) execution. Output sections
+named in TradFi vocabulary so derivatives-experienced operators recognize
+the format immediately:
+
+- **Delta** — current bid in % terms (= market p_implied)
+- **Theta** — EV-decay-per-day until catalyst (requires event-date input)
+- **Gamma proxy** — bid-ask × visible book depth (rough vol-of-vol signal)
+- **Sleeve sizing** — EV table + risk-reduction sizing table side-by-side
+- **No-loss-floor** — exact harvest qty that converts unrealized to
+  realized profit with zero downside
+
+**Catalyst-type input.** Accept `{ catalystType: 'soft' | 'hard',
+catalystExpectedDate?: Date }`. Drives the stale-book threshold the
+harvest strategies should use (soft = 10–15min, hard = 2–3min) and the
+theta calculation. Soft catalysts (legal proceedings, fuzzy-date events)
+have books that legitimately sit static for 10–30min; hard (FOMC,
+scheduled earnings) reprice minute-by-minute.
+
+**Why this is decision-support, not execution.** The S library covers
+*how* to execute. This tool answers *whether* and *how much* — sits in W4
+alongside other decision-layer tools. Output feeds into existing
+strategies (S1 passive for harvest, S7 scale-out for laddered partial
+exits) but doesn't execute them.
+
+**Cost:** ~2 days. Pure read-only computation on existing
+`fetchPositions` + `fetchOrderbook` primitives, no new API calls. The
+worked example in `docs/strategies/2026-05-02-winning-exit-mvvr-p4.md`
+defines the math shape.
+
+**Dependency:** W1.2 TCA (calibrate fee assumption: maker vs taker on
+this contract type — currently `pricing.ts:35` is taker-only). Soft
+dependency on S library so the planner can cross-reference suggested
+strategies by name.
+
+**Why mid-W4:** the operator-facing decision layer is what makes the
+strategy library actually usable. Without this tool, an agent or operator
+has to compute the EV/risk math by hand for every position. Ship before
+W4.1 trigger layer (auto-arm); the trigger layer should call this tool
+internally to size what it auto-arms.
+
+**TradFi vocabulary roll-out.** Once this tool ships, update W2 strategy
+descriptions to include a one-line `**TradFi name:**` field at the top of
+each (`W2.1` → "patient exit / gamma-scalping mode"; `W2.4` → "scale-out
+ladder / sleeve unwind"; `W2.10` → "iceberg / dark execution"). Reading
+those names should immediately convey the strategy's character to anyone
+with derivatives-MM background. See memory
+`concept_tradfi_mapping.md` for the full mapping table.
 
 ---
 
