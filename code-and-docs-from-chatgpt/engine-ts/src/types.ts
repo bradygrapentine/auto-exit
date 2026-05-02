@@ -228,7 +228,22 @@ export type JournalKind =
   | 'safety_loaded'
   | 'buy_loop_started'
   | 'buy_loop_finished'
-  | 'buy_loop_error';
+  | 'buy_loop_error'
+  | 'tca';
+
+export interface TcaEntry {
+  kind: 'tca';
+  ts: string;
+  jobId: string;
+  ticker: string;
+  side: 'buy' | 'sell';
+  chunkIndex: number;
+  arrivalMidCents: number;      // (topBid + topAsk) / 2 at decision time
+  executedPriceCents: number;   // actual fill price
+  slippageCents: number;        // executedPrice - arrivalMid (positive = paid more than mid)
+  chunkSize: number;
+  depthTier: number;            // how many levels deep the fill reached
+}
 
 export interface JournalEntry {
   ts: string;

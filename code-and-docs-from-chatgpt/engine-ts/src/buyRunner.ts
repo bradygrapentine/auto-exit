@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { Journal, generateJobId } from './journal.js';
 import { getSafety } from './safety.js';
 import { chooseChunkSize } from './runnerUtils.js';
-import type { BuyConfig, BuyResult, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, SafetyConfig } from './types.js';
+import type { BuyConfig, BuyResult, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, SafetyConfig, TcaEntry } from './types.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -245,6 +245,14 @@ export class BuyRunner {
             .sort((a, b) => a.priceCents - b.priceCents);
 
           const topAskCents = askLevels[0]?.priceCents ?? 99;
+
+          // Arrival mid at decision time: (topBid + topAsk) / 2
+          // topBid: best resting bid on the same side (sorted descending)
+          const bidLevels = (this.config.ticker.endsWith('_NO') ? orderbook.no : orderbook.yes)
+            .filter((l) => l.size > 0)
+            .sort((a, b) => b.priceCents - a.priceCents);
+          const topBidCents = bidLevels[0]?.priceCents ?? 0;
+          const arrivalMidCents = (topBidCents + topAskCents) / 2;
           const maxCents = this.config.maxPriceCents ?? 99;
 
           if (topAskCents > maxCents) {
@@ -312,6 +320,21 @@ export class BuyRunner {
             requested: chunk,
             remainingPosition: this.remaining,
           });
+
+          // ── Journal: TCA entry ─────────────────────────────────────────────
+          const executedPriceCents = topAskCents;
+          const slippageCents = executedPriceCents - arrivalMidCents;
+          this.journal.append('tca', {
+            jobId: this.journal.jobId,
+            ticker: this.config.ticker,
+            side: 'buy',
+            chunkIndex: this.ordersAttempted - 1,
+            arrivalMidCents,
+            executedPriceCents,
+            slippageCents,
+            chunkSize: chunk,
+            depthTier: 1,
+          } satisfies Omit<TcaEntry, 'kind' | 'ts'>);
         }
 
         if (loopDelayMs > 0) await sleep(loopDelayMs);
