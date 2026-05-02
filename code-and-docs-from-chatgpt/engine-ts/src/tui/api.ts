@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { KalshiClient } from '../kalshiClient.js';
 import { ExitRunner } from '../exitRunner.js';
+import { loadActive } from '../credentials.js';
 import type { ExitConfig, Orderbook, Side } from '../types.js';
 
 interface SignedHeaders {
@@ -16,11 +17,9 @@ interface SignedHeaders {
 }
 
 function sign(method: string, fullPath: string): SignedHeaders {
-  const apiKey = process.env.KALSHI_ACCESS_KEY;
-  const keyPath = process.env.KALSHI_PRIVATE_KEY_PATH;
-  if (!apiKey || !keyPath) throw new Error('Missing KALSHI_ACCESS_KEY or KALSHI_PRIVATE_KEY_PATH');
+  const a = loadActive();
   const ts = Date.now().toString();
-  const privateKey = fs.readFileSync(keyPath, 'utf8');
+  const privateKey = fs.readFileSync(a.keyPath, 'utf8');
   const sig = crypto
     .sign('RSA-SHA256', Buffer.from(ts + method.toUpperCase() + fullPath), {
       key: privateKey,
@@ -28,11 +27,11 @@ function sign(method: string, fullPath: string): SignedHeaders {
       saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
     })
     .toString('base64');
-  return { 'KALSHI-ACCESS-KEY': apiKey, 'KALSHI-ACCESS-TIMESTAMP': ts, 'KALSHI-ACCESS-SIGNATURE': sig };
+  return { 'KALSHI-ACCESS-KEY': a.keyId, 'KALSHI-ACCESS-TIMESTAMP': ts, 'KALSHI-ACCESS-SIGNATURE': sig };
 }
 
 function baseUrl(): string {
-  return process.env.KALSHI_BASE_URL ?? 'https://api.elections.kalshi.com/trade-api/v2';
+  return loadActive().baseUrl;
 }
 
 function fullPath(endpoint: string): string {
