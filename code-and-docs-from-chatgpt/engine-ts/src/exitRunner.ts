@@ -351,10 +351,14 @@ export class ExitRunner {
           this.log('info', 'order_created', { orderId: created.orderId, status: created.status });
 
           // ── Journal: order placed (durable before reconcile) ──────────────
+          // Includes orderbook + decision so the entry is self-describing for
+          // post-hoc replay / cross-validation against the engine's pricing.
           this.journal.append('order_placed', {
             orderId: created.orderId,
             payload,
             decisionRequested: decision.chunkSize,
+            orderbook,
+            decision,
           });
 
           // ── Test-only: deliberate pause to reproduce the crash-mid-flight scenario.

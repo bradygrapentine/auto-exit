@@ -210,9 +210,23 @@ export interface JournalEntry {
   data: unknown;
 }
 
-/** Stored with every `order_placed` entry — enough to call getOrder on resume. */
+/** Stored with every `order_placed` entry — enough to call getOrder on resume.
+ *  `orderbook` and `decision` are optional for backward compatibility with
+ *  journals written before replay support; new runs always include them. */
 export interface OrderPlacedData {
   orderId: string;
   payload: OrderPayload;
   decisionRequested: number;
+  /** Orderbook snapshot at decision time. Enables E2E replay/cross-validation. */
+  orderbook?: Orderbook;
+  /** Full decision tuple (price/size/reason). Replay asserts re-running the engine
+   *  against `orderbook` produces this same decision. */
+  decision?: {
+    chunkSize: number;
+    priceCents: number;
+    priceCentsExact: number;
+    priceDollars: string;
+    cumulativeSizeAtPrice: number;
+    reason: string;
+  };
 }
