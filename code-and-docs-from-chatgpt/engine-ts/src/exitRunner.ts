@@ -366,7 +366,7 @@ export class ExitRunner {
 
     try {
       // ── Pre-trade risk checks ──────────────────────────────────────────────
-      // Use a fallback price of 0.5 ($0.50) when no live price is available.
+      // TODO(W1.3): use live orderbook mid-price once runner has fetchOrderbook in scope
       const fallbackPriceCents = 50;
       const sizeDollars = this.config.positionSize * (fallbackPriceCents / 100);
       await checkPreTradeRisk({

@@ -95,6 +95,17 @@ export function setSafety(
       throw new RangeError('tailSweepThreshold must be in [0, 1_000_000]');
     }
   }
+  if (patch.maxPositionConcentrationPct !== undefined) {
+    if (patch.maxPositionConcentrationPct < 0 || patch.maxPositionConcentrationPct > 100) {
+      throw new RangeError('maxPositionConcentrationPct must be in [0, 100]');
+    }
+  }
+  if (patch.maxLossPerTickerDollars !== undefined && patch.maxLossPerTickerDollars <= 0) {
+    throw new RangeError('maxLossPerTickerDollars must be > 0');
+  }
+  if (patch.dailyLossCircuitBreakerDollars !== undefined && patch.dailyLossCircuitBreakerDollars <= 0) {
+    throw new RangeError('dailyLossCircuitBreakerDollars must be > 0');
+  }
 
   const current = getSafety();
   const updated: SafetyConfig = { ...current, ...patch };
@@ -140,6 +151,13 @@ export function removeForbiddenTicker(ticker: string): boolean {
 
 // ── Pre-trade risk checks ─────────────────────────────────────────────────────
 
+/**
+ * In-process mutex for the circuit-breaker check.
+ * Serializes concurrent calls so the read-tally-check sequence is atomic
+ * within a single Node.js process. NOT cross-process safe (no file lock).
+ */
+let circuitBreakerLock: Promise<void> = Promise.resolve();
+
 export class PreTradeRiskError extends Error {
   constructor(
     public readonly check: 'maxLoss' | 'dailyCircuitBreaker' | 'concentration',
@@ -147,6 +165,7 @@ export class PreTradeRiskError extends Error {
   ) {
     super(message);
     this.name = 'PreTradeRiskError';
+    Object.setPrototypeOf(this, PreTradeRiskError.prototype);
   }
 }
 
@@ -180,35 +199,43 @@ export async function checkPreTradeRisk(params: {
 
   // 2. dailyLossCircuitBreakerDollars
   if (safety.dailyLossCircuitBreakerDollars !== undefined) {
-    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
-    let totalRealizedLoss = 0;
+    let releaseLock!: () => void;
+    const lockAcquired = new Promise<void>(resolve => { releaseLock = resolve; });
+    circuitBreakerLock = circuitBreakerLock.then(() => lockAcquired);
     try {
-      const raw = fs.readFileSync(auditPath(), 'utf8');
-      for (const line of raw.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line) as { kind?: string; data?: { action?: string; date?: string; lossAmount?: number } };
-          if (
-            entry.kind === 'realized_loss' &&
-            entry.data?.action === 'realized_loss' &&
-            entry.data?.date === today &&
-            typeof entry.data?.lossAmount === 'number'
-          ) {
-            totalRealizedLoss += entry.data.lossAmount;
+      const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+      let totalRealizedLoss = 0;
+      try {
+        // TODO: stream from end of file when safety.audit.jsonl exceeds 1MB
+        const raw = fs.readFileSync(auditPath(), 'utf8');
+        for (const line of raw.split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const entry = JSON.parse(line) as { kind?: string; data?: { action?: string; date?: string; lossAmount?: number } };
+            if (
+              entry.kind === 'realized_loss' &&
+              entry.data?.action === 'realized_loss' &&
+              entry.data?.date === today &&
+              typeof entry.data?.lossAmount === 'number'
+            ) {
+              totalRealizedLoss += entry.data.lossAmount;
+            }
+          } catch {
+            // skip malformed lines
           }
-        } catch {
-          // skip malformed lines
         }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        // ENOENT = no audit file yet — totalRealizedLoss stays 0
       }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-      // ENOENT = no audit file yet — totalRealizedLoss stays 0
-    }
-    if (totalRealizedLoss > safety.dailyLossCircuitBreakerDollars) {
-      throw new PreTradeRiskError(
-        'dailyCircuitBreaker',
-        `daily realized losses $${totalRealizedLoss.toFixed(2)} exceed dailyLossCircuitBreakerDollars ($${safety.dailyLossCircuitBreakerDollars.toFixed(2)})`,
-      );
+      if (totalRealizedLoss > safety.dailyLossCircuitBreakerDollars) {
+        throw new PreTradeRiskError(
+          'dailyCircuitBreaker',
+          `daily realized losses $${totalRealizedLoss.toFixed(2)} exceed dailyLossCircuitBreakerDollars ($${safety.dailyLossCircuitBreakerDollars.toFixed(2)})`,
+        );
+      }
+    } finally {
+      releaseLock();
     }
   }
 

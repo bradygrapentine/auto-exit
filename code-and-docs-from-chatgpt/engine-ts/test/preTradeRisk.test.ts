@@ -263,6 +263,64 @@ describe('checkPreTradeRisk', () => {
   });
 });
 
+// ── setSafety validation tests ───────────────────────────────────────────────
+
+describe('setSafety validation', () => {
+  it('10. setSafety({ maxPositionConcentrationPct: 150 }) → throws RangeError', async () => {
+    await withTempHome(async () => {
+      const { setSafety } = await import('../src/safety.js');
+      expect(() => setSafety({ maxPositionConcentrationPct: 150 })).toThrow(RangeError);
+    });
+  });
+
+  it('11. setSafety({ maxLossPerTickerDollars: 0 }) → throws RangeError', async () => {
+    await withTempHome(async () => {
+      const { setSafety } = await import('../src/safety.js');
+      expect(() => setSafety({ maxLossPerTickerDollars: 0 })).toThrow(RangeError);
+    });
+  });
+
+  it('12. setSafety({ maxLossPerTickerDollars: 50 }) → resolves (valid)', async () => {
+    await withTempHome(async () => {
+      const { setSafety } = await import('../src/safety.js');
+      expect(() => setSafety({ maxLossPerTickerDollars: 50 })).not.toThrow();
+    });
+  });
+});
+
+// ── Circuit breaker mutex: sequential read sees latest audit state ────────────
+
+describe('checkPreTradeRisk circuit breaker: reads latest audit state', () => {
+  it('13. second call sees loss appended by first call', async () => {
+    await withTempHome(async (dir) => {
+      const { checkPreTradeRisk, appendRealizedLoss } = await import('../src/safety.js');
+      const today = new Date().toISOString().slice(0, 10);
+      const safety = {
+        version: 1 as const,
+        safetySubmittedMultiple: 1.1,
+        floorPriceCents: 0,
+        tailSweepThreshold: 0,
+        forbiddenTickers: [] as [],
+        dailyLossCircuitBreakerDollars: 100,
+      };
+
+      // First call: $80 already logged — should pass
+      writeAuditEntries(dir, [{ lossAmount: 80, date: today }]);
+      await expect(
+        checkPreTradeRisk({ ticker: 'KXTEST', sizeDollars: 10, portfolioNAVDollars: 0, safety }),
+      ).resolves.toBeUndefined();
+
+      // Simulate end-of-trade loss append (as appendRealizedLoss would do)
+      appendRealizedLoss({ ticker: 'KXTEST', lossAmount: 30 });
+
+      // Second call: now $110 total — should throw
+      await expect(
+        checkPreTradeRisk({ ticker: 'KXTEST', sizeDollars: 10, portfolioNAVDollars: 0, safety }),
+      ).rejects.toMatchObject({ check: 'dailyCircuitBreaker' });
+    });
+  });
+});
+
 // ── Integration test: exitRunner refuses when maxLoss breached ────────────────
 
 describe('ExitRunner pre-trade risk integration', () => {
