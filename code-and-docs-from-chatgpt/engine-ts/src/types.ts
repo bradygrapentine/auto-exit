@@ -293,7 +293,7 @@ export interface HarvestPlannerOutput {
   riskReductionTable: RiskReductionRow[];  // 5 rows: 10/25/50/75% + no-loss-floor
   greeks: {
     delta: number;            // = marketP (bid as probability)
-    thetaPerDay?: number;     // EV decay per day = (privateP - marketP) / daysToExpiry
+    thetaPerDay?: number;     // EV decay per day **per contract** = (privateP - marketP) × payout/100 / daysToExpiry
     gammaProxy: number;       // bid-ask spread × visible book depth (proxy for convexity)
   };
   suggestedStrategies: string[];  // e.g. ["S1 passive", "S7 scale-out"]

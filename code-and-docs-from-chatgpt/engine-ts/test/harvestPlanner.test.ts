@@ -101,15 +101,21 @@ describe('computeHarvestPlan — worked example', () => {
     expect(plan.greeks.thetaPerDay).toBeUndefined();
   });
 
-  it('thetaPerDay is a number when catalystExpectedDate is in the future', () => {
-    // Set date far in the future to guarantee positive daysToExpiry
-    const futureDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  it('thetaPerDay is a per-contract value when catalystExpectedDate is in the future', () => {
+    // 30 days out: thetaPerDay = (0.80 - 0.72) × 1.00 / 30 ≈ 0.002667 per contract (not × position)
+    const days = 30;
+    const futureDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
     const input: HarvestPlannerInput = {
       ...BASE_INPUT,
       catalystExpectedDate: futureDate,
     };
     const plan = computeHarvestPlan(input, BASE_ORDERBOOK);
     expect(typeof plan.greeks.thetaPerDay).toBe('number');
+    // Per-contract: (privateP - marketP) × payout/100 / days = (0.08) × 1 / 30 ≈ 0.002667
+    // Must NOT equal the whole-position value (which would be 500× larger)
+    const perContract = (BASE_INPUT.privateP - BASE_INPUT.marketP) * 1.0 / days;
+    expect(plan.greeks.thetaPerDay!).toBeCloseTo(perContract, 4);
+    expect(plan.greeks.thetaPerDay!).toBeLessThan(1); // sanity: per-contract, not whole position
   });
 
   it('suggestedStrategies is non-empty', () => {
@@ -175,5 +181,35 @@ describe('computeHarvestPlan — edge cases', () => {
     const plan = computeHarvestPlan(input, BASE_ORDERBOOK);
     // evHold should still be 400 (same as explicit payoutCents: 100)
     expect(plan.evHold).toBeCloseTo(400, 10);
+  });
+
+  it('position = 0 → all rows have sigmaReduction = 0, no NaN', () => {
+    const input: HarvestPlannerInput = { ...BASE_INPUT, position: 0 };
+    const plan = computeHarvestPlan(input, BASE_ORDERBOOK);
+    expect(plan.riskReductionTable).toHaveLength(5);
+    for (const row of plan.riskReductionTable) {
+      expect(row.sigmaReduction).toBe(0);
+      expect(Number.isNaN(row.harvestQty)).toBe(false);
+      expect(Number.isNaN(row.cashLocked)).toBe(false);
+      expect(Number.isNaN(row.evGiveUp)).toBe(false);
+    }
+  });
+
+  it('marketP = 0 → no-loss-floor row has cashLocked = 0', () => {
+    const input: HarvestPlannerInput = { ...BASE_INPUT, marketP: 0 };
+    const plan = computeHarvestPlan(input, BASE_ORDERBOOK);
+    const noLossRow = plan.riskReductionTable.find((r) => r.fraction === 'no-loss-floor')!;
+    expect(noLossRow.cashLocked).toBe(0);
+    expect(noLossRow.harvestQty).toBe(input.position);
+  });
+
+  it('gammaProxy magnitude: 1-cent spread + 100-depth → gammaProxy ≈ 1.0', () => {
+    // bid=72¢, ask=73¢ → spread = 1/100 = 0.01; depth = 100 → gammaProxy = 0.01 × 100 = 1.0
+    const book: Orderbook = {
+      yes: [{ priceCents: 72, size: 100 }],
+      no: [{ priceCents: 27, size: 50 }],  // YES ask = 100 - 27 = 73
+    };
+    const plan = computeHarvestPlan(BASE_INPUT, book);
+    expect(plan.greeks.gammaProxy).toBeCloseTo(1.0, 5);
   });
 });

@@ -25,6 +25,18 @@ function buildRiskReductionTable(
   privateP: number,
   payout: number,
 ): RiskReductionRow[] {
+  // Guard: zero position → all rows are zero (avoids harvestQty / position = NaN)
+  if (position === 0) {
+    const fractionLabels: RiskReductionRow['fraction'][] = ['10%', '25%', '50%', '75%', 'no-loss-floor'];
+    return fractionLabels.map((fraction) => ({
+      fraction,
+      harvestQty: 0,
+      cashLocked: 0,
+      evGiveUp: 0,
+      sigmaReduction: 0,
+    }));
+  }
+
   const rows: RiskReductionRow[] = [];
 
   const fractions: Array<{ label: '10%' | '25%' | '50%' | '75%'; f: number }> = [
@@ -42,21 +54,33 @@ function buildRiskReductionTable(
     rows.push({ fraction: label, harvestQty, cashLocked, evGiveUp, sigmaReduction });
   }
 
-  // no-loss-floor: harvest enough to recover costBasisCents + fees
-  const feesEstimate = position * marketP * payout / 100 * 0.015;
-  const breakEvenRevenueCents = costBasisCents + feesEstimate * 100;
-  const rawQty = breakEvenRevenueCents / (marketP * payout);
-  const noLossQty = Math.max(0, Math.min(position, Math.ceil(rawQty)));
-  const noLossCashLocked = noLossQty * marketP * payout / 100;
-  const noLossEvGiveUp = noLossQty * (privateP - marketP) * payout / 100;
-  const noLossSigma = position > 0 ? noLossQty / position : 0;
-  rows.push({
-    fraction: 'no-loss-floor',
-    harvestQty: noLossQty,
-    cashLocked: noLossCashLocked,
-    evGiveUp: noLossEvGiveUp,
-    sigmaReduction: noLossSigma,
-  });
+  // no-loss-floor: harvest enough to recover costBasisCents + fees (closed-form, no circularity)
+  let noLossFloor: RiskReductionRow;
+  if (marketP === 0) {
+    // Bid is zero — cannot recover cost basis by harvesting; harvest everything, cash = 0
+    noLossFloor = {
+      fraction: 'no-loss-floor',
+      harvestQty: position,
+      cashLocked: 0,
+      evGiveUp: 0,
+      sigmaReduction: 1,
+    };
+  } else {
+    // Solve: noLossQty × marketP × payout/100 × (1 - 0.015) >= costBasisCents / 100
+    const netPricePerContract = (marketP * payout / 100) * (1 - 0.015);
+    const noLossQty = Math.max(0, Math.min(position, Math.ceil((costBasisCents / 100) / netPricePerContract)));
+    const noLossCashLocked = noLossQty * marketP * payout / 100;
+    const noLossEvGiveUp = noLossQty * (privateP - marketP) * payout / 100;
+    const noLossSigma = noLossQty / position;
+    noLossFloor = {
+      fraction: 'no-loss-floor',
+      harvestQty: noLossQty,
+      cashLocked: noLossCashLocked,
+      evGiveUp: noLossEvGiveUp,
+      sigmaReduction: noLossSigma,
+    };
+  }
+  rows.push(noLossFloor);
 
   return rows;
 }
@@ -67,11 +91,12 @@ function computeGammaProxy(orderbook: Orderbook): { spread: number; gammaProxy: 
   // Best ask on YES side = best bid on NO side (since NO bid + YES bid ≈ 100)
   const noAsks = [...orderbook.no].sort((a, b) => b.priceCents - a.priceCents);
 
-  const topBid = yesBids[0]?.priceCents ?? 0;
-  // YES ask = 100 - best NO bid
-  const topAsk = noAsks[0] != null ? 100 - noAsks[0].priceCents : 100;
-
-  const spread = (topAsk - topBid) / 100;
+  // Keep both sides in raw cents, divide once — avoids mixed-unit bug
+  const topBidCents = yesBids[0] != null ? yesBids[0].priceCents : 0;
+  // YES ask = 100 - best NO bid (in cents)
+  const topAskCents = noAsks[0] != null ? (100 - noAsks[0].priceCents) : 100;
+  const spreadCents = Math.max(0, topAskCents - topBidCents);
+  const spread = spreadCents / 100; // now in probability space (0–1)
 
   // Visible book depth: sum of sizes at best 3 bid levels
   const visibleDepth = yesBids.slice(0, 3).reduce((acc, lvl) => acc + lvl.size, 0);
@@ -93,6 +118,8 @@ export function computeHarvestPlan(
   // EV table (dollars)
   const evHold = position * (privateP * payout / 100);
   const evHarvestNow = position * (marketP * payout / 100);
+  // Patient scale-out EV: assumes gradual exit averaging between current bid (marketP)
+  // and private estimate (privateP) — models drip selling as price converges to privateP
   const evPatientScaleOut = position * (0.5 * (marketP + privateP) * payout / 100);
 
   const harvestIsEvPositive = marketP >= pStar;
@@ -109,7 +136,7 @@ export function computeHarvestPlan(
   if (input.catalystExpectedDate) {
     const daysToExpiry = daysBetween(new Date(), input.catalystExpectedDate);
     if (daysToExpiry > 0) {
-      thetaPerDay = (privateP - marketP) * payout / 100 * position / daysToExpiry;
+      thetaPerDay = (privateP - marketP) * payout / 100 / daysToExpiry;  // per-contract, like delta
     }
   }
 
