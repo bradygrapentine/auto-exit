@@ -7,7 +7,8 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts --config ./config.example.json",
     "server": "tsx src/server.ts --config ./config.example.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke:mcp": "tsx scripts/mcp-smoke.ts"
   },
   "devDependencies": {
     "@types/node": "20.14.10",
