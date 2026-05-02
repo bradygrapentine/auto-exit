@@ -27,8 +27,9 @@ import {
   KeaNotConfiguredError,
 } from './credentials.js';
 import { getSafety, setSafety, listForbidden, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
+import { computeHarvestPlan } from './harvestPlanner.js';
 import readline from 'node:readline/promises';
-import type { ExitConfig, Orderbook } from './types.js';
+import type { ExitConfig, Orderbook, RiskReductionRow } from './types.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
 function parseFlags(argv: string[]): Record<string, string> {
@@ -288,6 +289,79 @@ function cmdLogout(flags: Record<string, string>): void {
   ok(`removed profile '${name}'`);
 }
 
+// ── plan command ──────────────────────────────────────────────────────────────
+
+async function cmdPlan(ticker: string | undefined, flags: Record<string, string>): Promise<void> {
+  if (!ticker) die('plan requires <ticker>');
+  if (!flags['position']) die('plan requires --position <n>');
+  if (!flags['cost-basis-cents']) die('plan requires --cost-basis-cents <n>');
+  if (!flags['market-p']) die('plan requires --market-p <f>');
+  if (!flags['private-p']) die('plan requires --private-p <f>');
+  if (!flags['catalyst-type']) die('plan requires --catalyst-type soft|hard');
+
+  const position = Number(flags['position']);
+  const costBasisCents = Number(flags['cost-basis-cents']);
+  const marketP = Number(flags['market-p']);
+  const privateP = Number(flags['private-p']);
+  const catalystType = flags['catalyst-type'] as 'soft' | 'hard';
+  const catalystExpectedDate = flags['catalyst-date'];
+  const payoutCents = flags['payout-cents'] ? Number(flags['payout-cents']) : undefined;
+
+  if (!Number.isInteger(position) || position <= 0) die('--position must be a positive integer');
+  if (marketP < 0 || marketP > 1) die('--market-p must be between 0 and 1');
+  if (privateP < 0 || privateP > 1) die('--private-p must be between 0 and 1');
+  if (catalystType !== 'soft' && catalystType !== 'hard') die('--catalyst-type must be soft or hard');
+
+  const config = makeMinimalConfig(ticker);
+  const client = new KalshiClient(config);
+  const orderbook = await client.getOrderbook(ticker, 10);
+
+  const plan = computeHarvestPlan(
+    { ticker, side: 'sell', position, costBasisCents, marketP, privateP, catalystType, catalystExpectedDate, payoutCents },
+    orderbook,
+  );
+
+  const out = process.stdout.write.bind(process.stdout);
+
+  out(`\nharvest plan for ${ticker}\n`);
+  out(`${'─'.repeat(50)}\n`);
+  out(`position:       ${position} contracts\n`);
+  out(`cost basis:     ${fmtDollars(costBasisCents / 100)} (${costBasisCents}¢ total)\n`);
+  out(`marketP:        ${(marketP * 100).toFixed(1)}%\n`);
+  out(`privateP:       ${(privateP * 100).toFixed(1)}%\n`);
+  out(`catalyst:       ${catalystType}${catalystExpectedDate ? ` (${catalystExpectedDate})` : ''}\n`);
+  out(`\n`);
+
+  out(`EV analysis\n`);
+  out(`  pStar (EV crossover):  ${(plan.pStar * 100).toFixed(1)}%\n`);
+  out(`  EV hold all:           ${fmtDollars(plan.evHold)}\n`);
+  out(`  EV harvest now:        ${fmtDollars(plan.evHarvestNow)}\n`);
+  out(`  EV patient scale-out:  ${fmtDollars(plan.evPatientScaleOut)}\n`);
+  out(`  harvest EV-positive?   ${plan.harvestIsEvPositive ? 'YES' : 'NO'} (marketP ${plan.harvestIsEvPositive ? '>=' : '<'} pStar)\n`);
+  out(`\n`);
+
+  out(`Greeks\n`);
+  out(`  delta:        ${plan.greeks.delta.toFixed(4)}\n`);
+  if (plan.greeks.thetaPerDay !== undefined) {
+    out(`  theta/day:    ${fmtDollars(plan.greeks.thetaPerDay)}\n`);
+  }
+  out(`  gamma proxy:  ${plan.greeks.gammaProxy.toFixed(4)}\n`);
+  out(`\n`);
+
+  out(`Risk reduction table\n`);
+  out(`| fraction      | qty | cash locked | EV give-up | sigma reduction |\n`);
+  out(`|---------------|-----|-------------|------------|-----------------|\n`);
+  for (const row of plan.riskReductionTable) {
+    const r = row as RiskReductionRow;
+    out(
+      `| ${r.fraction.padEnd(13)} | ${String(r.harvestQty).padStart(3)} | ${fmtDollars(r.cashLocked).padStart(11)} | ${fmtDollars(r.evGiveUp).padStart(10)} | ${(r.sigmaReduction * 100).toFixed(1).padStart(13)}% |\n`,
+    );
+  }
+  out(`\n`);
+
+  out(`Suggested strategies: ${plan.suggestedStrategies.join(', ')}\n`);
+}
+
 function cmdHelp() {
   process.stdout.write(`
 kea — Kalshi Exit Assistant CLI
@@ -308,6 +382,9 @@ Read-only commands (no money moves):
   positions [--ticker <T>]           List held positions
   resting [--ticker <T>]             List our resting orders
   journal --job <id>                 Print a job's journal
+  plan <ticker> --position <n> --cost-basis-cents <n> --market-p <f> --private-p <f>
+       --catalyst-type soft|hard [--catalyst-date <ISO>] [--payout-cents <n>]
+                                     EV harvest vs hold analysis: EV table, risk-reduction, Greeks
 
 Mutating commands (live):
   start --config <path>              Run an exit
@@ -445,6 +522,10 @@ export async function runCli(argv: string[]): Promise<void> {
       const sub = rest.find((x) => !x.startsWith('--'));
       const positional = rest.filter((x) => !x.startsWith('--') && x !== sub);
       return cmdForbidden(sub, positional, flags);
+    }
+    case 'plan': {
+      const ticker = rest.find((x) => !x.startsWith('--'));
+      return cmdPlan(ticker, flags);
     }
     case 'help':
     case '--help':

@@ -261,3 +261,40 @@ export interface OrderPlacedData {
     reason: string;
   };
 }
+
+// ── Harvest planner types ──────────────────────────────────────────────────────
+
+export interface HarvestPlannerInput {
+  ticker: string;
+  side: 'sell';
+  position: number;           // contracts held
+  costBasisCents: number;     // total cost basis (sum paid) in cents
+  marketP: number;            // market-implied probability 0–1 (current bid / 100)
+  privateP: number;           // operator's private probability estimate 0–1
+  catalystType: 'soft' | 'hard';
+  catalystExpectedDate?: string; // ISO8601 — used to compute theta
+  payoutCents?: number;          // default 100 (binary = $1.00)
+}
+
+export interface RiskReductionRow {
+  fraction: '10%' | '25%' | '50%' | '75%' | 'no-loss-floor';
+  harvestQty: number;
+  cashLocked: number;         // dollars locked in by harvesting this fraction
+  evGiveUp: number;           // expected value forfeited (dollars), based on privateP
+  sigmaReduction: number;     // portfolio variance reduction (0–1 fraction)
+}
+
+export interface HarvestPlannerOutput {
+  pStar: number;              // EV crossover: privateP
+  evHold: number;             // EV(hold all) in dollars: position × privateP × payoutCents/100
+  evHarvestNow: number;       // EV(sweep now) in dollars: position × marketP × payoutCents/100
+  evPatientScaleOut: number;  // EV(patient S1): 0.5×(marketP + privateP) × position × payoutCents/100
+  harvestIsEvPositive: boolean; // true if marketP >= pStar
+  riskReductionTable: RiskReductionRow[];  // 5 rows: 10/25/50/75% + no-loss-floor
+  greeks: {
+    delta: number;            // = marketP (bid as probability)
+    thetaPerDay?: number;     // EV decay per day = (privateP - marketP) / daysToExpiry
+    gammaProxy: number;       // bid-ask spread × visible book depth (proxy for convexity)
+  };
+  suggestedStrategies: string[];  // e.g. ["S1 passive", "S7 scale-out"]
+}
