@@ -90,6 +90,63 @@ describe('kea use', () => {
   });
 });
 
+describe('kea safety', () => {
+  it('kea safety get prints defaults', async () => {
+    await withTempHome(async () => {
+      const out: string[] = [];
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s: any) => { out.push(String(s)); return true; });
+      try {
+        await runCli(['safety', 'get']);
+      } finally { spy.mockRestore(); }
+      const joined = out.join('');
+      expect(joined).toContain('safetySubmittedMultiple');
+      expect(joined).toContain('1.1');
+      expect(joined).toContain('floorPriceCents');
+    });
+  });
+
+  it('kea safety set updates floor and prints result', async () => {
+    await withTempHome(async () => {
+      const out: string[] = [];
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s: any) => { out.push(String(s)); return true; });
+      try {
+        await runCli(['safety', 'set', '--floor-price-cents', '10']);
+      } finally { spy.mockRestore(); }
+      const joined = out.join('');
+      expect(joined).toContain('10');
+    });
+  });
+});
+
+describe('kea forbidden', () => {
+  it('kea forbidden list is empty initially', async () => {
+    await withTempHome(async () => {
+      const out: string[] = [];
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s: any) => { out.push(String(s)); return true; });
+      try {
+        await runCli(['forbidden', 'list']);
+      } finally { spy.mockRestore(); }
+      expect(out.join('')).toContain('(no forbidden tickers)');
+    });
+  });
+
+  it('kea forbidden add + list + remove round-trip', async () => {
+    await withTempHome(async () => {
+      const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      try {
+        await runCli(['forbidden', 'add', 'KXCLI', '--reason', 'cli test']);
+        const out: string[] = [];
+        const spy2 = vi.spyOn(process.stdout, 'write').mockImplementation((s: any) => { out.push(String(s)); return true; });
+        try {
+          await runCli(['forbidden', 'list']);
+        } finally { spy2.mockRestore(); }
+        expect(out.join('')).toContain('KXCLI');
+        await runCli(['forbidden', 'remove', 'KXCLI']);
+      } finally { spy.mockRestore(); }
+    });
+  });
+});
+
 describe('kea logout', () => {
   it('removes one profile', async () => {
     await withTempHome(async () => {

@@ -1,7 +1,23 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ExitRunner } from '../src/exitRunner.js';
 import { MockKalshiClient } from '../src/mockKalshiClient.js';
 import type { ExitConfig, Orderbook } from '../src/types.js';
+
+// Mock safety to be permissive so existing tests aren't affected by guard-rail defaults.
+vi.mock('../src/safety.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/safety.js')>('../src/safety.js');
+  return {
+    ...actual,
+    getSafety: vi.fn(() => ({
+      version: 1 as const,
+      safetySubmittedMultiple: 2.0,
+      floorPriceCents: 0,
+      tailSweepThreshold: 0,
+      forbiddenTickers: [],
+    })),
+    mergeIntoExitConfig: (config: ExitConfig) => config,
+  };
+});
 
 const baseCfg: ExitConfig = {
   baseUrl: 'https://example.test',

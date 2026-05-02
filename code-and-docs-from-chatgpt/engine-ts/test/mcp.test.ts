@@ -71,11 +71,14 @@ describe('MCP server — tool registration', () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
-      'kea_balance', 'kea_journal_list', 'kea_journal_read',
+      'kea_balance', 'kea_forbidden_add', 'kea_forbidden_list', 'kea_forbidden_remove',
+      'kea_journal_list', 'kea_journal_read',
       'kea_orderbook', 'kea_positions', 'kea_preview',
-      'kea_replay', 'kea_resting_orders', 'kea_whoami',
+      'kea_replay', 'kea_resting_orders',
+      'kea_safety_get', 'kea_safety_set',
+      'kea_whoami',
     ]);
-    // No mutating tool is exposed in this slice.
+    // No order-mutating tool is exposed in this slice.
     expect(names.find((n) => /create|cancel|exit|sell|buy/.test(n))).toBeUndefined();
   });
 });
@@ -376,6 +379,64 @@ describe('MCP server — bootstrap & helpers', () => {
     } finally {
       process.argv[1] = savedArgv1;
     }
+  });
+});
+
+describe('MCP server — safety tools', () => {
+  it('kea_safety_get returns default config when no file', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_safety_get', arguments: {} });
+    const parsed = parseJsonResult(res);
+    expect(parsed.version).toBe(1);
+    expect(parsed.safetySubmittedMultiple).toBe(1.1);
+    expect(parsed.floorPriceCents).toBe(0);
+    expect(parsed.tailSweepThreshold).toBe(0);
+    expect(parsed.forbiddenTickers).toEqual([]);
+  });
+
+  it('kea_safety_set updates fields and returns updated config', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_safety_set', arguments: { floorPriceCents: 5 } });
+    const parsed = parseJsonResult(res);
+    expect(parsed.floorPriceCents).toBe(5);
+    expect(parsed.version).toBe(1);
+  });
+
+  it('kea_safety_set returns isError on invalid value', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_safety_set', arguments: { floorPriceCents: 200 } });
+    expect(res.isError).toBe(true);
+  });
+
+  it('kea_forbidden_list returns empty list initially', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_forbidden_list', arguments: {} });
+    const parsed = parseJsonResult(res);
+    expect(parsed.forbidden).toEqual([]);
+  });
+
+  it('kea_forbidden_add adds a ticker', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_forbidden_add', arguments: { ticker: 'KXMCP', reason: 'test block' } });
+    const parsed = parseJsonResult(res);
+    expect(parsed.ticker).toBe('KXMCP');
+    expect(parsed.reason).toBe('test block');
+    expect(parsed.addedBy).toBe('mcp');
+  });
+
+  it('kea_forbidden_remove removes an added ticker', async () => {
+    const { client } = await connect();
+    await client.callTool({ name: 'kea_forbidden_add', arguments: { ticker: 'KXMCP2', reason: 'test' } });
+    const res = await client.callTool({ name: 'kea_forbidden_remove', arguments: { ticker: 'KXMCP2' } });
+    const parsed = parseJsonResult(res);
+    expect(parsed.removed).toBe('KXMCP2');
+  });
+
+  it('kea_forbidden_add returns isError on duplicate', async () => {
+    const { client } = await connect();
+    await client.callTool({ name: 'kea_forbidden_add', arguments: { ticker: 'KXDUP', reason: 'first' } });
+    const res = await client.callTool({ name: 'kea_forbidden_add', arguments: { ticker: 'KXDUP', reason: 'second' } });
+    expect(res.isError).toBe(true);
   });
 });
 

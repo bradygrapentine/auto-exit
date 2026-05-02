@@ -1,8 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ExitRunner } from '../src/exitRunner.js';
 import { MockKalshiClient } from '../src/mockKalshiClient.js';
 import { chooseChunkSize, normalizeLevels } from '../src/pricing.js';
 import type { ExitConfig, Orderbook } from '../src/types.js';
+
+// Mock safety so it returns a permissive config — lets each test's own
+// safetySubmittedMultiple survive the mergeIntoExitConfig call unchanged.
+vi.mock('../src/safety.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/safety.js')>('../src/safety.js');
+  return {
+    ...actual,
+    getSafety: vi.fn(() => ({
+      version: 1 as const,
+      safetySubmittedMultiple: 2.0, // looser than any test value → no tightening
+      floorPriceCents: 0,
+      tailSweepThreshold: 0,
+      forbiddenTickers: [],
+    })),
+    mergeIntoExitConfig: (config: ExitConfig) => config, // pass-through
+  };
+});
 
 const baseCfg: ExitConfig = {
   baseUrl: 'https://example.test',
