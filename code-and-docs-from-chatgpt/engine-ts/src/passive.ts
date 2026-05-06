@@ -18,6 +18,7 @@
 import crypto from 'node:crypto';
 import { Journal, generateJobId } from './journal.js';
 import { getSafety } from './safety.js';
+import { computePeggedPrice } from './pegToMid.js';
 import type {
   JournalKind,
   KalshiClientLike,
@@ -73,6 +74,15 @@ export interface PassiveConfig {
    * one-shot IoC sweep.
    */
   safetySubmittedMultiple?: number;
+  /**
+   * Opt-in: use peg-to-mid pricing (W3.3) instead of static ask−walkStep / bid+walkStep.
+   * When true, iterPrice is set to floor(mid − pegOffsetCents) (sell) or
+   * ceil(mid + pegOffsetCents) (buy). Falls through to default behavior when the
+   * book is one-sided (peg cannot compute mid).
+   */
+  useMidpointPeg?: boolean;
+  /** Offset from mid when peg is enabled. Default 1¢. */
+  pegOffsetCents?: number;
   dryRun?: boolean;
   jobId?: string;
   /** Override KEA_HOME (for tests). */
@@ -238,9 +248,21 @@ export async function run(
 
       // ── 3. Posting price for this chunk iteration ───────────────────────
       // spec: sell → ask − walkStep, buy → bid + walkStep
-      let iterPrice = roundCents(
-        config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents,
-      );
+      // When `useMidpointPeg` is set (W3.3), prefer peg-to-mid; fall through
+      // to default behavior if the book is one-sided.
+      let iterPrice: number;
+      if (config.useMidpointPeg) {
+        const action = config.side === 'sell' ? 'sell' : 'buy';
+        const offset = config.pegOffsetCents ?? 1;
+        const pegged = computePeggedPrice(action, orderbook, offset, effectiveFloorCents);
+        iterPrice = pegged !== null
+          ? pegged
+          : roundCents(config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents);
+      } else {
+        iterPrice = roundCents(
+          config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents,
+        );
+      }
 
       const chunk = Math.min(chunkSize, remaining);
 
