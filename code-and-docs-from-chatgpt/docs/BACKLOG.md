@@ -5,7 +5,7 @@ Last `/backlog-sync`: 2026-05-06 (strategy cluster shipped — S2/S4/S8/S9/S11/S
 | Status | Count |
 |--------|-------|
 | 🧊 Foundation (W1) | 0 |
-| 🧊 Strategy library (S) | 7 |
+| 🧊 Strategy library (S) | 8 |
 | 🧊 Cross-cutting (W3) | 1 |
 | 🧊 Decision + optimization (W4) | 4 |
 | 🧊 Tooling ecosystem (SH) | 5 |
