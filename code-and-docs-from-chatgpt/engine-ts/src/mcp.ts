@@ -509,6 +509,140 @@ export function buildMcpServer(): McpServer {
     },
   );
 
+  // ── Rich synthetic tools (Phase 4 Track C) ──────────────────────────────────
+
+  server.registerTool(
+    'kea_bracket_arm',
+    {
+      description:
+        'Convenience wrapper to register a bracket synthetic (paired take-profit + stop-loss children). ' +
+        'Returns { id } of the bracket parent.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['yes', 'no']).describe('Side of the position held'),
+        positionSize: z.number().positive().describe('Number of contracts held'),
+        takeProfitCents: z.number().positive().describe('Take-profit trigger price (cents)'),
+        stopLossCents: z.number().positive().describe('Stop-loss trigger price (cents)'),
+        autoCancelOnZeroPosition: z.boolean().optional().describe('Auto-cancel when position reaches zero (default true)'),
+        selfTradePrevention: z.enum(['taker_at_cross', 'maker']).optional().describe('STP mode'),
+      },
+    },
+    (args) => {
+      try {
+        if (!isWatcherInitialized()) {
+          return errorContent(new Error('Watcher singleton not initialized. Call initWatcher() or setWatcherForTests() first.'));
+        }
+        const id = getWatcher().register({
+          kind: 'bracket',
+          ticker: args.ticker,
+          side: args.side as 'yes' | 'no',
+          positionSize: args.positionSize,
+          params: {
+            takeProfitCents: args.takeProfitCents,
+            stopLossCents: args.stopLossCents,
+          } as Synthetic['params'],
+          autoCancelOnZeroPosition: args.autoCancelOnZeroPosition,
+          selfTradePrevention: args.selfTradePrevention,
+        });
+        return jsonContent({ id });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_trailing_status',
+    {
+      description:
+        'Live readout for a trailing-stop synthetic: peak bid, current bid, current stop price, distance to trigger. ' +
+        'Caller must supply `book` (use kea_orderbook first). Errors if synthetic is not kind=trailing_stop.',
+      inputSchema: {
+        id: z.string().min(1).describe('Trailing-stop synthetic id'),
+        book: OrderbookSchema.describe('Orderbook snapshot'),
+      },
+    },
+    ({ id, book }) => {
+      try {
+        if (!isWatcherInitialized()) {
+          return errorContent(new Error('Watcher singleton not initialized. Call initWatcher() or setWatcherForTests() first.'));
+        }
+        const s = getWatcher().get(id);
+        if (!s) return errorContent(new Error(`Synthetic not found: ${id}`));
+        if (s.kind !== 'trailing_stop') return errorContent(new Error(`Synthetic ${id} is kind=${s.kind}, not trailing_stop`));
+
+        const params = s.params as { trailCents: number; floorPriceCents?: number };
+        const state = s.state as { peakBidCentsExact?: number };
+        const trail = params.trailCents;
+        const floor = params.floorPriceCents ?? 1;
+        const levels = s.side === 'yes' ? book.yes : book.no;
+        const currentBidCentsExact = (levels[0]?.priceCents as number | undefined) ?? 0;
+        const peakBidCentsExact = state.peakBidCentsExact ?? currentBidCentsExact;
+        const stopPriceCentsExact = Math.max(peakBidCentsExact - trail, floor);
+        const distanceCentsExact = currentBidCentsExact - stopPriceCentsExact;
+
+        return jsonContent({
+          peakBidCentsExact,
+          currentBidCentsExact,
+          stopPriceCentsExact,
+          distanceCentsExact,
+        });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_synthetic_history',
+    {
+      description:
+        'Read recent watcher journal entries (NDJSON), optionally filtered by ticker. Returns last N entries (default 50). ' +
+        'Reads from the watcher journal file at $KEA_HOME/watchers.ndjson (or ~/.kalshi-exit-assistant/watchers.ndjson if KEA_HOME unset).',
+      inputSchema: {
+        ticker: z.string().optional().describe('Optional: filter to entries for synthetics on this ticker'),
+        limit: z.number().int().positive().optional().describe('Max entries to return (default 50)'),
+      },
+    },
+    ({ ticker, limit }) => {
+      try {
+        const home = process.env.KEA_HOME ?? path.join(os.homedir(), '.kalshi-exit-assistant');
+        const journalPath = path.join(home, 'watchers.ndjson');
+        if (!fs.existsSync(journalPath)) {
+          return jsonContent({ entries: [], journalPath, note: 'journal file does not exist (no synthetics ever registered)' });
+        }
+
+        const max = limit ?? 50;
+        const tickerById = new Map<string, string>();
+        const entries: Record<string, unknown>[] = [];
+
+        for (const line of fs.readFileSync(journalPath, 'utf-8').split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            const e = JSON.parse(line) as Record<string, unknown>;
+            if (e.kind === 'synthetic_registered' && e.synthetic) {
+              const syn = e.synthetic as { id: string; ticker: string };
+              tickerById.set(syn.id, syn.ticker);
+            }
+            entries.push(e);
+          } catch { /* skip malformed */ }
+        }
+
+        const filtered = ticker
+          ? entries.filter(e => {
+              const id = (e.id as string | undefined) ?? (e.synthetic as { id?: string } | undefined)?.id;
+              const synTicker = (e.synthetic as { ticker?: string } | undefined)?.ticker;
+              if (synTicker === ticker) return true;
+              return id !== undefined && tickerById.get(id) === ticker;
+            })
+          : entries;
+
+        return jsonContent({
+          entries: filtered.slice(-max),
+          journalPath,
+          totalCount: entries.length,
+          filteredCount: filtered.length,
+        });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
   return server;
 }
 

@@ -71,15 +71,18 @@ describe('MCP server — tool registration', () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
-      'kea_balance', 'kea_forbidden_add', 'kea_forbidden_list', 'kea_forbidden_remove',
+      'kea_balance',
+      'kea_bracket_arm',
+      'kea_forbidden_add', 'kea_forbidden_list', 'kea_forbidden_remove',
       'kea_harvest_planner',
       'kea_journal_list', 'kea_journal_read',
       'kea_orderbook', 'kea_positions', 'kea_preview',
       'kea_replay', 'kea_resting_orders',
       'kea_safety_get', 'kea_safety_set',
-      'kea_synthetic_cancel', 'kea_synthetic_get', 'kea_synthetic_list',
-      'kea_synthetic_preview', 'kea_synthetic_register',
+      'kea_synthetic_cancel', 'kea_synthetic_get', 'kea_synthetic_history',
+      'kea_synthetic_list', 'kea_synthetic_preview', 'kea_synthetic_register',
       'kea_tca_summary',
+      'kea_trailing_status',
       'kea_whoami',
     ]);
     // No raw order-mutating tool (create/exit/sell/buy) is exposed.
