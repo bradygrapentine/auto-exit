@@ -79,6 +79,8 @@ describe('MCP server — tool registration', () => {
       'kea_orderbook', 'kea_positions', 'kea_preview',
       'kea_replay', 'kea_resting_orders',
       'kea_safety_get', 'kea_safety_set',
+      'kea_strategy_aggressive', 'kea_strategy_limit_ladder', 'kea_strategy_prepend_then_sweep',
+      'kea_strategy_roll', 'kea_strategy_stealth', 'kea_strategy_stop_and_reverse',
       'kea_synthetic_cancel', 'kea_synthetic_get', 'kea_synthetic_history',
       'kea_synthetic_list', 'kea_synthetic_preview', 'kea_synthetic_register',
       'kea_tca_summary',
