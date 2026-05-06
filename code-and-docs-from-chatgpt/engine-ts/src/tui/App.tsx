@@ -7,8 +7,9 @@ import {
 import type { Orderbook } from '../types.js';
 import { AccountTab } from './AccountTab.js';
 import { SafetyTab } from './SafetyTab.js';
+import { SyntheticsTab } from './SyntheticsTab.js';
 
-type Tab = 'dashboard' | 'preview' | 'book' | 'journal' | 'account' | 'safety';
+type Tab = 'dashboard' | 'preview' | 'book' | 'journal' | 'account' | 'synthetics' | 'safety';
 
 interface DashboardState {
   balance?: BalanceData;
@@ -60,6 +61,7 @@ export function App() {
       else if (input === '3') setTab('book');
       else if (input === '4') setTab('journal');
       else if (input === 'a' || input === 'A') setTab('account');
+      else if (input === '6') setTab('synthetics');
       else if (input === '5') setTab('safety');
       else if (input === 'r' || input === 'R') refreshDashboard();
       else if (tab === 'dashboard') {
@@ -86,6 +88,7 @@ export function App() {
       {tab === 'book' && <BookView target={target} />}
       {tab === 'journal' && <JournalView />}
       {tab === 'account' && <AccountTab />}
+      {tab === 'synthetics' && <SyntheticsTab />}
       {tab === 'safety' && <SafetyTab />}
       <Footer tab={tab} />
     </Box>
@@ -134,6 +137,7 @@ function TabBar({ tab }: { tab: Tab }) {
       {item('3', 'book', 'book')}<Text> </Text>
       {item('4', 'journal', 'journal')}<Text> </Text>
       {item('a', 'account', 'account')}<Text> </Text>
+      {item('6', 'synthetics', 'synthetics')}<Text> </Text>
       {item('5', 'safety', 'safety')}
     </Box>
   );
@@ -141,12 +145,14 @@ function TabBar({ tab }: { tab: Tab }) {
 
 function Footer({ tab }: { tab: Tab }) {
   const hint = tab === 'dashboard'
-    ? '[↑↓] select   [enter] preview selected   [r] refresh   [1-4/a/5] tabs   [q] quit'
+    ? '[↑↓] select   [enter] preview selected   [r] refresh   [1-4/a/5/6] tabs   [q] quit'
     : tab === 'account'
-    ? '[s] switch profile   [1-4/a/5] tabs   [q] quit'
+    ? '[s] switch profile   [1-4/a/5/6] tabs   [q] quit'
+    : tab === 'synthetics'
+    ? '[↑↓] select   [c] cancel   [n] new   [1-4/a/5/6] tabs   [q] quit'
     : tab === 'safety'
-    ? '[↑↓] select   [d] remove ticker   [1-4/a/5] tabs   [q] quit'
-    : '[1-4/a/5] tabs   [r] refresh   [q] quit';
+    ? '[↑↓] select   [d] remove ticker   [1-4/a/5/6] tabs   [q] quit'
+    : '[1-4/a/5/6] tabs   [r] refresh   [q] quit';
   return (
     <Box marginTop={1}><Text color="gray">{hint}</Text></Box>
   );

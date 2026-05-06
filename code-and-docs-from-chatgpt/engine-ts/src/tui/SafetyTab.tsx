@@ -71,7 +71,7 @@ export function SafetyTab() {
       </Box>
       {msg && <Box marginTop={1}><Text color="green">{msg}</Text></Box>}
       {errorMsg && <Box marginTop={1}><Text color="red">{errorMsg}</Text></Box>}
-      <Box marginTop={1}><Text color="gray">[↑↓] select   [d] remove highlighted   [1-4/a/5] tabs</Text></Box>
+      <Box marginTop={1}><Text color="gray">[↑↓] select   [d] remove highlighted   [1-4/a/5/6] tabs</Text></Box>
     </Box>
   );
 }
