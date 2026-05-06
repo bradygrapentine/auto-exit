@@ -1,18 +1,21 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-05
+Last `/backlog-sync`: 2026-05-06
 
 | Status | Count |
 |--------|-------|
-| 🟡 Plan ready / in progress | 3 |
-| 🧊 Foundation (W1) | 3 |
-| 🧊 Strategy library (S) | 16 |
+| 🔎 In review | 1 |
+| 🧊 Foundation (W1) | 0 |
+| 🧊 Strategy library (S) | 15 |
 | 🧊 Cross-cutting (W3) | 3 |
-| 🧊 Decision + optimization (W4) | 5 |
+| 🧊 Decision + optimization (W4) | 4 |
 | 🧊 Tooling ecosystem (SH) | 5 |
-| 🧊 Surface parity (SP1–SP4) | 17 |
+| 🧊 Surface parity (SP1–SP4) | 12 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 7 |
+| ✅ Shipped (this log) | 19 |
+
+**In review:** PR #18 — deci-cent walks + safety cap + one-sided-book guard
+(extension to shipped S1; not a backlog story).
 
 This file is split into three sequences plus two ledgers. The
 **Algorithmic enhancement sequence** runs W1 (foundation) → S (unified
@@ -39,133 +42,8 @@ the engine owns *how*.
 
 Prerequisites for every strategy. Build first.
 
-### 🟡 W1.1 — Safety persistence + MCP/TUI write surfaces
-**Tags:** shared [engine, ext, tui-mcp]
-
-**Trigger:** safety guards (`safetySubmittedMultiple`, `floorPriceCents`,
-`tailSweepThreshold`, `forbiddenTickers`) live only in hand-edited per-job
-JSON files today. MCP is read-only. TUI has no settings surface. A typo in a
-config file is the highest-likelihood path to a real-money mistake, and
-`forbiddenTickers` (the "do not touch" primitive) deserves an audited workflow.
-
-**Proposed:** `$KEA_HOME/safety.json` (atomic tmp+rename, `0o600`, mirrors
-`credentials.ts`). Five new MCP tools (`kea_safety_get/set`,
-`kea_forbidden_list/add/remove`). TUI Safety tab. At
-`exitRunner.run()` entry, merge safety into the passed `ExitConfig` such that
-caps can only tighten (`min` for multipliers, `max` for floors, `union` for
-forbidden tickers). Append-only `safety.audit.jsonl` for every mutation;
-`safety_loaded` journal entry at job start.
-
-**Plan:** `engine-ts/docs/superpowers/plans/2026-05-02-safety-config.md` (READY).
-
-**Cost:** ~1.5 days. 11 tasks, TDD per task.
-
-**Why first:** unblocks W1.3 (pre-trade risk uses the same persistence) and
-every S strategy that needs an audited risk envelope.
-
-### 🧊 W1.2 — Post-trade TCA (arrival-price slippage logging)
-**Tags:** shared [engine, tui-mcp]
-
-**Trigger:** can't tune `chunkSize` / `mildAdaptive` / `minLevelSize` —
-let alone any new strategy — without measuring realized slippage. Today we
-know fees, not impact.
-
-**Proposed:** at decision-time, log `arrivalMid = (topBid + topAsk)/2`. After
-each fill, compute `slippageCents = arrivalMid − fillPriceCents` (signed for
-sells). New `tca` journal kind. New `kea report <jobId>` subcommand emits a
-markdown summary per job: realized slippage by chunk, by depth-tier, vs. the
-theoretical full-depth projection. New MCP tool `kea_tca_summary`.
-
-**Cost:** ~1 day. Mid-capture + journal kind + report builder + tests.
-
-**Why second:** every W2/W3 strategy needs slippage data to tune. Without
-TCA, optimizer work in W4 (Almgren-Chriss) has nothing to calibrate against.
-
-### 🧊 W1.3 — Pre-trade risk checks (max-loss + circuit breaker + concentration)
-**Tags:** shared [engine]
-
-**Trigger:** today the only pre-trade check is `forbiddenTickers`. A buggy
-config or an over-eager trigger could blow through risk limits the user
-*thinks* exist mentally.
-
-**Proposed:** extend `safety.json` (after W1.1) with three caps:
-
-- `maxLossPerTickerDollars` — refuse-to-start if projected net loss on this
-  exit exceeds limit.
-- `dailyLossCircuitBreakerDollars` — track realized losses across all jobs in
-  a UTC day (in `safety.audit.jsonl`); refuse-to-start when the day's running
-  loss meets the limit.
-- `maxPositionConcentrationPct` — refuse-to-start any *open* (W2 stop-and-reverse,
-  W2 roll) that would push one ticker > X% of portfolio NAV.
-
-CLI/MCP/TUI surfaces inherit from W1.1 patterns.
-
-**Cost:** ~1.5 days. Builds directly on W1.1.
-
-**Why third:** every strategy in S should refuse to start when a risk
-envelope is breached. Cleaner to add the check once, before each strategy.
-
-### 🟡 W1.4 — Journal pre-call ordering bug fix
-**Tags:** shared [engine]
-
-**Status:** in flight as `chore/dispatch-journal-bug-fix`.
-
-**Trigger (Sonnet A code review, 2026-05-02):** at `exitRunner.ts:350-363`,
-the `order_placed` journal entry is written *after* `createOrder` returns,
-not before. If the process is killed in the window between `createOrder`
-returning and the journal append (SIGKILL, OOM, hardware fault), the
-order exists on Kalshi but has no journal trace. On resume,
-`journal.pendingOrders()` will not see it, the engine will not reconcile,
-`remaining` is never decremented, and an orphaned live order persists on
-the exchange. The doc (`LOSING_EXIT_ALGORITHM.md:49`) sells crash-safe
-resume as a feature; this gap defeats it. The existing
-`deliberatePauseAfterPlaceMs` test only covers the crash *between*
-`order_placed` and `order_reconciled` — not before `order_placed`.
-Untested by the harness.
-
-**Proposed:** write a pre-call `order_intent` journal entry containing
-the full payload + `clientOrderId` *before* invoking `createOrder`. After
-the response returns, append `order_placed` with the resolved `orderId`.
-On resume, replay reads `order_intent` entries with no matching
-`order_placed` and queries Kalshi by `clientOrderId` to find any
-orphaned order (Kalshi supports client-order-id lookup). New journal
-kind `order_intent`; new resume path `reconcileByClientOrderId`.
-
-**Cost:** ~4 hours. New journal kind, pre-call hook in `exitRunner.run()`,
-resume path, fixture-based crash-window test (kill between intent and
-place).
-
-**Why critical:** real-money correctness gap in shipped code. Should land
-before any new strategy work; otherwise every new strategy inherits the
-defect.
-
-### 🧊 W1.5 — Buy primitive (`buyRunner`)
-**Tags:** shared [engine]
-
-**Trigger:** the engine has no buy loop today. `KalshiClient.placeOrder`
-exists but no equivalent of `exitRunner` for the open side: no chunked
-IoC buy loop, no partial-fill reconciliation, no journal+resume. Required
-by every strategy that opens a position (S2 aggressive, S5 pair, S9
-stop-and-reverse, S11 roll, S12 market-making, S13 iceberg, S14 basis,
-S15 GTC-prepend, plus side-parameterized S1/S3/S4 when used as entries).
-Highest-leverage prereq in the entire roadmap after W1.4.
-
-**Proposed:** new `src/buyRunner.ts` mirroring `exitRunner` shape. Same
-journal (with W1.4 pre-call ordering), same resume semantics, same safety
-merge. Crosses to the ask side instead of the bid side. Reuses
-cumulative-depth pricing, adaptive chunking, tail sweep,
-`safetySubmittedMultiple` cap. Primary work is extracting shared helpers
-from `exitRunner` cleanly so both runners stay aligned.
-
-**Cost:** ~2 days.
-
-**Recommended scheduling (per Codex C review, 2026-05-02):** runs in
-parallel with W1.2 / W1.3 once W1.1 lands. Not gated on TCA or pre-trade
-risk; only on the safety-persistence pattern from W1.1. Pulling W1.5
-forward unblocks 12 of 16 strategies in the S library.
-
-**Why second-to-last in W1:** every S strategy that opens a position
-depends on this. No parallel path through the library without it.
+_All W1 stories shipped — see §7. W1 dependencies in S/W3/W4 are
+satisfied unless otherwise flagged._
 
 ---
 
@@ -185,32 +63,6 @@ dropdown / CLI subcommand / MCP enum. Agent supplies `{ ticker, side,
 size, strategyName, ...strategy-specific inputs }`. No mid-flow
 configuration. Where `side` is meaningful, the same engine module handles
 both directions.
-
-### 🧊 S1 — Passive (post-and-walk, side-parameterized)
-**Tags:** engine
-
-**Trigger:** agent has decided on a position (open or close) with no
-urgency and wants to harvest passive flow rather than crossing the
-spread. Was previously two stories (W2.1 winning exit + EW2.2 patient
-entry); collapsed because they share ~80% of code with only the side
-flipped.
-
-**Proposed:** mode `passive`. Inputs: `{ ticker, side: 'buy'|'sell',
-size, maxPriceCents (sell) | minPriceCents (buy) }`. Steps:
-
-1. Read bid/ask. If spread < 1¢, fall through to S2 aggressive.
-2. Post one chunk GTC at `ask − 1¢` (sell) or `bid + 1¢` (buy), or
-   pegged-to-mid once W3.3 lands.
-3. Timebox `passiveTimeboxMs` (default 60s).
-4. Cancel unfilled remainder; on next iter shift one tick toward the
-   spread (sell: down; buy: up).
-5. Floor / ceiling at the agent-supplied limit, with `safety.json`
-   guards still applying.
-
-**Cost:** ~1.5 days. New `passive.ts` module sharing primitives with
-`exitRunner` and `buyRunner` (W1.5).
-
-**Dependency:** W1.5 buy primitive (for buy side).
 
 ### 🧊 S2 — Aggressive (cross-the-spread, max speed)
 **Tags:** engine
@@ -665,7 +517,9 @@ contract-equivalence mapping (matching tickers across venues).
 **Why last:** the entire algo sequence lands on Kalshi-only first. Multi-
 venue is a multiplier, not a foundation.
 
-### 🧊 W4.5 — Harvest planner (decision-support tool)
+_W4.5 harvest planner shipped — see §7._
+
+<!-- ARCHIVED W4.5 spec (kept for cross-references)
 **Tags:** shared [engine, tui-mcp, ext]
 
 **TradFi analog:** options-MM Greeks dashboard for digital options. The
@@ -743,6 +597,7 @@ ladder / sleeve unwind"; `W2.10` → "iceberg / dark execution"). Reading
 those names should immediately convey the strategy's character to anyone
 with derivatives-MM background. See memory
 `concept_tradfi_mapping.md` for the full mapping table.
+-->
 
 ---
 
@@ -977,58 +832,7 @@ follows on its engine capability landing.
 
 Independent of new engine work. Can start any time.
 
-### 🧊 SP1.1 — Extension: auto-detect market ticker
-**Tags:** ext
-
-**Trigger:** today the user types/pastes the ticker into the extension
-panel. The panel runs on a Kalshi market page — the ticker is right there
-in the URL/DOM. Manual entry is a typo waiting to happen.
-
-**Proposed:** content script reads `window.location.pathname` + the
-event/market header DOM. Falls back to manual input if parse fails.
-Surface the detected ticker prominently with a "use this" button.
-
-**Cost:** ~3 hours.
-
-### 🧊 SP1.2 — Extension: read position size from page
-**Tags:** ext
-
-**Trigger:** Kalshi market pages show the user's current position when
-logged in. Re-typing the size into the panel is friction *and* a vector
-for fat-finger errors (off-by-one-zero on a 100k-share position).
-
-**Proposed:** content script reads the position-size DOM node. Surface as
-"detected position: N — use this" prefill. Refuse to autofill if the DOM
-is ambiguous; never silently overwrite a user-entered value.
-
-**Cost:** ~4 hours including DOM-stability tests.
-
-### 🧊 SP1.3 — Extension: live-mode confirmation modal
-**Tags:** ext
-
-**Trigger:** flipping `dryRun: false` through the panel today is a single
-toggle. The asymmetric blast radius (irreversible orders) deserves a
-deliberate confirmation step.
-
-**Proposed:** when toggling to live mode, modal shows: ticker, side,
-positionSize, projected gross/fee/net (from `/preview`), and a typed-string
-confirm field (user types the ticker to confirm). Cancel returns to
-dry-run. Mirror the `--confirm` discipline already used in CLI panic mode.
-
-**Cost:** ~4 hours.
-
-### 🧊 SP1.4 — Extension: progress bar
-**Tags:** ext
-
-**Trigger:** today the panel shows a status string. For a long exit
-(phased P1, large TWAP) a visual progress indicator makes monitoring
-easier — and surfaces stalls at a glance.
-
-**Proposed:** progress bar = `(positionSize - remainingSize) / positionSize`.
-Sub-display: chunks placed, fees incurred, time elapsed. Pulls from
-existing `/status` endpoint; no engine change.
-
-**Cost:** ~3 hours.
+_SP1.1, SP1.2, SP1.3, SP1.4 shipped — see §7._
 
 ### 🧊 SP1.5 — Extension: execution summary report
 **Tags:** ext
@@ -1044,17 +848,7 @@ notes.
 
 **Cost:** ~6 hours. Some overlap with SP4.3 (extension TCA viewer).
 
-### 🧊 SP1.6 — Extension: persistent saved presets
-**Tags:** ext
-
-**Trigger:** the same exit shape (e.g. "phased P1 phase 2 settings")
-gets re-typed every time. Presets reduce both friction and typo risk.
-
-**Proposed:** named presets in `chrome.storage.local`. Form has "save as
-preset" / "load preset" / "delete preset" controls. Each preset captures
-non-secret config only — no API keys, no per-job state.
-
-**Cost:** ~6 hours.
+_SP1.6 saved presets shipped — see §7._
 
 ### 🧊 SP1.7 — Extension: account/profile switcher
 **Tags:** ext
@@ -1376,6 +1170,60 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-06 — S1 passive (post-and-walk, side-parameterized).** PR #15.
+  `src/passive.ts` — chunked GTC posting at `ask−1¢`/`bid+1¢`, walk-toward-
+  spread on cancel, side-parameterized. Extension PR #18 in review adds
+  deci-cent walk steps (`walkStepCents`), `safetySubmittedMultiple` cap,
+  and one-sided-book guard.
+
+- **2026-05-04 — W4.5 harvest planner.** PR #11. `kea_harvest_planner` MCP
+  tool + CLI: EV crossover (p* = avg_harvest/payout), risk-reduction
+  sizing table, no-loss-floor row, Greeks (delta/theta/gamma proxy).
+  Read-only computation; feeds S1/S7 sizing decisions.
+
+- **2026-05-04 — W1.5 buy primitive (`buyRunner`).** PR #12. Mirror of
+  `exitRunner` for the open side with shared helpers extracted into
+  `runnerUtils`. Same journal/resume/safety semantics; unblocks S2, S5,
+  S9, S11–S14.
+
+- **2026-05-04 — SH-1 post-trade TCA (W1.2).** PR #13. Arrival-price
+  slippage logging — `tca` journal kind, `kea_tca_summary` MCP tool,
+  per-fill slippage breakdown vs. `arrivalMid = (topBid+topAsk)/2`.
+
+- **2026-05-05 — SH-2 pre-trade risk checks (W1.3).** PR #14.
+  `maxLossPerTickerDollars`, `dailyCircuitBreakerDollars`,
+  `maxPositionConcentrationPct` enforced at runner entry; refuse-to-start
+  when envelope breached.
+
+- **2026-05-03 — W1.1 safety persistence + MCP/TUI write surfaces.** PR #7.
+  `$KEA_HOME/safety.json` (atomic, 0o600) + 5 MCP tools
+  (`kea_safety_get/set`, `kea_forbidden_list/add/remove`) + TUI Safety tab
+  + `safety.audit.jsonl`. Caps can only tighten when merged into
+  `ExitConfig`.
+
+- **2026-05-02 — W1.4 journal pre-call ordering bug fix.** Commit af4577e.
+  `order_intent` journal entry written before `createOrder`; resume path
+  `reconcileByClientOrderId` recovers orphaned orders if process killed
+  in the call window. Closes real-money correctness gap in crash-safe
+  resume.
+
+- **2026-05-03 — EX-1 + EX-2 ticker + position DOM detectors (SP1.1, SP1.2).**
+  PR #6. Content script reads ticker from `window.location.pathname` and
+  position size from market page DOM; "use this" prefill, never silently
+  overwrites user input.
+
+- **2026-05-03 — EX-3 live-mode confirmation modal (SP1.3).** PR #8. Modal
+  on dryRun→live toggle: ticker/side/size/projection + typed-ticker
+  confirm field; cancel returns to dry-run.
+
+- **2026-05-03 — EX-4 progress bar (SP1.4).** PR #9. Visual progress =
+  `(size − remaining) / size`; sub-display chunks/fees/elapsed from
+  `/status` endpoint.
+
+- **2026-05-03 — EX-6 persistent saved presets (SP1.6).** PR #10. Named
+  presets in `chrome.storage.local`; save/load/delete; non-secret config
+  only.
 
 - **2026-05-02 — Account connect (CLI / TUI / MCP).** Named credential profiles
   persisted in `$KEA_HOME/credentials.json` (atomic write, `0o600`). CLI: `kea

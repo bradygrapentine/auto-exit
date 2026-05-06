@@ -55,6 +55,24 @@ export interface PassiveConfig {
   passiveTimeboxMs?: number;
   /** Delay between chunk iterations. Default 0. */
   loopDelayMs?: number;
+  /**
+   * Walk increment per timebox iteration, in cents. Default 1. Set to 0.1 for
+   * deci-cent ticks (Kalshi quotes 0.001-dollar ticks below 10¢; without
+   * sub-cent walks the strategy degenerates to a single price on cheap markets).
+   * Initial post is also offset by this amount: sell → bestAsk − walkStep,
+   * buy → bestBid + walkStep.
+   */
+  walkStepCents?: number;
+  /**
+   * Hard cap on cumulative submitted-share volume across reposts as a multiple
+   * of `size`. Counts ALL createOrder sizes regardless of fills, so a strategy
+   * that timeboxes-and-reposts indefinitely cannot oversubmit. **Default 5.**
+   * Higher than `ExitConfig.safetySubmittedMultiple` (1.5) because passive
+   * walks legitimately re-submit the same intent at different prices —
+   * counting walk-reposts toward the cap requires more headroom than a
+   * one-shot IoC sweep.
+   */
+  safetySubmittedMultiple?: number;
   dryRun?: boolean;
   jobId?: string;
   /** Override KEA_HOME (for tests). */
@@ -126,7 +144,14 @@ export async function run(
   const chunkSize = config.chunkSize ?? DEFAULT_CHUNK_SIZE;
   const passiveTimeboxMs = config.passiveTimeboxMs ?? DEFAULT_PASSIVE_TIMEBOX_MS;
   const loopDelayMs = config.loopDelayMs ?? DEFAULT_LOOP_DELAY_MS;
+  const walkStepCents = config.walkStepCents ?? 1;
+  const safetyMultiple = config.safetySubmittedMultiple ?? 5;
+  const submittedCap = config.size * safetyMultiple;
   const kalshiSide = config.ticker.endsWith('_NO') ? 'no' : 'yes';
+
+  // Float-cleanup helper so deci-cent arithmetic doesn't accumulate drift
+  // (0.1 + 0.2 != 0.3 etc.). Round to 4 decimals, the precision Kalshi accepts.
+  const roundCents = (c: number): number => Math.round(c * 10_000) / 10_000;
 
   // Effective floor for sell side: Math.max is correct because higher floor = tighter constraint for seller
   const effectiveFloorCents =
@@ -138,8 +163,10 @@ export async function run(
   let remaining = config.size;
   let totalNotionalCents = 0;
   let feesIncurredDollars = 0;
+  let totalSubmittedShares = 0;
   let resultStatus: PassiveResult['status'] = 'complete';
   let guardHit = false; // floor/ceiling stop — not an error
+  let oneSidedWarned = false; // journal the no-opposite-liquidity event only once per run
 
   journal.append('loop_started', {
     ticker: config.ticker,
@@ -170,10 +197,25 @@ export async function run(
       const bestBidCents =
         noAsks[0] != null ? 100 - noAsks[0].priceCents : 1;
 
+      // One-sided book guard: detect missing liquidity on the side we depend on.
+      // SELL needs counterparty buyers (=> noAsks), BUY needs counterparty sellers (=> yesAsks).
+      const counterpartyEmpty =
+        config.side === 'sell' ? noAsks.length === 0 : yesAsks.length === 0;
+      if (counterpartyEmpty && !oneSidedWarned) {
+        journal.append(jk('passive_no_opposite_liquidity'), {
+          side: config.side,
+          bestAskCents,
+          bestBidCents,
+        });
+        oneSidedWarned = true;
+      }
+
       const spreadCents = bestAskCents - bestBidCents;
 
       // ── 2. Spread check ─────────────────────────────────────────────────
-      if (spreadCents < 1) {
+      // Use the walk increment as the spread floor so a deci-cent walk on a
+      // 0.5¢ spread isn't rejected as too tight.
+      if (spreadCents < walkStepCents) {
         journal.append(jk('passive_spread_too_tight'), {
           bestBidCents,
           bestAskCents,
@@ -195,9 +237,10 @@ export async function run(
       }
 
       // ── 3. Posting price for this chunk iteration ───────────────────────
-      // spec: sell → ask − 1¢, buy → bid + 1¢
-      let iterPrice =
-        config.side === 'sell' ? bestAskCents - 1 : bestBidCents + 1;
+      // spec: sell → ask − walkStep, buy → bid + walkStep
+      let iterPrice = roundCents(
+        config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents,
+      );
 
       const chunk = Math.min(chunkSize, remaining);
 
@@ -229,6 +272,18 @@ export async function run(
           break outer;
         }
 
+        // Safety cap on cumulative submitted shares across all reposts.
+        if (totalSubmittedShares + chunk > submittedCap) {
+          journal.append(jk('passive_safety_cap_breached'), {
+            totalSubmittedShares,
+            attemptedChunk: chunk,
+            cap: submittedCap,
+          });
+          guardHit = true;
+          resultStatus = 'partial';
+          break outer;
+        }
+
         if (config.dryRun) {
           // ── Dry-run: simulate immediate fill ──────────────────────────
           const clientOrderId = `kea-passive-dry-${Date.now()}-${crypto.randomUUID()}`;
@@ -244,6 +299,7 @@ export async function run(
             },
           });
           const dryOrderId = `dry-${clientOrderId}`;
+          totalSubmittedShares += chunk;
           journal.append('order_placed', {
             orderId: dryOrderId,
             dryRun: true,
@@ -288,6 +344,7 @@ export async function run(
           journal.append('order_intent', { clientOrderId, payload });
 
           const created = await client.createOrder(payload);
+          totalSubmittedShares += chunk;
           journal.append('order_placed', {
             orderId: created.orderId,
             payload,
@@ -361,14 +418,13 @@ export async function run(
             }
 
             // Shift one tick in passive direction and loop
-            if (config.side === 'sell') {
-              iterPrice -= 1;
-            } else {
-              iterPrice += 1;
-            }
+            iterPrice = roundCents(
+              config.side === 'sell' ? iterPrice - walkStepCents : iterPrice + walkStepCents,
+            );
             journal.append(jk('passive_walk_tick'), {
               newPriceCents: iterPrice,
               side: config.side,
+              walkStepCents,
             });
           }
         }
