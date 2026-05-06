@@ -42,15 +42,30 @@ describe('Watcher', () => {
     expect(w.get(id)?.status).toBe('canceled');
   });
 
-  it('tick() coalesces book fetches per unique ticker with depth arg', async () => {
+  it('tick() coalesces book + position fetches per unique ticker with depth arg', async () => {
     const client = makeClient();
     const w = new Watcher(client, { ...baseCfg, orderbookDepth: 20 });
     w.register({ kind: 'stop_loss', ticker: 'KX', side: 'yes', positionSize: 10, params: { triggerPriceCents: 30 } });
     w.register({ kind: 'take_profit', ticker: 'KX', side: 'yes', positionSize: 10, params: { triggerPriceCents: 90 } });
     w.register({ kind: 'stop_loss', ticker: 'KY', side: 'yes', positionSize: 10, params: { triggerPriceCents: 30 } });
     await w.tick();
+    // 3 synthetics across 2 tickers → exactly 2 orderbook fetches.
     expect((client.getOrderbook as any).mock.calls).toHaveLength(2);
     expect((client.getOrderbook as any).mock.calls[0][1]).toBe(20);
+    // All 3 default to autoCancelOnZeroPosition=true, so position fetched once per ticker (2 calls).
+    expect((client.getPosition as any).mock.calls).toHaveLength(2);
+  });
+
+  it('tick() skips position fetch entirely when no synthetic on a ticker has autoCancelOnZeroPosition', async () => {
+    const client = makeClient();
+    const w = new Watcher(client, { ...baseCfg });
+    w.register({
+      kind: 'stop_loss', ticker: 'KX', side: 'yes', positionSize: 10,
+      params: { triggerPriceCents: 30 }, autoCancelOnZeroPosition: false,
+    });
+    await w.tick();
+    expect((client.getOrderbook as any).mock.calls).toHaveLength(1);
+    expect((client.getPosition as any).mock.calls).toHaveLength(0);
   });
 
   it('tick() returns idle interval when nothing armed', async () => {
