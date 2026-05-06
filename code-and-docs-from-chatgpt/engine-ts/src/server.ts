@@ -4,6 +4,15 @@ import { ExitRunner } from './exitRunner.js';
 import type { ExitConfig, ExitConfigPatch, JobStatus, Synthetic, Orderbook } from './types.js';
 import { getWatcher, isWatcherInitialized } from './watcherSingleton.js';
 import { evaluate } from './synthetics/index.js';
+import { KalshiClient } from './kalshiClient.js';
+import { buildSAggressiveOpts } from './strategies/sAggressive.js';
+import { AggressiveRunner } from './aggressive.js';
+import { buildSStealthArgs, StealthRunner } from './strategies/sStealth.js';
+import { buildSLimitLadderArgs } from './strategies/sLimitLadder.js';
+import { LimitLadderRunner } from './limitLadder.js';
+import { SStopAndReverseRunner } from './strategies/sStopAndReverse.js';
+import { SRollRunner } from './strategies/sRoll.js';
+import { buildSPrependThenSweepArgs, SPrependThenSweepRunner } from './strategies/sPrependThenSweep.js';
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
   const payload = JSON.stringify(body, null, 2);
@@ -175,6 +184,100 @@ export function createServer(baseConfig: ExitConfig): http.Server {
           topBidCents: topBid,
           distanceCentsToTrigger: result.distanceCentsToTrigger,
         });
+      }
+
+      // ── Strategy routes (Phase D) ────────────────────────────────────────────
+
+      if (req.method === 'POST' && url.pathname === '/strategies/aggressive') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, side, action, size, oneTickIn } = body ?? {};
+        if (!ticker || !side || !action || size == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, side, action, size' });
+        }
+        try {
+          const config = buildSAggressiveOpts({ ticker, side, action, size, confirmedAggressive: true, oneTickIn });
+          const client = new KalshiClient(baseConfig);
+          const result = await new AggressiveRunner(client, config).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/stealth') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, side, action, size, priceCents, baseChunkSize, baseDelayMs, jitterChunkSizePct, jitterDelayPct, safetySubmittedMultiple, jobId } = body ?? {};
+        if (!ticker || !side || !action || size == null || priceCents == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, side, action, size, priceCents' });
+        }
+        try {
+          const s4config = buildSStealthArgs({ ticker, side, action, size, priceCents, baseChunkSize, baseDelayMs, jitterChunkSizePct, jitterDelayPct, safetySubmittedMultiple, jobId });
+          const client = new KalshiClient(baseConfig);
+          const result = await new StealthRunner(client, s4config).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/limit-ladder') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, side, action, totalSize, rungs, jobId } = body ?? {};
+        if (!ticker || !side || !action || totalSize == null || !rungs) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, side, action, totalSize, rungs' });
+        }
+        try {
+          const s8config = buildSLimitLadderArgs({ ticker, side, action, totalSize, rungs, jobId });
+          const client = new KalshiClient(baseConfig);
+          const result = await new LimitLadderRunner(client, s8config).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/stop-and-reverse') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, closeSide, closeSize, openSide, openSize, oneTickIn } = body ?? {};
+        if (!ticker || !closeSide || closeSize == null || !openSide || openSize == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, closeSide, closeSize, openSide, openSize' });
+        }
+        try {
+          const client = new KalshiClient(baseConfig);
+          const result = await new SStopAndReverseRunner(client, {
+            ticker, closeSide, closeSize, openSide, openSize, confirmedReverse: true, oneTickIn,
+          }).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/roll') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { currentTicker, currentSide, currentSize, targetTicker, targetSide, targetSize, oneTickIn } = body ?? {};
+        if (!currentTicker || !currentSide || currentSize == null || !targetTicker || !targetSide || targetSize == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: currentTicker, currentSide, currentSize, targetTicker, targetSide, targetSize' });
+        }
+        try {
+          const client = new KalshiClient(baseConfig);
+          const result = await new SRollRunner(client, {
+            currentTicker, currentSide, currentSize, targetTicker, targetSide, targetSize, confirmedRoll: true, oneTickIn,
+          }).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/prepend-then-sweep') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, side, action, size, prependWindowMs, oneTickIn } = body ?? {};
+        if (!ticker || !side || !action || size == null || prependWindowMs == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, side, action, size, prependWindowMs' });
+        }
+        try {
+          const s15config = buildSPrependThenSweepArgs({ ticker, side, action, size, prependWindowMs, confirmedPrepend: true, oneTickIn });
+          const client = new KalshiClient(baseConfig);
+          const result = await new SPrependThenSweepRunner(client, s15config).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
       }
 
       return json(res, 404, { ok: false, error: 'not_found' });

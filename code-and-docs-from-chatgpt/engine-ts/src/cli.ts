@@ -33,6 +33,15 @@ import readline from 'node:readline/promises';
 import type { ExitConfig, Orderbook, RiskReductionRow, TcaEntry, WatcherConfig } from './types.js';
 import { getWatcher, isWatcherInitialized, initWatcher } from './watcherSingleton.js';
 import { runWatcherDaemon } from './watcherDaemon.js';
+import { buildSAggressiveOpts } from './strategies/sAggressive.js';
+import { AggressiveRunner } from './aggressive.js';
+import { buildSStealthArgs } from './strategies/sStealth.js';
+import { StealthRunner } from './strategies/sStealth.js';
+import { buildSLimitLadderArgs } from './strategies/sLimitLadder.js';
+import { LimitLadderRunner } from './limitLadder.js';
+import { SStopAndReverseRunner } from './strategies/sStopAndReverse.js';
+import { SRollRunner } from './strategies/sRoll.js';
+import { buildSPrependThenSweepArgs, SPrependThenSweepRunner } from './strategies/sPrependThenSweep.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
 function parseFlags(argv: string[]): Record<string, string> {
@@ -694,6 +703,144 @@ function makeMinimalConfig(ticker: string): ExitConfig {
   };
 }
 
+// ── strategy commands ────────────────────────────────────────────────────────
+
+async function cmdStrategyAggressive(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy aggressive requires --ticker <T>');
+  if (!flags.side) die('strategy aggressive requires --side yes|no');
+  if (!flags.action) die('strategy aggressive requires --action buy|sell');
+  if (!flags.size) die('strategy aggressive requires --size <N>');
+  const config = buildSAggressiveOpts({
+    ticker: flags.ticker,
+    side: flags.side as 'yes' | 'no',
+    action: flags.action as 'buy' | 'sell',
+    size: Number(flags.size),
+    confirmedAggressive: true,
+    oneTickIn: flags['one-tick-in'] === 'true',
+  });
+  const client = new KalshiClient(makeMinimalConfig(config.ticker));
+  const result = await new AggressiveRunner(client, config).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategyStealth(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy stealth requires --ticker <T>');
+  if (!flags.side) die('strategy stealth requires --side yes|no');
+  if (!flags.action) die('strategy tealth requires --action buy|sell');
+  if (!flags.size) die('strategy stealth requires --size <N>');
+  if (!flags['price-cents']) die('strategy stealth requires --price-cents <N>');
+  const s4config = buildSStealthArgs({
+    ticker: flags.ticker,
+    side: flags.side as 'yes' | 'no',
+    action: flags.action as 'buy' | 'sell',
+    size: Number(flags.size),
+    priceCents: Number(flags['price-cents']),
+    baseChunkSize: flags['base-chunk-size'] !== undefined ? Number(flags['base-chunk-size']) : undefined,
+    baseDelayMs: flags['base-delay-ms'] !== undefined ? Number(flags['base-delay-ms']) : undefined,
+    jitterChunkSizePct: flags['jitter-chunk-size-pct'] !== undefined ? Number(flags['jitter-chunk-size-pct']) : undefined,
+    jitterDelayPct: flags['jitter-delay-pct'] !== undefined ? Number(flags['jitter-delay-pct']) : undefined,
+    safetySubmittedMultiple: flags['safety-submitted-multiple'] !== undefined ? Number(flags['safety-submitted-multiple']) : undefined,
+    jobId: flags['job-id'],
+  });
+  const client = new KalshiClient(makeMinimalConfig(s4config.ticker));
+  const result = await new StealthRunner(client, s4config).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategyLimitLadder(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy limit-ladder requires --ticker <T>');
+  if (!flags.side) die('strategy limit-ladder requires --side yes|no');
+  if (!flags.action) die('strategy limit-ladder requires --action buy|sell');
+  if (!flags['total-size']) die('strategy limit-ladder requires --total-size <N>');
+  if (!flags.rungs) die('strategy limit-ladder requires --rungs <JSON array of {priceCents,sizePct}>');
+  let rungs: Array<{ priceCents: number; sizePct: number }>;
+  try { rungs = JSON.parse(flags.rungs); } catch { die('--rungs must be valid JSON array'); }
+  const s8config = buildSLimitLadderArgs({
+    ticker: flags.ticker,
+    side: flags.side as 'yes' | 'no',
+    action: flags.action as 'buy' | 'sell',
+    totalSize: Number(flags['total-size']),
+    rungs,
+    jobId: flags['job-id'],
+  });
+  const client = new KalshiClient(makeMinimalConfig(s8config.ticker));
+  const result = await new LimitLadderRunner(client, s8config).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategyStopAndReverse(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy stop-and-reverse requires --ticker <T>');
+  if (!flags['close-side']) die('strategy stop-and-reverse requires --close-side yes|no');
+  if (!flags['close-size']) die('strategy stop-and-reverse requires --close-size <N>');
+  if (!flags['open-side']) die('strategy stop-and-reverse requires --open-side yes|no');
+  if (!flags['open-size']) die('strategy stop-and-reverse requires --open-size <N>');
+  const client = new KalshiClient(makeMinimalConfig(flags.ticker));
+  const result = await new SStopAndReverseRunner(client, {
+    ticker: flags.ticker,
+    closeSide: flags['close-side'] as 'yes' | 'no',
+    closeSize: Number(flags['close-size']),
+    openSide: flags['open-side'] as 'yes' | 'no',
+    openSize: Number(flags['open-size']),
+    confirmedReverse: true,
+    oneTickIn: flags['one-tick-in'] === 'true',
+  }).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategyRoll(flags: Record<string, string>): Promise<void> {
+  if (!flags['current-ticker']) die('strategy roll requires --current-ticker <T>');
+  if (!flags['current-side']) die('strategy roll requires --current-side yes|no');
+  if (!flags['current-size']) die('strategy roll requires --current-size <N>');
+  if (!flags['target-ticker']) die('strategy roll requires --target-ticker <T>');
+  if (!flags['target-side']) die('strategy roll requires --target-side yes|no');
+  if (!flags['target-size']) die('strategy roll requires --target-size <N>');
+  const client = new KalshiClient(makeMinimalConfig(flags['current-ticker']));
+  const result = await new SRollRunner(client, {
+    currentTicker: flags['current-ticker'],
+    currentSide: flags['current-side'] as 'yes' | 'no',
+    currentSize: Number(flags['current-size']),
+    targetTicker: flags['target-ticker'],
+    targetSide: flags['target-side'] as 'yes' | 'no',
+    targetSize: Number(flags['target-size']),
+    confirmedRoll: true,
+    oneTickIn: flags['one-tick-in'] === 'true',
+  }).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategyPrependThenSweep(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy prepend-then-sweep requires --ticker <T>');
+  if (!flags.side) die('strategy prepend-then-sweep requires --side yes|no');
+  if (!flags.action) die('strategy prepend-then-sweep requires --action buy|sell');
+  if (!flags.size) die('strategy prepend-then-sweep requires --size <N>');
+  if (!flags['prepend-window-ms']) die('strategy prepend-then-sweep requires --prepend-window-ms <N>');
+  const s15config = buildSPrependThenSweepArgs({
+    ticker: flags.ticker,
+    side: flags.side as 'yes' | 'no',
+    action: flags.action as 'buy' | 'sell',
+    size: Number(flags.size),
+    prependWindowMs: Number(flags['prepend-window-ms']),
+    confirmedPrepend: true,
+    oneTickIn: flags['one-tick-in'] === 'true',
+  });
+  const client = new KalshiClient(makeMinimalConfig(s15config.ticker));
+  const result = await new SPrependThenSweepRunner(client, s15config).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategy(subcommand: string | undefined, rest: string[], flags: Record<string, string>): Promise<void> {
+  switch (subcommand) {
+    case 'aggressive': return cmdStrategyAggressive(flags);
+    case 'stealth': return cmdStrategyStealth(flags);
+    case 'limit-ladder': return cmdStrategyLimitLadder(flags);
+    case 'stop-and-reverse': return cmdStrategyStopAndReverse(flags);
+    case 'roll': return cmdStrategyRoll(flags);
+    case 'prepend-then-sweep': return cmdStrategyPrependThenSweep(flags);
+    default:
+      die(`unknown strategy subcommand: ${subcommand ?? '(none)'}. Valid: aggressive, stealth, limit-ladder, stop-and-reverse, roll, prepend-then-sweep`);
+  }
+}
+
 // ── dispatch ──────────────────────────────────────────────────────────────────
 export async function runCli(argv: string[]): Promise<void> {
   const command = argv[0] ?? 'help';
@@ -733,6 +880,10 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'watch': {
       const sub = rest.find((x) => !x.startsWith('--'));
       return cmdWatch(sub, rest, flags);
+    }
+    case 'strategy': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      return cmdStrategy(sub, rest, flags);
     }
     case 'help':
     case '--help':

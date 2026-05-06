@@ -41,6 +41,15 @@ import type { ExitConfig, Side, TcaEntry, PriceLevel } from './types.js';
 import { getWatcher, isWatcherInitialized } from './watcherSingleton.js';
 import { evaluate } from './synthetics/index.js';
 import type { Synthetic } from './types.js';
+import { KalshiClient } from './kalshiClient.js';
+import { buildSAggressiveOpts } from './strategies/sAggressive.js';
+import { AggressiveRunner } from './aggressive.js';
+import { buildSStealthArgs, StealthRunner } from './strategies/sStealth.js';
+import { buildSLimitLadderArgs } from './strategies/sLimitLadder.js';
+import { LimitLadderRunner } from './limitLadder.js';
+import { SStopAndReverseRunner } from './strategies/sStopAndReverse.js';
+import { SRollRunner } from './strategies/sRoll.js';
+import { buildSPrependThenSweepArgs, SPrependThenSweepRunner } from './strategies/sPrependThenSweep.js';
 
 // ── Synthetic kind validation ─────────────────────────────────────────────────
 const SYNTHETIC_KINDS = ['stop_loss', 'stop_limit', 'trailing_stop', 'take_profit', 'oco', 'bracket', 'time_stop', 'step_trail'] as const;
@@ -639,6 +648,168 @@ export function buildMcpServer(): McpServer {
           totalCount: entries.length,
           filteredCount: filtered.length,
         });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  // ── Strategy execution tools (Phase D) ──────────────────────────────────────
+
+  server.registerTool(
+    'kea_strategy_aggressive',
+    {
+      description:
+        'S2: One-shot IoC sweep. Aggressively buy or sell a full position in a single immediate_or_cancel order. ' +
+        'Use when speed is more important than price. confirmedAggressive is always set to true by this tool.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['yes', 'no']).describe('Side held (yes/no)'),
+        action: z.enum(['buy', 'sell']).describe('Order direction'),
+        size: z.number().int().positive().describe('Number of contracts'),
+        oneTickIn: z.boolean().optional().describe('Cross one tick beyond best price (default false)'),
+      },
+    },
+    async ({ ticker, side, action, size, oneTickIn }) => {
+      try {
+        const config = buildSAggressiveOpts({ ticker, side, action, size, confirmedAggressive: true, oneTickIn });
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const result = await new AggressiveRunner(client, config).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_stealth',
+    {
+      description:
+        'S4: Stealth jittered IoC chunk execution. Splits a large order into randomized small IoC chunks ' +
+        'to reduce market impact and avoid detectable patterns. Loops until filled or safety cap hit.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['yes', 'no']).describe('Side held (yes/no)'),
+        action: z.enum(['buy', 'sell']).describe('Order direction'),
+        size: z.number().int().positive().describe('Total contracts to fill'),
+        priceCents: z.number().int().min(1).max(99).describe('Crossable limit price in integer cents (1–99)'),
+        baseChunkSize: z.number().int().positive().optional().describe('Base chunk size per IoC order (default 10)'),
+        baseDelayMs: z.number().int().min(0).optional().describe('Base inter-chunk delay in ms (default 5000)'),
+        jitterChunkSizePct: z.number().positive().max(1).optional().describe('Jitter fraction for chunk size 0–1 (default 0.3)'),
+        jitterDelayPct: z.number().positive().max(1).optional().describe('Jitter fraction for delay 0–1 (default 0.5)'),
+        safetySubmittedMultiple: z.number().positive().optional().describe('Max submitted / size ratio before halting (default 1.5)'),
+        jobId: z.string().optional().describe('Optional job ID for journaling'),
+      },
+    },
+    async ({ ticker, side, action, size, priceCents, baseChunkSize, baseDelayMs, jitterChunkSizePct, jitterDelayPct, safetySubmittedMultiple, jobId }) => {
+      try {
+        const s4config = buildSStealthArgs({ ticker, side, action, size, priceCents, baseChunkSize, baseDelayMs, jitterChunkSizePct, jitterDelayPct, safetySubmittedMultiple, jobId });
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const result = await new StealthRunner(client, s4config).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_limit_ladder',
+    {
+      description:
+        'S8: Multi-rung limit ladder. Posts GTC limit orders at multiple price levels simultaneously, ' +
+        'distributing totalSize across rungs by percentage. Good for patient large exits.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['yes', 'no']).describe('Side held (yes/no)'),
+        action: z.enum(['buy', 'sell']).describe('Order direction'),
+        totalSize: z.number().int().positive().describe('Total contracts to distribute across rungs'),
+        rungs: z.array(z.object({
+          priceCents: z.number().int().min(1).max(99).describe('Limit price in integer cents'),
+          sizePct: z.number().positive().max(100).describe('Percentage of totalSize at this rung'),
+        })).min(1).describe('Array of {priceCents, sizePct} rung definitions (sum of sizePct must be <= 100)'),
+        jobId: z.string().optional().describe('Optional job ID for journaling'),
+      },
+    },
+    async ({ ticker, side, action, totalSize, rungs, jobId }) => {
+      try {
+        const s8config = buildSLimitLadderArgs({ ticker, side, action, totalSize, rungs, jobId });
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const result = await new LimitLadderRunner(client, s8config).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_stop_and_reverse',
+    {
+      description:
+        'S9: Stop-and-reverse. Phase 1 aggressively closes the existing position; ' +
+        'Phase 2 aggressively opens the opposite position. Skips phase 2 if phase 1 is entirely unfilled.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        closeSide: z.enum(['yes', 'no']).describe('Side currently held (will be closed)'),
+        closeSize: z.number().int().positive().describe('Size of the existing position to close'),
+        openSide: z.enum(['yes', 'no']).describe('Target side to open (typically opposite of closeSide)'),
+        openSize: z.number().int().positive().describe('Size to open on the new side'),
+        oneTickIn: z.boolean().optional().describe('Cross one tick beyond best price for both phases (default false)'),
+      },
+    },
+    async ({ ticker, closeSide, closeSize, openSide, openSize, oneTickIn }) => {
+      try {
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const result = await new SStopAndReverseRunner(client, {
+          ticker, closeSide, closeSize, openSide, openSize, confirmedReverse: true, oneTickIn,
+        }).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_roll',
+    {
+      description:
+        'S11: Roll position. Phase 1 passively closes the current ticker position; ' +
+        'Phase 2 aggressively opens on a new ticker. Useful for expiry rollovers or event switches.',
+      inputSchema: {
+        currentTicker: z.string().min(1).describe('Ticker of the position to close'),
+        currentSide: z.enum(['yes', 'no']).describe('Side held in the current position'),
+        currentSize: z.number().int().positive().describe('Size of the current position to close'),
+        targetTicker: z.string().min(1).describe('Ticker to open a new position on'),
+        targetSide: z.enum(['yes', 'no']).describe('Side to open on the target ticker'),
+        targetSize: z.number().int().positive().describe('Requested size to open (capped by phase 1 actuallyClosed)'),
+        oneTickIn: z.boolean().optional().describe('Cross one tick beyond best for phase 2 aggressive (default false)'),
+      },
+    },
+    async ({ currentTicker, currentSide, currentSize, targetTicker, targetSide, targetSize, oneTickIn }) => {
+      try {
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: currentTicker });
+        const result = await new SRollRunner(client, {
+          currentTicker, currentSide, currentSize, targetTicker, targetSide, targetSize, confirmedRoll: true, oneTickIn,
+        }).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_prepend_then_sweep',
+    {
+      description:
+        'S15: GTC prepend then aggressive sweep. Posts a GTC limit order first; waits prependWindowMs ' +
+        'for passive fills; then cancels and sweeps any remaining size with an IoC aggressive order.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['yes', 'no']).describe('Side held (yes/no)'),
+        action: z.enum(['buy', 'sell']).describe('Order direction'),
+        size: z.number().int().positive().describe('Full position size (GTC and sweep combined)'),
+        prependWindowMs: z.number().int().positive().describe('How long (ms) to let the GTC rest before sweeping'),
+        oneTickIn: z.boolean().optional().describe('Cross one tick beyond best price for sweep (default false)'),
+      },
+    },
+    async ({ ticker, side, action, size, prependWindowMs, oneTickIn }) => {
+      try {
+        const s15config = buildSPrependThenSweepArgs({ ticker, side, action, size, prependWindowMs, confirmedPrepend: true, oneTickIn });
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const result = await new SPrependThenSweepRunner(client, s15config).run();
+        return jsonContent(result);
       } catch (err) { return errorContent(err); }
     },
   );
