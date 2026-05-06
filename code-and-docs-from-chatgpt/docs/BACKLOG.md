@@ -1,17 +1,17 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-06 (S7 shipped)
+Last `/backlog-sync`: 2026-05-06 (strategy cluster shipped — S2/S4/S8/S9/S11/S15 + W3.2/W3.3)
 
 | Status | Count |
 |--------|-------|
 | 🧊 Foundation (W1) | 0 |
-| 🧊 Strategy library (S) | 13 |
-| 🧊 Cross-cutting (W3) | 3 |
+| 🧊 Strategy library (S) | 7 |
+| 🧊 Cross-cutting (W3) | 1 |
 | 🧊 Decision + optimization (W4) | 4 |
 | 🧊 Tooling ecosystem (SH) | 5 |
 | 🧊 Surface parity (SP1–SP4) | 12 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 21 |
+| ✅ Shipped (this log) | 29 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -68,23 +68,7 @@ size, strategyName, ...strategy-specific inputs }`. No mid-flow
 configuration. Where `side` is meaningful, the same engine module handles
 both directions.
 
-### 🧊 S2 — Aggressive (cross-the-spread, max speed)
-**Tags:** engine
-
-**Trigger:** agent must execute *now* — news-driven exit, fresh
-conviction entry, or any case where speed > price. Was W2.2 panic +
-EW2.1 aggressive; same mode either side.
-
-**Proposed:** mode `aggressive`. One IoC order for the entire `size` at
-`bid` (sell) / `ask` (buy), or one tick into the book for slightly
-better fill behavior. No chunking, no adaptive sizing, no inter-iter
-delay. `safetySubmittedMultiple` still applies as runaway guard. CLI
-requires `--confirm aggressive`; TUI requires 2-keystroke confirm;
-extension requires modal. Mirror of how panic confirms today.
-
-**Cost:** ~4 hours after W1.5.
-
-**Dependency:** W1.5 buy primitive (for buy side).
+_S2 aggressive shipped 2026-05-06 — see §7._
 
 ### 🧊 S3 — TWAP (time-sliced, side-parameterized)
 **Tags:** engine
@@ -102,22 +86,7 @@ window). Sets up daemon-mode scaffolding W4.1 trigger layer reuses.
 
 **Dependency:** S1 passive, W1.5 buy primitive.
 
-### 🧊 S4 — Stealth (anti-signaling, side-parameterized)
-**Tags:** engine
-
-**Trigger:** agent suspects informed flow or wants to accumulate /
-liquidate without showing intent. Standard chunking prints a recognizable
-pattern. Was W2.10 + EW2.5.
-
-**Proposed:** mode `stealth`. Small randomized chunks (50–200 shares
-regardless of `chunkSize`), random inter-chunk delay (5–60s), no
-resting orders (would expose remaining). Slower; minimal footprint.
-Composes W3.2 jitter primitive.
-
-**Cost:** ~1 day after W3.2 + W1.5.
-
-**Dependency:** W3.2 jitter primitive (gating per Codex C 2026-05-02).
-W1.5 buy primitive for buy side.
+_S4 stealth shipped 2026-05-06 — see §7._
 
 ### 🧊 S5 — Pair / multi-leg (atomic, side-parameterized)
 **Tags:** engine
@@ -164,39 +133,9 @@ that want it.
 
 _S7 scale-out shipped 2026-05-06 — see §7._
 
-### 🧊 S8 — Limit ladder (passive multi-rung GTC, side-parameterized)
-**Tags:** engine
+_S8 limit ladder shipped 2026-05-06 — see §7._
 
-**Trigger:** agent wants pre-placed orders at multiple price points and
-to walk away. Useful when expecting mean-reversion or willing to average
-in / out. Was EW2.3. Distinct from S7 scale-out: S7 is *active*
-(price-triggered rung firing using passive semantics); S8 is *passive*
-(upfront multi-GTC placement, no iteration). Different state machines —
-keep separate per Sonnet B.
-
-**Proposed:** mode `limit-ladder`. Inputs: list of `{ priceCents,
-sizePct }` rungs + side. Engine posts each as a GTC at start, monitors
-fills, journals each. No iteration loop after placement; relies on
-resume to reconcile fills on next session.
-
-**Cost:** ~1 day after W1.5.
-
-**Dependency:** W1.5 buy primitive (for buy side).
-
-### 🧊 S9 — Stop-and-reverse
-**Tags:** engine
-
-**Trigger:** thesis flipped. Agent wants to exit current position *and*
-open opposite in one atomic sequence. Was W2.7.
-
-**Proposed:** mode `stop-and-reverse`. Inputs: existing position +
-target side + target size. Phase 1: S2 aggressive exit of existing.
-Phase 2: S2 aggressive open of opposite side. Single journal. W1.3
-pre-trade risk applies to the open leg.
-
-**Cost:** ~1 day after S2.
-
-**Dependency:** S2 aggressive, W1.3 pre-trade risk, W1.5 buy primitive.
+_S9 stop-and-reverse shipped 2026-05-06 — see §7._
 
 ### 🧊 S10 — Cash-raise sequencer
 **Tags:** engine
@@ -219,20 +158,7 @@ from the engine.
 
 **Dependency:** at least one of S1 / S2 to run individual positions.
 
-### 🧊 S11 — Roll (exit current + open next cycle)
-**Tags:** engine
-
-**Trigger:** position thesis still holds but contract is expiring. Roll
-into the next cycle's equivalent without going flat. Was W2.9.
-
-**Proposed:** mode `roll`. Inputs: current position + target ticker +
-target size. Phase 1: S1 passive exit of current (preferred — minimize
-self-impact). Phase 2: S2 aggressive open of target. W1.3 concentration
-cap applies to phase 2.
-
-**Cost:** ~1 day after S1 + S2.
-
-**Dependency:** S1, S2, W1.3, W1.5.
+_S11 roll shipped 2026-05-06 — see §7._
 
 ### 🧊 S12 — Liquidity-providing (two-sided market making)
 **Tags:** engine
@@ -299,26 +225,7 @@ arb closes mid-execution.
 
 **Dependency:** W1.5, S5 multi-leg primitive.
 
-### 🧊 S15 — GTC-prepend then sweep (hybrid passive→aggressive)
-**Tags:** engine
-
-**Trigger:** promoted from "Other deferred" per Sonnet B 2026-05-02 —
-this is a distinct hybrid mode (passive window → aggressive sweep for
-remainder), not a configuration variant of S1 or S2. On markets with
-moderate natural flow, the passive window captures top-of-book pricing
-while the sweep guarantees completion.
-
-**Proposed:** mode `prepend-then-sweep`. Inputs: `{ ticker, side, size,
-prependWindowMs }`. Phase 1: post one GTC at `ask − 1¢` (sell) /
-`bid + 1¢` (buy) for full size. Wait `prependWindowMs`. Phase 2: cancel
-unfilled portion; decrement remaining by what filled. Phase 3: run S2
-aggressive on remainder. Race conditions managed: cancel must complete
-before sweep starts (else a resting GTC could fill mid-cancel and
-double-execute).
-
-**Cost:** ~1 day after S1 + S2.
-
-**Dependency:** S1, S2, W1.5.
+_S15 GTC-prepend-then-sweep shipped 2026-05-06 — see §7._
 
 ### 🧊 S16 — Time-to-expiry emergency unwind
 **Tags:** engine
@@ -367,34 +274,9 @@ Active across losing/winning/TWAP/scale-out modes.
 **Cost:** ~1 day. New volume tracker, loop-delay computation, integration
 tests against synthetic flow.
 
-### 🧊 W3.2 — Anti-gaming randomization (chunk + timing jitter)
-**Tags:** engine [shared]
+_W3.2 anti-gaming jitter shipped 2026-05-06 — see §7._
 
-**Trigger:** fixed `chunkSize` and fixed `loopDelayMs` create a predictable
-footprint. Adversarial flow can detect the pattern and front-run.
-
-**Proposed:** new safety field `jitter: { chunkSizePct: 0.15, loopDelayPct: 0.30 }`.
-At each iteration, `effectiveChunk = chunkSize × (1 ± rand×0.15)` and
-`effectiveDelay = loopDelayMs × (1 ± rand×0.30)`. Bounded so we never
-exceed `safetySubmittedMultiple`. Active across every loop-based strategy;
-required by S4 stealth.
-
-**Cost:** ~3 hours. Bounded-clamp helper + 2 tests.
-
-### 🧊 W3.3 — Pegged orders (peg-to-mid)
-**Tags:** engine [shared]
-
-**Trigger:** winning-exit / scale-out / roll all post static "ask − 1¢"
-quotes that go stale as the book moves. Pegged-to-mid tracks market motion
-without per-iteration cancel-replace overhead.
-
-**Proposed:** new order helper that recomputes limit each loop as
-`floor(midpointCents) ± offset` and re-posts only when the desired price
-*changes*. Reduces API churn vs naive cancel-replace.
-
-**Cost:** ~1 day on top of S1 passive.
-
-**Dependency:** S1 passive (primary consumer).
+_W3.3 peg-to-mid shipped 2026-05-06 — see §7._
 
 ---
 
@@ -1150,6 +1032,45 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-06 — Strategy cluster surface wiring (CLI + MCP + HTTP).** PR #50.
+  Wired all 6 new strategies (S2/S4/S8/S9/S11/S15) into `kea strategy <name>`
+  CLI subcommands, `kea_strategy_*` MCP tools, and `POST /strategies/<name>`
+  HTTP routes. Plan: `engine-ts/docs/superpowers/plans/2026-05-06-strategy-cluster.md`.
+
+- **2026-05-06 — S15 GTC-prepend-then-sweep runner.** PR #49.
+  `src/strategies/sPrependThenSweep.ts` — three-phase: post single GTC at
+  `ask−1¢` (sell) / `bid+1¢` (buy) for full size, wait `prependWindowMs`,
+  cancel + confirm + sweep remainder via S2 aggressive. Injectable callbacks
+  for `postGtcInvoke`/`cancelGtcInvoke`/`fetchFilledQty`/`sleepMs`. 28 tests.
+
+- **2026-05-06 — S11 roll runner.** PR #48. `src/strategies/sRoll.ts` —
+  two-phase: S1 passive close current → S2 aggressive open target.
+  Cash-neutral phase-2 sizing capped to actually-closed amount;
+  phase-1 unfilled halt; injectable `passiveInvoke`/`aggressiveInvoke`.
+
+- **2026-05-06 — S9 stop-and-reverse runner.** PR #47.
+  `src/strategies/sStopAndReverse.ts` — two-phase: S2 aggressive close →
+  S2 aggressive open opposite side. Confirm gate; phase-1 fail halt.
+
+- **2026-05-06 — S4 stealth strategy.** PR #46. `src/stealth.ts` +
+  `src/strategies/sStealth.ts` — jittered IoC chunks (50–200 shares),
+  randomized 5–60s delays, no resting orders. Composes W3.2 jitter.
+
+- **2026-05-06 — S8 limit ladder strategy.** PR #45.
+  `src/limitLadder.ts` + `src/strategies/sLimitLadder.ts` — passive
+  multi-rung GTC placement; rungs validated (>0, sum sizePct ≤ 100);
+  no iteration loop after placement.
+
+- **2026-05-06 — S2 aggressive strategy.** PR #44. `src/aggressive.ts` +
+  `src/strategies/sAggressive.ts` — one-shot IoC sweep across the spread
+  for full size; `confirmedAggressive` gate; empty-book descriptive throw.
+
+- **2026-05-06 — Phase A helpers: jitter + peg-to-mid + S1 peg integration.** PR #43.
+  `src/jitter.ts` (chunk-size + loop-delay jitter, bounded ±pct) for W3.2;
+  `src/pegToMid.ts` (sell: `floor(mid − offset)` clamped to floor; buy:
+  `ceil(mid + offset)`; one-sided book → null) for W3.3; opt-in `useMidpointPeg`
+  on S1 passive.
 
 - **2026-05-06 — S7 scale-out ladder (rung-driven partial exits).** PR #41.
   `src/strategies/s7ScaleOut.ts` — `S7ScaleOutRunner` polls the orderbook
