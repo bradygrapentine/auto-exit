@@ -77,11 +77,14 @@ describe('MCP server — tool registration', () => {
       'kea_orderbook', 'kea_positions', 'kea_preview',
       'kea_replay', 'kea_resting_orders',
       'kea_safety_get', 'kea_safety_set',
+      'kea_synthetic_cancel', 'kea_synthetic_get', 'kea_synthetic_list',
+      'kea_synthetic_preview', 'kea_synthetic_register',
       'kea_tca_summary',
       'kea_whoami',
     ]);
-    // No order-mutating tool is exposed in this slice.
-    expect(names.find((n) => /create|cancel|exit|sell|buy/.test(n))).toBeUndefined();
+    // No raw order-mutating tool (create/exit/sell/buy) is exposed.
+    // kea_synthetic_cancel is intentionally present — it cancels a synthetic, not a market order.
+    expect(names.find((n) => /create|exit|sell|buy/.test(n))).toBeUndefined();
   });
 });
 
