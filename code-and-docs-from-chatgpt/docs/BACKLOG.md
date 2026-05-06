@@ -1,21 +1,26 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-06
+Last `/backlog-sync`: 2026-05-06 (afternoon)
 
 | Status | Count |
 |--------|-------|
-| 🔎 In review | 1 |
+| ⚡ In progress | 1 (S7 scale-out) |
 | 🧊 Foundation (W1) | 0 |
-| 🧊 Strategy library (S) | 15 |
+| 🧊 Strategy library (S) | 14 |
 | 🧊 Cross-cutting (W3) | 3 |
 | 🧊 Decision + optimization (W4) | 4 |
 | 🧊 Tooling ecosystem (SH) | 5 |
 | 🧊 Surface parity (SP1–SP4) | 12 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 19 |
+| ✅ Shipped (this log) | 20 |
 
-**In review:** PR #18 — deci-cent walks + safety cap + one-sided-book guard
-(extension to shipped S1; not a backlog story).
+**SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
+stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
+step_trail) + watcher daemon + crash-safe journal + CLI/MCP/HTTP/TUI/
+extension surfaces + 4 strategy presets (S-trail, S-step-trail,
+S-bracketed-exit, S-conditional-roll). Effectively delivers the W4.1
+trigger-layer functionality. Plan: `engine-ts/docs/superpowers/plans/
+2026-05-05-synthetic-order-types.md`. PRs #19–#39.
 
 This file is split into three sequences plus two ledgers. The
 **Algorithmic enhancement sequence** runs W1 (foundation) → S (unified
@@ -1170,6 +1175,21 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-06 — SH-WATCH synthetic order types (MVP).** PRs #19–#39.
+  Six engine-side synthetic kinds (stop_loss, stop_limit, trailing_stop,
+  take_profit, oco, bracket) + two added in Phase 5 (time_stop,
+  step_trail). Watcher daemon with adaptive cadence + idle-when-empty +
+  per-ticker book/position-fetch coalescing + crash-safe NDJSON journal
+  with three-phase fire (pending → fired/fire_failed). Surfaces:
+  `kea watch` CLI (start/register/list/get/cancel/status), 8 MCP tools
+  (`kea_synthetic_*`, `kea_bracket_arm`, `kea_trailing_status`,
+  `kea_synthetic_history`), 5 HTTP routes, TUI synthetics tab,
+  Chrome-extension menu/popup/toast. Four strategy presets in
+  `src/strategies/` (S-trail, S-step-trail, S-bracketed-exit,
+  S-conditional-roll). 740+ tests, full suite green. Effectively
+  delivers W4.1 trigger-layer intent. See plan
+  `engine-ts/docs/superpowers/plans/2026-05-05-synthetic-order-types.md`.
 
 - **2026-05-06 — S1 passive (post-and-walk, side-parameterized).** PR #15.
   `src/passive.ts` — chunked GTC posting at `ask−1¢`/`bid+1¢`, walk-toward-
