@@ -14,6 +14,8 @@ export const evaluators: EvaluatorMap = {
   take_profit: evalTakeProfit,
   oco: noop,    // composite — fires by child propagation in Watcher
   bracket: noop,
+  time_stop: noop,    // wired by Phase 5 batch 5a
+  step_trail: noop,   // wired by Phase 5 batch 5b track G
 };
 
 export function evaluate(s: Synthetic, book: Orderbook, now: Date = new Date()): SyntheticEvalResult {
