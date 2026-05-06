@@ -241,7 +241,13 @@ export type JournalKind =
   | 'passive_ceiling_hit'
   | 'passive_walk_tick'
   | 'passive_no_opposite_liquidity'
-  | 'passive_safety_cap_breached';
+  | 'passive_safety_cap_breached'
+  | 'synthetic_registered'
+  | 'synthetic_fire_pending'
+  | 'synthetic_fired'
+  | 'synthetic_fire_failed'
+  | 'synthetic_canceled'
+  | 'synthetic_state_update';
 
 export interface TcaEntry {
   kind: 'tca';
@@ -358,4 +364,119 @@ export interface HarvestPlannerOutput {
     gammaProxy: number;       // bid-ask spread × visible book depth (proxy for convexity)
   };
   suggestedStrategies: string[];  // e.g. ["S1 passive", "S7 scale-out"]
+}
+
+// ============================================================
+// Synthetic order types — see docs/superpowers/specs/2026-05-05-synthetic-order-types-watcher.md
+// ============================================================
+
+export type SyntheticKind =
+  | 'stop_loss' | 'stop_limit' | 'trailing_stop'
+  | 'take_profit' | 'oco' | 'bracket';
+
+export type SyntheticStatus = 'armed' | 'fired' | 'canceled' | 'fire_failed';
+
+export type SelfTradePrevention = 'taker_at_cross' | 'maker';
+
+/**
+ * Trigger price expressed as cents — `number` (float) so deci-cent ticks below 10¢ work correctly.
+ * UI may collect integer cents; internally always normalized to float.
+ */
+export interface StopLossParams {
+  triggerPriceCents: number;
+  executionStrategy?: 'losing_exit' | 'aggressive' | 'limit_at_floor';
+  executionParams?: Record<string, unknown>;
+}
+
+export interface StopLimitParams {
+  triggerPriceCents: number;
+  limitPriceCents: number;
+  size: number;
+}
+
+export interface TrailingStopParams {
+  trailCents: number;                 // float OK (e.g. 0.5 for 0.5¢ trail on cheap markets)
+  executionStrategy?: 'losing_exit' | 'aggressive';
+  floorPriceCents?: number;           // default 1
+}
+
+export interface TakeProfitRung { priceCents: number; sizePct: number; }
+
+export interface TakeProfitParams {
+  /** Single-trigger mode: just triggerPriceCents. Multi-rung mode: rungs[]. Use one. */
+  triggerPriceCents?: number;
+  rungs?: TakeProfitRung[];
+  executionStrategy?: 'scale_out' | 'passive' | 'aggressive';
+}
+
+export interface SyntheticDescriptor {
+  kind: SyntheticKind;
+  params: SyntheticParams;
+}
+
+export interface OcoParams {
+  legs: [SyntheticDescriptor, SyntheticDescriptor];
+}
+
+export interface BracketParams {
+  takeProfitCents: number;
+  stopLossCents: number;
+}
+
+export type SyntheticParams =
+  | StopLossParams | StopLimitParams | TrailingStopParams
+  | TakeProfitParams | OcoParams | BracketParams;
+
+// State shapes — empty {} for stateless evaluators.
+export interface TrailingStopState { peakBidCentsExact: number; }
+export interface TakeProfitState { firedRungIndices: number[]; }
+export interface OcoState { childIds: [string, string] | string[]; firedChildId?: string; }
+export interface BracketState { childIds: [string, string]; firedChildId?: string; }
+
+export type SyntheticState =
+  | Record<string, never>
+  | TrailingStopState | TakeProfitState | OcoState | BracketState;
+
+export interface Synthetic {
+  id: string;                          // 'syn-<uuid>'
+  kind: SyntheticKind;
+  ticker: string;
+  side: Side;
+  positionSize: number;
+  params: SyntheticParams;
+  state: SyntheticState;
+  status: SyntheticStatus;
+  createdAt: string;
+  firedAt?: string;
+  canceledAt?: string;
+  fireFailedAt?: string;
+  fireFailedReason?: string;
+  selfTradePrevention: SelfTradePrevention;
+  autoCancelOnZeroPosition: boolean;
+  parentId?: string;                   // set on OCO/bracket children
+}
+
+export interface WatcherConfig {
+  baseUrl: string;
+  apiKeyEnv: string;
+  privateKeyPathEnv: string;
+  pollIntervalMs?: number;             // default 2000
+  nearTriggerCadenceMs?: number;       // default 250
+  nearTriggerThresholdCents?: number;  // default 3
+  idleIntervalMs?: number;             // default 10000 (when zero registered)
+  orderbookDepth?: number;             // default 20
+  killSwitchPath?: string;
+  watcherJournalPath?: string;         // default ~/.kalshi-exit-assistant/watchers.ndjson
+  /** Base ExitConfig to merge per-fire (provides ports, env vars, fees, etc.). */
+  exitConfigTemplate?: Partial<ExitConfig>;
+}
+
+export interface SyntheticEvalResult {
+  fire: boolean;
+  reason?: string;
+  newState?: SyntheticState;
+  unregister?: boolean;
+  cancelSiblings?: string[];           // for child fires that should cancel parent siblings
+  /** Float distance from current top-of-side price to trigger; used for adaptive cadence. */
+  distanceCentsToTrigger?: number;
 }
