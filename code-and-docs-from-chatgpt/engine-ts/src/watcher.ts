@@ -7,6 +7,7 @@ import type {
 } from './types.js';
 import { evaluate, isComposite } from './synthetics/index.js';
 import type { RegisterArgs } from './synthetics/types.js';
+import type { WatcherJournal } from './watcherJournal.js';
 
 export interface FireDeps {
   runExit: (cfg: ExitConfig) => Promise<unknown>;
@@ -37,10 +38,20 @@ export class Watcher {
   constructor(
     private readonly client: KalshiClientLike,
     private readonly config: WatcherConfig,
+    private readonly journal?: WatcherJournal,
   ) {}
 
   setFireHook(hook: FireHook): void {
     this.fireHook = hook;
+  }
+
+  /** Resurrect the in-memory map from the journal. Call once at startup. */
+  replayFromJournal(): void {
+    if (!this.journal) return;
+    this.synthetics.clear();
+    for (const s of this.journal.replay()) {
+      this.synthetics.set(s.id, s);
+    }
   }
 
   register(args: RegisterArgs): string {
@@ -72,6 +83,7 @@ export class Watcher {
         ? ({ childIds: [childIds[0], childIds[1]] } as OcoState)
         : ({ childIds: [childIds[0], childIds[1]] } as BracketState);
     }
+    this.journal?.appendRegistered(s);
     return id;
   }
 
@@ -115,6 +127,7 @@ export class Watcher {
     if (!s || s.status !== 'armed') return false;
     s.status = 'canceled';
     s.canceledAt = new Date().toISOString();
+    this.journal?.appendCanceled(id);
     if (isComposite(s.kind)) {
       const cids = (s.state as OcoState | BracketState).childIds ?? [];
       for (const cid of cids) this.cancel(cid);
@@ -168,29 +181,45 @@ export class Watcher {
 
       const book = books.get(s.ticker)!;
       const result = evaluate(s, book);
-      if (result.newState) s.state = result.newState;
+      if (result.newState) {
+        s.state = result.newState;
+        this.journal?.appendStateUpdate(s.id, result.newState);
+      }
       if (typeof result.distanceCentsToTrigger === 'number') {
         minDistance = Math.min(minDistance, Math.abs(result.distanceCentsToTrigger));
       }
 
       if (result.fire) {
-        s.status = 'fired';
-        s.firedAt = new Date().toISOString();
-        firedThisTick.add(s.id);
+        const reason = result.reason ?? 'evaluator_fired';
+        this.journal?.appendFirePending(s.id, reason);
+        try {
+          if (this.fireHook) await this.fireHook(s, reason);
+          s.status = 'fired';
+          s.firedAt = new Date().toISOString();
+          this.journal?.appendFired(s.id, reason);
+          firedThisTick.add(s.id);
 
-        if (s.parentId) {
-          const parent = this.synthetics.get(s.parentId);
-          if (parent && parent.status === 'armed') {
-            parent.status = 'fired';
-            parent.firedAt = s.firedAt;
-            parentFiredThisTick.add(parent.id);
-            const cids = (parent.state as OcoState | BracketState).childIds ?? [];
-            for (const cid of cids) {
-              if (cid !== s.id) this.cancel(cid);
+          // Successful fire: cascade parent + cancel siblings.
+          if (s.parentId) {
+            const parent = this.synthetics.get(s.parentId);
+            if (parent && parent.status === 'armed') {
+              parent.status = 'fired';
+              parent.firedAt = s.firedAt;
+              parentFiredThisTick.add(parent.id);
+              this.journal?.appendFired(parent.id, `child_${s.id}_fired`);
+              const cids = (parent.state as OcoState | BracketState).childIds ?? [];
+              for (const cid of cids) {
+                if (cid !== s.id) this.cancel(cid);
+              }
             }
           }
+        } catch (e) {
+          s.status = 'fire_failed';
+          s.fireFailedAt = new Date().toISOString();
+          s.fireFailedReason = e instanceof Error ? e.message : String(e);
+          this.journal?.appendFireFailed(s.id, s.fireFailedReason);
+          // Do NOT cascade sibling cancel on failure — operator decides.
         }
-        if (this.fireHook) await this.fireHook(s, result.reason ?? 'evaluator_fired');
       } else if (result.unregister) {
         this.cancel(s.id);
       }
