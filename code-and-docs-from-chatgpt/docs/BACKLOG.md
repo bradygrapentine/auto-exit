@@ -1,18 +1,17 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-06 (afternoon)
+Last `/backlog-sync`: 2026-05-06 (S7 shipped)
 
 | Status | Count |
 |--------|-------|
-| ⚡ In progress | 1 (S7 scale-out) |
 | 🧊 Foundation (W1) | 0 |
-| 🧊 Strategy library (S) | 14 |
+| 🧊 Strategy library (S) | 13 |
 | 🧊 Cross-cutting (W3) | 3 |
 | 🧊 Decision + optimization (W4) | 4 |
 | 🧊 Tooling ecosystem (SH) | 5 |
 | 🧊 Surface parity (SP1–SP4) | 12 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 20 |
+| ✅ Shipped (this log) | 21 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -163,31 +162,7 @@ that want it.
 
 **Cost:** ~1 day.
 
-### 🧊 S7 — Scale-out ladder (rung-driven partial exits)
-**Tags:** engine
-
-**Trigger:** agent wants to take partial size off at multiple price
-levels rather than all-or-nothing. Cleaned of embedded defaults that
-previously lived here (was W2.4) — `25% at entry × 1.5` etc. encoded a
-return-multiple opinion that's an agent judgment, not an execution
-pattern.
-
-**Proposed:** mode `scale-out`. Inputs: `{ ticker, side: 'sell', size,
-rungs: [{ priceCents, sizePct }] }`. Engine receives the rung table from
-the agent — no defaults baked in. Each rung uses S1 (passive) semantics
-when the price is reached. Active polling loop checks price every N
-seconds against rung thresholds.
-
-**Interim implementation (no W4.1):** in-process polling loop. Ships
-standalone.
-
-**Post-W4.1 migration:** replace polling loop with `profit-target`
-triggers that auto-arm each rung's S1 run. Same rung config; cleaner
-runtime semantics.
-
-**Cost:** ~1.5 days after S1.
-
-**Dependency:** S1 passive. W4.1 is upgrade path, not blocker.
+_S7 scale-out shipped 2026-05-06 — see §7._
 
 ### 🧊 S8 — Limit ladder (passive multi-rung GTC, side-parameterized)
 **Tags:** engine
@@ -1175,6 +1150,17 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-06 — S7 scale-out ladder (rung-driven partial exits).** PR #41.
+  `src/strategies/s7ScaleOut.ts` — `S7ScaleOutRunner` polls the orderbook
+  every `pollIntervalMs`; for each rung whose `priceCents` is reached by
+  `topBid`, dispatches one S1 (passive) sell sized at
+  `floor(totalSize × sizePct / 100)`. State per-rung in `firedRungs[]`.
+  Journal entries `s7_rung_fired` per rung + `s7_run_complete`.
+  `s1Invoke` callback is injectable for testing. Validates rungs (>0,
+  sum sizePct ≤ 100), totalSize > 0, side='sell'. 21 tests covering
+  validation, walk-up rung firing, max-iterations safety, graceful stop,
+  journal entries, and per-rung sizing.
 
 - **2026-05-06 — SH-WATCH synthetic order types (MVP).** PRs #19–#39.
   Six engine-side synthetic kinds (stop_loss, stop_limit, trailing_stop,
