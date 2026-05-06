@@ -4,6 +4,8 @@ import { evalStopLoss } from './stopLoss.js';
 import { evalStopLimit } from './stopLimit.js';
 import { evalTrailingStop } from './trailingStop.js';
 import { evalTakeProfit } from './takeProfit.js';
+import { evalTimeStop } from './timeStop.js';
+import { evalStepTrail } from './stepTrail.js';
 
 const noop: Evaluator = () => ({ fire: false });
 
@@ -14,8 +16,8 @@ export const evaluators: EvaluatorMap = {
   take_profit: evalTakeProfit,
   oco: noop,    // composite — fires by child propagation in Watcher
   bracket: noop,
-  time_stop: noop,    // wired by Phase 5 batch 5a
-  step_trail: noop,   // wired by Phase 5 batch 5b track G
+  time_stop: evalTimeStop,
+  step_trail: evalStepTrail,
 };
 
 export function evaluate(s: Synthetic, book: Orderbook, now: Date = new Date()): SyntheticEvalResult {
