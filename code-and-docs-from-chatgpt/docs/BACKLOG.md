@@ -1,17 +1,17 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-06 (strategy cluster shipped — S2/S4/S8/S9/S11/S15 + W3.2/W3.3)
+Last `/backlog-sync`: 2026-05-06 (strategy cluster 2 shipped — S3/S6/S10/S13/S16 + W3.1)
 
 | Status | Count |
 |--------|-------|
 | 🧊 Foundation (W1) | 0 |
-| 🧊 Strategy library (S) | 8 |
-| 🧊 Cross-cutting (W3) | 1 |
+| 🧊 Strategy library (S) | 3 |
+| 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 4 |
 | 🧊 Tooling ecosystem (SH) | 5 |
 | 🧊 Surface parity (SP1–SP4) | 12 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 29 |
+| ✅ Shipped (this log) | 36 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -70,21 +70,7 @@ both directions.
 
 _S2 aggressive shipped 2026-05-06 — see §7._
 
-### 🧊 S3 — TWAP (time-sliced, side-parameterized)
-**Tags:** engine
-
-**Trigger:** large position, no urgency, want predictable execution over
-hours/days regardless of price. Was W2.5 + EW2.4.
-
-**Proposed:** mode `twap`. Inputs: `{ ticker, side, size,
-intervalMinutes, numIntervals }`. Engine computes per-interval target =
-size / numIntervals, runs one S1 (passive) chunk per interval, uses
-`safety.json` floor / ceiling. Pauses overnight (configurable session
-window). Sets up daemon-mode scaffolding W4.1 trigger layer reuses.
-
-**Cost:** ~1 day after S1.
-
-**Dependency:** S1 passive, W1.5 buy primitive.
+_S3 TWAP shipped 2026-05-06 — see §7._
 
 _S4 stealth shipped 2026-05-06 — see §7._
 
@@ -107,29 +93,7 @@ skew-throttle logic, replay covering partial-leg-failure cases.
 
 **Dependency:** W1.5 buy primitive, W1.2 TCA for skew impact.
 
-### 🧊 S6 — Pre-resolution arbitrage exit
-**Tags:** engine
-
-**Trigger:** market is hours from resolution; mid has converged near $1
-or $0; a few cents of spread remain in a thin book. Patient passive
-gets nothing (no buyers crossing); standard losing exit overpays
-slippage. Cleaned of the entry-condition logic that previously lived
-here (was W2.3) — that's now a W4.1 trigger.
-
-**Proposed:** mode `pre-resolution-arb`. Aggressive IoC at `bid + 1¢`
-(giving up one tick of slippage to fill); if no fill within
-`arbTimeboxMs`, escalate to `bid` and sweep. Small chunks (preserve
-price discovery), high floor (won't sweep into deep tail).
-
-**Engine-vs-agent line note (Sonnet B 2026-05-02):** the *condition*
-that this strategy is the right move (`timeToCloseHours < 24`,
-`midToTerminal < 5¢`) is an agent decision, not an engine guard. The
-engine receives a request to run S6 and executes; if the agent's
-condition is wrong, that's an agent-side bug. A W4.1 trigger named
-`pre-resolution-window` can encode the standard condition for agents
-that want it.
-
-**Cost:** ~1 day.
+_S6 pre-resolution arbitrage shipped 2026-05-06 — see §7._
 
 _S7 scale-out shipped 2026-05-06 — see §7._
 
@@ -137,26 +101,7 @@ _S8 limit ladder shipped 2026-05-06 — see §7._
 
 _S9 stop-and-reverse shipped 2026-05-06 — see §7._
 
-### 🧊 S10 — Cash-raise sequencer
-**Tags:** engine
-
-**Trigger:** agent needs $X in cash by deadline. Cleaned of portfolio-
-ranking logic that previously lived here (was W2.8) — `costToFreeOneDollar`
-sorting is portfolio optimization, an agent decision (or W4.3 territory).
-
-**Proposed:** mode `cash-raise`. Inputs: ordered list of `{ ticker,
-size, strategyName }` from agent + `targetCashDollars` + `deadline`.
-Engine executes them sequentially, halting when target is met or
-deadline hits. The *ordering* arrives pre-computed; engine only
-sequences and respects the target.
-
-**Engine-vs-agent line note (Sonnet B 2026-05-02):** the agent (or W4.3)
-ranks positions; engine executes the sequence. Removes ranking math
-from the engine.
-
-**Cost:** ~1 day.
-
-**Dependency:** at least one of S1 / S2 to run individual positions.
+_S10 cash-raise sequencer shipped 2026-05-06 — see §7._
 
 _S11 roll shipped 2026-05-06 — see §7._
 
@@ -183,23 +128,7 @@ inventory accounting and fill-reconciliation.
 machine that may grow if real users want richer inventory rules. Watch
 for scope creep during implementation.
 
-### 🧊 S13 — Iceberg (single visible quote)
-**Tags:** engine
-
-**Trigger (NEW per Sonnet B 2026-05-02):** agent wants to accumulate or
-liquidate a large position without revealing total size. Distinct from
-S4 stealth — stealth varies chunk size and timing; iceberg hides total
-remaining behind a single visible quote.
-
-**Proposed:** mode `iceberg`. Inputs: `{ ticker, side, size, visibleSize,
-priceCents }`. Engine posts a `visibleSize` GTC at `priceCents`. On
-fill, immediately reposts another `visibleSize` at the same price.
-Continues until full `size` is filled or agent cancels. Total remaining
-is never visible to the book.
-
-**Cost:** ~1 day after W1.5.
-
-**Dependency:** W1.5 buy primitive.
+_S13 iceberg shipped 2026-05-06 — see §7._
 
 ### 🧊 S14 — Cross-resolution basis arbitrage
 **Tags:** engine
@@ -227,29 +156,7 @@ arb closes mid-execution.
 
 _S15 GTC-prepend-then-sweep shipped 2026-05-06 — see §7._
 
-### 🧊 S16 — Time-to-expiry emergency unwind
-**Tags:** engine
-
-**Trigger (NEW per Sonnet B 2026-05-02):** position approaches contract
-close where the book may freeze. Distinct from S2 aggressive — S2
-ignores price; S16 tracks remaining time and *escalates urgency as time
-compresses*, eventually crossing any available bid regardless of floor.
-Clock-driven rather than operator-triggered.
-
-**Proposed:** mode `time-emergency`. Inputs: `{ ticker, side: 'sell',
-size, contractCloseTimestamp }`. Engine schedules increasing-urgency
-chunks: T-60min uses S1, T-30min uses S7-style ladder, T-10min uses S2,
-T-2min crosses any bid regardless of floor. `safetySubmittedMultiple`
-still binds.
-
-**Engine-vs-agent line note:** clock-driven escalation is an execution
-pattern, not a decision — once the agent says "use S16 by T", the
-escalation schedule is mechanical. Distinct from W4.1 stop-loss
-triggers which are price-driven.
-
-**Cost:** ~1.5 days after S1 + S2 + S7.
-
-**Dependency:** S1, S2, S7.
+_S16 time-to-expiry emergency unwind shipped 2026-05-06 — see §7._
 
 ---
 
@@ -258,21 +165,10 @@ triggers which are price-driven.
 Apply across multiple S strategies. Worth building after the strategy
 library so each refinement has multiple consumers from day one.
 
-### 🧊 W3.1 — Participation-rate / POV pacing
-**Tags:** engine [shared]
+_W3.1 POV pacing helper shipped 2026-05-06 — see §7._
 
-**Trigger:** chunks fire as fast as the loop runs. On thin/quiet markets the
-engine can become a meaningful fraction of recent volume and signal its own
-exit. Self-impact > book-impact in low-flow regimes.
-
-**Proposed:** new safety field `maxParticipationRate: number` (e.g. 0.25).
-Engine tracks rolling N-minute volume per ticker (Kalshi `getMarket().volume_24h`
-plus a finer-grained polling option). Throttles `loopDelayMs` so cumulative
-submitted shares per minute ≤ `maxParticipationRate × recent-minute-volume`.
-Active across losing/winning/TWAP/scale-out modes.
-
-**Cost:** ~1 day. New volume tracker, loop-delay computation, integration
-tests against synthetic flow.
+_Per-strategy adoption (threading recent-minute-volume through each loop
+strategy) is follow-up work — helper landed; consumers TBD._
 
 _W3.2 anti-gaming jitter shipped 2026-05-06 — see §7._
 
@@ -1032,6 +928,44 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-06 — Strategy cluster 2 surface wiring (CLI + MCP + HTTP) + W3.1 safety field.** PR #59.
+  Wired all 5 cluster-2 strategies (S3/S6/S10/S13/S16) into `kea strategy <name>`
+  CLI subcommands, `kea_strategy_*` MCP tools, and `POST /strategies/<name>`
+  HTTP routes. Added optional `maxParticipationRate` (0..1 validated) field to
+  `safety.json` + `kea_safety_set` MCP. Plan: `engine-ts/docs/superpowers/plans/
+  2026-05-06-strategy-cluster-2.md`.
+
+- **2026-05-06 — S16 time-to-expiry emergency unwind.** PR #58.
+  `src/strategies/sTimeEmergency.ts` — clock-driven escalation across 4 phases
+  keyed off `now()` vs `contractCloseEpochMs`: T-60..T-30 → S1 passive, T-30..T-10 →
+  S7 scale-out, T-10..T-2 → S2 aggressive, T-2..T-0 → cross any bid regardless of
+  floor. Late-start skips elapsed phases; sell-only by spec. 23 tests.
+
+- **2026-05-06 — S3 TWAP (time-sliced passive).** PR #57. `src/strategies/sTwap.ts` —
+  per-interval target = `floor(size/numIntervals)` with remainder rolled into
+  last interval; drift-free scheduling against absolute boundaries; optional
+  UTC session-window pause/resume; injectable passiveInvoke. 27 tests.
+
+- **2026-05-06 — S10 cash-raise sequencer.** PR #56. `src/strategies/sCashRaise.ts` —
+  sequential execution of pre-ranked sell positions; halts on target met or
+  deadline; per-position failure continues to next; cash math = `filled × bidCents/100`.
+  Strategy dispatch ('aggressive' | 'passive') via small switch. 18 tests.
+
+- **2026-05-06 — S13 iceberg.** PR #55. `src/strategies/sIceberg.ts` — single
+  visible quote at `priceCents`; on each fill, reposts `min(visibleSize, remaining)`;
+  loops until full size or `stop()`. Stop cancels any pending slice. 19 tests.
+
+- **2026-05-06 — S6 pre-resolution arbitrage exit.** PR #54.
+  `src/strategies/sPreResolutionArb.ts` — two-phase: phase 1 IoC at `bid+1¢`/`ask−1¢`
+  (one-tick concession), phase 2 S2 sweep on remainder respecting `floorPriceCents`
+  if phase 1 unfilled within `arbTimeboxMs`. 20 tests.
+
+- **2026-05-06 — W3.1 POV pacing helper.** PR #53. `src/participationRate.ts` —
+  `computeAllowedSharesPerMinute` + `computePaceDelayMs`. Loop strategies opt
+  in by passing submitted-share count + recent volume; helper inflates
+  `loopDelayMs` proportionally when overshooting `maxParticipationRate`.
+  Disabled at rate=0; capped at 10× base. Per-strategy adoption is follow-up.
 
 - **2026-05-06 — Strategy cluster surface wiring (CLI + MCP + HTTP).** PR #50.
   Wired all 6 new strategies (S2/S4/S8/S9/S11/S15) into `kea strategy <name>`
