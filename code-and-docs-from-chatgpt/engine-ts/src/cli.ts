@@ -30,7 +30,9 @@ import { getSafety, setSafety, listForbidden, addForbiddenTicker, removeForbidde
 import { computeHarvestPlan } from './harvestPlanner.js';
 import { Journal } from './journal.js';
 import readline from 'node:readline/promises';
-import type { ExitConfig, Orderbook, RiskReductionRow, TcaEntry } from './types.js';
+import type { ExitConfig, Orderbook, RiskReductionRow, TcaEntry, WatcherConfig } from './types.js';
+import { getWatcher, isWatcherInitialized, initWatcher } from './watcherSingleton.js';
+import { runWatcherDaemon } from './watcherDaemon.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
 function parseFlags(argv: string[]): Record<string, string> {
@@ -415,6 +417,149 @@ function cmdReport(positional: string[]): void {
   process.stdout.write('\n');
 }
 
+// ── watch commands ────────────────────────────────────────────────────────────
+
+async function cmdWatch(subcommand: string | undefined, rest: string[], flags: Record<string, string>): Promise<void> {
+  if (!subcommand || subcommand === 'start') {
+    // kea watch start [--config <path>]
+    if (!flags.config) die('watch start requires --config <path>');
+    const raw = JSON.parse(fs.readFileSync(flags.config, 'utf8')) as WatcherConfig;
+    const daemon = runWatcherDaemon(raw);
+    initWatcher(daemon.watcher);
+    process.stdout.write('started kea-watch daemon\n');
+    await daemon.start();
+    return;
+  }
+
+  if (subcommand === 'register') {
+    const kind = flags.kind;
+    if (!kind) die('watch register requires --kind <stop_loss|stop_limit|trailing_stop|take_profit|oco|bracket>');
+    const ticker = flags.ticker;
+    if (!ticker) die('watch register requires --ticker <T>');
+    const side = flags.side as 'yes' | 'no';
+    if (side !== 'yes' && side !== 'no') die('watch register requires --side yes|no');
+    const size = Number(flags.size);
+    if (!flags.size || isNaN(size) || size <= 0) die('watch register requires --size <N>');
+    const autoCancelOnZeroPosition = flags['no-auto-cancel'] !== 'true';
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let params: any;
+    switch (kind) {
+      case 'stop_loss':
+      case 'take_profit': {
+        if (flags.rungs) {
+          params = { rungs: JSON.parse(flags.rungs) };
+        } else {
+          if (!flags.trigger) die(`watch register --kind ${kind} requires --trigger <cents>`);
+          params = { triggerPriceCents: Number(flags.trigger) };
+        }
+        break;
+      }
+      case 'stop_limit': {
+        if (!flags.trigger) die('watch register --kind stop_limit requires --trigger <cents>');
+        if (!flags.limit) die('watch register --kind stop_limit requires --limit <cents>');
+        params = { triggerPriceCents: Number(flags.trigger), limitPriceCents: Number(flags.limit), size };
+        break;
+      }
+      case 'trailing_stop': {
+        if (!flags.trail) die('watch register --kind trailing_stop requires --trail <cents>');
+        params = { trailCents: Number(flags.trail) };
+        break;
+      }
+      case 'oco': {
+        if (!flags.legs) die('watch register --kind oco requires --legs <json>');
+        params = { legs: JSON.parse(flags.legs) };
+        break;
+      }
+      case 'bracket': {
+        if (!flags['take-profit']) die('watch register --kind bracket requires --take-profit <cents>');
+        if (!flags['stop-loss']) die('watch register --kind bracket requires --stop-loss <cents>');
+        params = { takeProfitCents: Number(flags['take-profit']), stopLossCents: Number(flags['stop-loss']) };
+        break;
+      }
+      default:
+        die(`unknown synthetic kind: ${kind}`);
+    }
+
+    const id = getWatcher().register({
+      kind: kind as any,
+      ticker,
+      side,
+      positionSize: size,
+      params,
+      autoCancelOnZeroPosition,
+    });
+    process.stdout.write(`${id}\n`);
+    return;
+  }
+
+  if (subcommand === 'list') {
+    const synthetics = isWatcherInitialized() ? getWatcher().list() : [];
+    if (synthetics.length === 0) {
+      process.stdout.write('(no synthetics registered)\n');
+      return;
+    }
+    const header = `${'id'.padEnd(42)}  ${'kind'.padEnd(16)}  ${'ticker'.padEnd(40)}  ${'side'.padEnd(4)}  ${'size'.padStart(6)}  status`;
+    process.stdout.write(header + '\n');
+    process.stdout.write(`${'─'.repeat(header.length)}\n`);
+    for (const s of synthetics) {
+      process.stdout.write(
+        `${s.id.padEnd(42)}  ${s.kind.padEnd(16)}  ${s.ticker.padEnd(40)}  ${s.side.padEnd(4)}  ${String(s.positionSize).padStart(6)}  ${s.status}\n`,
+      );
+    }
+    return;
+  }
+
+  if (subcommand === 'get') {
+    const id = rest.find((x) => !x.startsWith('--') && x !== subcommand);
+    if (!id) die('watch get requires <id>');
+    const s = getWatcher().get(id);
+    if (!s) {
+      process.stdout.write('not found\n');
+      return;
+    }
+    process.stdout.write(JSON.stringify(s, null, 2) + '\n');
+    return;
+  }
+
+  if (subcommand === 'cancel') {
+    const id = rest.find((x) => !x.startsWith('--') && x !== subcommand);
+    if (!id) die('watch cancel requires <id>');
+    const canceled = getWatcher().cancel(id);
+    if (canceled) {
+      process.stdout.write(`canceled ${id}\n`);
+    } else {
+      process.stdout.write(`not found or already terminal: ${id}\n`);
+    }
+    return;
+  }
+
+  if (subcommand === 'status') {
+    const initialized = isWatcherInitialized();
+    let registeredCount = 0;
+    let armedCount = 0;
+    let firedCount = 0;
+    let canceledCount = 0;
+    if (initialized) {
+      const all = getWatcher().list();
+      registeredCount = all.length;
+      armedCount = all.filter((s) => s.status === 'armed').length;
+      firedCount = all.filter((s) => s.status === 'fired').length;
+      canceledCount = all.filter((s) => s.status === 'canceled').length;
+    }
+    process.stdout.write(JSON.stringify({
+      initialized,
+      registeredCount,
+      armedCount,
+      firedCount: firedCount,
+      canceledCount,
+    }, null, 2) + '\n');
+    return;
+  }
+
+  die(`unknown watch subcommand: ${subcommand}`);
+}
+
 function cmdHelp() {
   process.stdout.write(`
 kea — Kalshi Exit Assistant CLI
@@ -584,6 +729,10 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'report': {
       const positional = rest.filter((x) => !x.startsWith('--'));
       return cmdReport(positional);
+    }
+    case 'watch': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      return cmdWatch(sub, rest, flags);
     }
     case 'help':
     case '--help':
