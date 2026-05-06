@@ -5,6 +5,7 @@ import type {
   Synthetic, SyntheticKind,
   StopLossParams, StopLimitParams, TrailingStopParams,
   TakeProfitParams, OcoParams, BracketParams,
+  TimeStopParams, StepTrailParams,
   TrailingStopState, TakeProfitState,
 } from '../types.js';
 import type { RegisterArgs } from '../synthetics/types.js';
@@ -21,6 +22,7 @@ type WizardStep =
 const KINDS: SyntheticKind[] = [
   'stop_loss', 'stop_limit', 'trailing_stop',
   'take_profit', 'oco', 'bracket',
+  'time_stop', 'step_trail',
 ];
 
 const KIND_LABELS: Record<SyntheticKind, string> = {
@@ -30,6 +32,8 @@ const KIND_LABELS: Record<SyntheticKind, string> = {
   take_profit: 'Take Profit',
   oco: 'OCO (One-Cancels-Other)',
   bracket: 'Bracket',
+  time_stop: 'Time Stop',
+  step_trail: 'Step Trail',
 };
 
 /** Fields to collect per kind, with display labels. */
@@ -81,6 +85,22 @@ function kindFields(kind: SyntheticKind): Array<{ key: string; label: string; pl
         { key: 'takeProfitCents', label: 'Take-profit price (¢)', placeholder: '70' },
         { key: 'stopLossCents', label: 'Stop-loss price (¢)', placeholder: '30' },
       ];
+    case 'time_stop':
+      return [
+        { key: 'ticker', label: 'Ticker', placeholder: 'e.g. KXBTC-25-50000' },
+        { key: 'side', label: 'Side (yes/no)', placeholder: 'yes' },
+        { key: 'positionSize', label: 'Position size', placeholder: '10' },
+        { key: 'deadlineTimestamp', label: 'Deadline (ISO 8601)', placeholder: '2026-12-31T23:59:59Z' },
+        { key: 'exitIfBelowCents', label: 'Exit if below (¢, optional)', placeholder: '50' },
+      ];
+    case 'step_trail':
+      return [
+        { key: 'ticker', label: 'Ticker', placeholder: 'e.g. KXBTC-25-50000' },
+        { key: 'side', label: 'Side (yes/no)', placeholder: 'yes' },
+        { key: 'positionSize', label: 'Position size', placeholder: '10' },
+        { key: 'trailCents', label: 'Trail distance (¢)', placeholder: '5' },
+        { key: 'stepCents', label: 'Step size (¢)', placeholder: '1' },
+      ];
   }
 }
 
@@ -126,6 +146,21 @@ function buildRegisterArgs(kind: SyntheticKind, fields: Record<string, string>):
       };
       return { kind, ticker, side, positionSize, params: p };
     }
+    case 'time_stop': {
+      const exitIfBelow = fields['exitIfBelowCents'];
+      const p: TimeStopParams = {
+        deadlineTimestamp: fields['deadlineTimestamp'] ?? new Date().toISOString(),
+        ...(exitIfBelow ? { exitIfBelowCents: Number(exitIfBelow) } : {}),
+      };
+      return { kind, ticker, side, positionSize, params: p };
+    }
+    case 'step_trail': {
+      const p: StepTrailParams = {
+        trailCents: Number(fields['trailCents'] ?? '0'),
+        stepCents: Number(fields['stepCents'] ?? '1'),
+      };
+      return { kind, ticker, side, positionSize, params: p };
+    }
   }
 }
 
@@ -160,6 +195,16 @@ function paramsSummary(s: Synthetic): string {
     case 'bracket': {
       const p = s.params as BracketParams;
       return `TP=${p.takeProfitCents}¢ SL=${p.stopLossCents}¢`;
+    }
+    case 'time_stop': {
+      const p = s.params as TimeStopParams;
+      return p.exitIfBelowCents != null
+        ? `deadline=${p.deadlineTimestamp} below=${p.exitIfBelowCents}¢`
+        : `deadline=${p.deadlineTimestamp}`;
+    }
+    case 'step_trail': {
+      const p = s.params as StepTrailParams;
+      return `trail=${p.trailCents}¢ step=${p.stepCents}¢`;
     }
     default:
       return '';
