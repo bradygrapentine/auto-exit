@@ -1,14 +1,18 @@
 import type { Synthetic, Orderbook, SyntheticEvalResult, SyntheticKind } from '../types.js';
 import type { EvaluatorMap, Evaluator } from './types.js';
+import { evalStopLoss } from './stopLoss.js';
+import { evalStopLimit } from './stopLimit.js';
+import { evalTrailingStop } from './trailingStop.js';
+import { evalTakeProfit } from './takeProfit.js';
 
 const noop: Evaluator = () => ({ fire: false });
 
 export const evaluators: EvaluatorMap = {
-  stop_loss: noop,
-  stop_limit: noop,
-  trailing_stop: noop,
-  take_profit: noop,
-  oco: noop,
+  stop_loss: evalStopLoss,
+  stop_limit: evalStopLimit,
+  trailing_stop: evalTrailingStop,
+  take_profit: evalTakeProfit,
+  oco: noop,    // composite — fires by child propagation in Watcher
   bracket: noop,
 };
 
