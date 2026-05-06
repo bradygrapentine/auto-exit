@@ -191,3 +191,97 @@ then TUI, then extension (richest UI).
     W4.1 triggers.
 32. **SP4 — Reports + portfolio.** MCP / TUI / Extension surfaces for W1.2
     TCA reports and W4.3 portfolio sequencer.
+
+## Phase 13 — Tooling ecosystem (SH stories)
+
+**Reframing (2026-05-05).** Auto-exit started as exit-strategy execution.
+With the SH stories below it becomes an **algorithmic-trading tooling
+ecosystem**: the tool now offers six dimensions of leverage to operators,
+not one.
+
+| Dimension | What it outsources | Story |
+|---|---|---|
+| **Execution** (existing) | Placing orders well — chunking, sweeping, tail handling | S library, exitRunner, buyRunner |
+| **Order types** | Stop-loss / trailing / take-profit / OCO / bracket — not native to Kalshi | **SH-WATCH** |
+| **Surveillance** | Watching markets/positions for conditions without committing to a decision | **SH-ALERTS** |
+| **Empirical validation** | Testing strategies against historical data; parameter walk-forward | **SH-BACKTEST** |
+| **Edge measurement** | Per-strategy / per-trigger / per-market PnL attribution — operator-specific | **SH-EDGE** |
+| **Decision support** | EV / Kelly sizing / strategy recommendation as MCP tools — LLM-in-the-loop co-trader | **SH-RECOMMENDER** |
+| **Composition** | Multi-stage workflow state machines + operator default policies | **SH-COMPOSE** |
+
+This phase is multi-stage. SH-WATCH is the foundation; the rest layer on top.
+
+### Sequencing
+
+33. **SH-WATCH — Synthetic order types via per-position watcher.**
+    Plan-ready (PR #17). 8–9 days with full subagent parallelism. Six v1
+    synthetic kinds (stop-loss / stop-limit / trailing-stop / multi-rung
+    take-profit / OCO / bracket). Float price math for deci-cent ticks
+    below 10¢. First-class user feature in TUI / extension / MCP — not
+    just internal trigger plumbing. Validated against Kalshi OpenAPI:
+    `type` enum is `limit | market` only; no native stops.
+
+34. **SH-ALERTS — Notify-only synthetics (alerts layer).** 3–4 days.
+    Cheap extension of SH-WATCH; same evaluator engine, different action.
+    Webhook (Slack/Discord-compatible) + desktop channels in v1.
+
+35. **SH-RECOMMENDER — EV/Kelly + strategy recommender.** 4–5 days. Can
+    ship before SH-WATCH (extends `harvestPlanner.ts`); most useful once
+    SH-WATCH exists; richest output once SH-EDGE has data. Three layered
+    MCP tools (`kea_ev`, `kea_size`, `kea_recommend`) complete the
+    LLM-in-the-loop story.
+
+36. **SH-COMPOSE — Workflow state machines + default policies.** 5–7
+    days. Multi-stage workflows + per-position auto-policy. Closed-set
+    declarative JSON; explicit anti-runaway caps; 8 prebuilt templates
+    in v1. Sits on top of SH-WATCH.
+
+37. **SH-EDGE — Operator-specific PnL attribution.** 5–7 days. Pure
+    analytics over existing journal — measures per-strategy /
+    per-trigger / per-market edge **for this operator on these markets**.
+    Useful at SH-WATCH + 30 days (data accumulation period). Feeds
+    SH-RECOMMENDER as a calibration prior.
+
+38. **SH-BACKTEST — Record-and-replay harness.** 7–10 days. Continuous
+    journal during normal operation; replay against any strategy in the
+    library. Unblocks empirical strategy tuning and parameter walk-
+    forward. First meaningful backtest at SH-WATCH + 30 days.
+
+### Why this is the right framing
+
+Each dimension corresponds to labor an algorithmic trader currently does
+in their head, in spreadsheets, or via custom scripts. Concentrating them
+in one tool with a coherent surface (CLI + MCP + TUI + extension) means
+the operator's *time*, not the *available infrastructure*, becomes the
+binding constraint on how many strategies they can run profitably. The
+LLM-in-the-loop integration via MCP turns this from a CLI for one
+operator into a co-trading platform — an LLM model can query state, run
+EV math, register synthetics, evaluate edge, and propose actions, all
+through the same MCP surface a human operator uses.
+
+**Sequencing principle:** SH-WATCH first because every other SH story
+either consumes its journal events (alerts, compose), records its data
+(backtest), measures its fires (edge), or hands recommendations into its
+synthetic registration API (recommender). Without SH-WATCH the rest are
+either generic textbook math (recommender) or speculative infrastructure
+(the others). SH-WATCH ships an immediate user-visible feature —
+*trailing stops on Kalshi, which Kalshi itself doesn't offer* — and
+unlocks every later story.
+
+### Beyond SH
+
+The stories above represent the next ~6 months of focused work. Open
+questions for further-out roadmap planning (not committed):
+
+- **Multi-venue routing** (W4.4 SOR) — same questions on Polymarket /
+  PredictIt / Manifold. Revisit after SH-EDGE proves single-venue edge.
+- **Continuous market analysis engine** — long-term north star in
+  `engine-ts/docs/superpowers/specs/2026-05-05-strategy-trigger-pairings.md`
+  (regime classifier, multi-ticker analysis modules). Revisit only if
+  empirical fire data from SH-WATCH + SH-EDGE shows specific analysis
+  modules carry their own weight.
+- **Buy-side synthetics v2** — entry-leg orchestration, S-buy-stop /
+  S-buy-dip / scaled-entry. Revisit after exit-side SH-WATCH ships.
+- **Tax / lot-tracking / compliance tooling** — niche but high-value for
+  serious operators with real-money sizing. Defer until external pressure
+  forces it.

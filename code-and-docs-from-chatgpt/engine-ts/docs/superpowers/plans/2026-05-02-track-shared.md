@@ -94,6 +94,14 @@ Heartbeat: any subagent running >30min appends timestamps every ~5min to `.claud
 
 **Goal:** new `src/triggers.ts` + `kea watch` daemon. Poll positions; evaluate trigger rules; auto-start named strategy or ping user. Four trigger types: stop-loss, time-decay, probability-based, profit-target.
 
+**Design principle — strategy/trigger pairing:** every exit strategy in the S library should ship with a recommended trigger profile that arms it under the right market conditions. A strategy without a trigger is just a manual button; a trigger without a strategy fires into a void. Concrete pairings to spec out:
+- **Patient harvest (S-harvest)** ↔ profit-target trigger (price reaches operator's private-p crossover) + risk-reduction trigger (lock cost-basis-plus-fees once private p exceeds EV crossover).
+- **Losing exit / panic exit (S-losing)** ↔ floor-collapse trigger (top YES bid 3-5¢ and falling, or bid-side depth below recoverable threshold) + stop-loss trigger (mark-to-bid drops X% from cost basis or trailing peak).
+- **Pre-event de-risk (S-derisk)** ↔ time-decay trigger (T-N hours to event AND |p - 0.5| > threshold; the "90%+ sleeve" case).
+- **Scale-out (S7)** ↔ profit-target trigger with configured rungs.
+
+Each new strategy added to the S library MUST land with its paired trigger config example in the strategy's spec doc. Reviewers should reject strategies that ship without trigger pairing rationale.
+
 **File-touch boundary:**
 - `src/triggers.ts` (new) — `TriggerConfig`, `TriggerRule`, `evaluateTriggers`, `kea watch` daemon loop
 - `src/types.ts` — `TriggerConfig`, `TriggerRule`, `'trigger_armed'` JournalKind
@@ -115,6 +123,7 @@ Heartbeat: any subagent running >30min appends timestamps every ~5min to `.claud
 - [ ] Time-decay trigger: T-N days to expiry and p ≤ P → auto-arm losing-exit
 - [ ] Probability-based trigger: implied YES crosses threshold
 - [ ] Profit-target trigger: auto-arm S7 scale-out at configured rungs
+- [ ] **Floor-collapse trigger (pair with stop-loss):** fire exit when top YES bid is in 3-5¢ range AND falling (negative slope over last N polls), and/or when remaining bid-side depth above floor < cost-basis-recoverable threshold (i.e., not enough $ on the book to cash out at non-floor prices). Rationale: once the bid pins to 1¢ with deep NO@99¢ stack, the exit algorithm degenerates to "rest at floor in FIFO queue" — the algo's edge (walking depth, sweeping tails) only exists *above* the floor. Confirmed empirically 2026-05-05 on KXMETGALA-26-LAD: position trapped at 1¢ behind ~37k-share queue.
 - [ ] `kea watch` daemon loop in `src/cli.ts`
 - [ ] Tests with synthetic price walks (3+ scenarios per trigger type)
 - [ ] `npm test && npm run typecheck` green

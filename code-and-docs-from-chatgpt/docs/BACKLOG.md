@@ -1,14 +1,15 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-02
+Last `/backlog-sync`: 2026-05-05
 
 | Status | Count |
 |--------|-------|
-| 🟡 Plan ready / in progress | 2 |
+| 🟡 Plan ready / in progress | 3 |
 | 🧊 Foundation (W1) | 3 |
 | 🧊 Strategy library (S) | 16 |
 | 🧊 Cross-cutting (W3) | 3 |
 | 🧊 Decision + optimization (W4) | 5 |
+| 🧊 Tooling ecosystem (SH) | 5 |
 | 🧊 Surface parity (SP1–SP4) | 17 |
 | 🧊 Other deferred (off-sequence) | 5 |
 | ✅ Shipped (this log) | 7 |
@@ -598,6 +599,15 @@ with synthetic price walks.
 **Dependency:** S library (triggers select named strategies; need
 strategies first), W1.2 TCA (calibrate thresholds).
 
+**2026-05-05 update:** **first slice superseded by SH-WATCH** (per-position
+watcher with synthetic order types — stop-loss / trailing / take-profit /
+OCO / bracket). SH-WATCH lands the polling loop, evaluator registry, and
+journal; W4.1's broader continuous-engine + analysis layer vision is
+preserved as the long-term north star (see
+`engine-ts/docs/superpowers/specs/2026-05-05-strategy-trigger-pairings.md`)
+to revisit once SH-WATCH has produced empirical fire data justifying
+which analysis modules are worth building.
+
 ### 🧊 W4.2 — Implementation Shortfall optimizer (Almgren-Chriss)
 **Tags:** engine
 
@@ -744,6 +754,215 @@ has been relocated to **W1.5**. EW2.1–EW2.7 have been merged into
 S1–S5 (mirror pairs) or kept as distinct strategies (S8 limit ladder,
 S12 market-making) inside the unified library. See the major-restructure
 note in the S section header.
+
+---
+
+# Tooling ecosystem (SH) — multi-dimensional product surfaces
+
+The auto-exit tool started as exit-strategy execution. With the SH stories
+below it becomes an **algorithmic-trading tooling ecosystem**: exit/entry
+strategies + synthetic order types + alerts + analysis + decision support +
+workflow composition. Each story extends the system along an axis algo
+traders currently outsource to spreadsheets, custom scripts, or manual
+attention.
+
+These stories are shared across surfaces (`shared` tag) — they touch the
+engine, MCP, TUI, and extension together. They sequence after W1
+foundation work but interleave with W3 / W4 / S as they unblock specific
+strategies. SH-WATCH is the first foundation story; the rest layer on top.
+
+## ID legend
+
+- **SH-WATCH** — synthetic order types (per-position watcher daemon)
+- **SH-ALERTS** — notify-only synthetics (alerts layer)
+- **SH-BACKTEST** — record + replay harness for empirical strategy validation
+- **SH-EDGE** — operator-specific PnL attribution + edge measurement
+- **SH-RECOMMENDER** — EV / Kelly calculator + strategy recommender
+- **SH-COMPOSE** — multi-stage workflow state machines + default policies
+
+## Stories
+
+### 🟡 SH-WATCH — Synthetic order types via per-position watcher
+**Tags:** shared [engine, ext, tui-mcp]
+
+**Trigger:** Kalshi's API natively supports only `limit` and `market`
+orders with three TIFs (validated against OpenAPI 2026-05-05). No
+stop-loss, trailing-stop, take-profit, OCO, or bracket. Operators have to
+watch positions manually — today's KXMETGALA-26-LAD exit demonstrated the
+gap (algorithm's edge lost once bid pinned to floor; needed a trigger
+fired *before* the floor pin). Headline missing primitive: **trailing
+stop** with deci-cent-aware float math for cheap markets.
+
+**Proposed:** new `kea watch` daemon. Per-position watcher polls one
+ticker at adaptive cadence (250ms near trigger, 2s default, 10s
+idle-when-empty). Six v1 synthetic kinds (stop-loss, stop-limit,
+trailing-stop, multi-rung take-profit, OCO, bracket). Composite synthetics
+(OCO, bracket) expand to children at register time; sibling-cancel on
+child fire. Crash-safe via three-phase fire (`fire_pending` → invoke →
+`fired` / `fire_failed`) journaled to `~/.kalshi-exit-assistant/watchers.ndjson`.
+First-class user feature in TUI / extension / MCP — not just internal
+trigger plumbing. Float price math (`priceCentsExact: number`) end-to-end
+for deci-cent ticks below 10¢.
+
+**Spec:** `engine-ts/docs/superpowers/specs/2026-05-05-synthetic-order-types-watcher.md`.
+
+**Plan:** `engine-ts/docs/superpowers/plans/2026-05-05-synthetic-order-types.md`
+(rev 2 — Opus reviewed READY; PR #17).
+
+**v1 scope: exit-side only.** Buy-side synthetics (S-buy-stop, S-buy-dip,
+scaled-entry, bracket entry-leg) deferred to v2.
+
+**Cost:** ~8–9 days with full subagent parallelism. 5 phases (foundation
+→ 5 evaluators → persistence → CLI/MCP/HTTP → user surfaces → strategy
+presets).
+
+**Dependency:** W1.5 buyRunner (already shipped, PR #12). Non-blocking on
+W4.1 trigger layer — supersedes its first slice.
+
+### 🧊 SH-ALERTS — Notify-only synthetics (alerts layer)
+**Tags:** shared [engine, ext, tui-mcp]
+
+**Trigger:** triggers + synthetics commit operators to an auto-decision in
+advance. Many operators want the system to *watch* without firing —
+notify when KXMETGALA top YES bid drops below 5¢, ping when basis-arb
+opens, alert when mark-to-bid drawdown exceeds 10%. Decision stays with
+the operator; only the watching is outsourced.
+
+**Proposed:** alerts ride the SH-WATCH watcher infrastructure. Same
+evaluator engine; different action. New `action: 'fire' | 'notify'`
+discriminator on synthetics (alerts are synthetics that notify). Six v1
+alert kinds mirroring the synthetic set plus mark-to-bid drawdown and
+basis-arb-opens. v1 channels: webhook (Slack/Discord-compatible) +
+desktop. Email + extension toast deferred to v2. New `src/alerts/` dir;
+extends `watcher.ts`, `watcherJournal.ts`, `cli.ts`, MCP server.
+
+**Spec:** `engine-ts/docs/superpowers/specs/2026-05-05-alerts-layer.md`.
+
+**Cost:** ~3–4 days. Cheap because most plumbing reuses SH-WATCH; the
+work is mostly delivery channels + dedup/cooldown logic.
+
+**Dependency:** SH-WATCH (foundation). No data dependencies — useful
+day-one after SH-WATCH ships.
+
+### 🧊 SH-BACKTEST — Record-and-replay harness for empirical strategy validation
+**Tags:** shared [engine, tui-mcp]
+
+**Trigger:** today every claim about a strategy's edge is a guess.
+Operators can't tune trail distances, rung sizes, trigger thresholds
+empirically — no historical data, no replay infra. The strategy library
+remains faith-based. Without this, SH-EDGE has nothing to validate
+against and SH-RECOMMENDER's calibration is generic textbook math.
+
+**Proposed:** record layer atop SH-WATCH polling — flag enables
+continuous orderbook + position + fill journal to NDJSON. Replay-mode
+`KalshiClient` synthetic serves snapshots from disk; runs `ExitRunner` /
+`BuyRunner` / synthetics in shadow mode. Counterfactual reports: per-
+strategy P&L, slippage, fill rate, decision log. Parameter-sweep mode
+runs grid of param values, outputs comparison table. Honest fidelity
+caveats called out (sub-cadence blind spots, no market-impact modeling,
+relative-not-absolute signal framing).
+
+**Spec:** `engine-ts/docs/superpowers/specs/2026-05-05-backtest-harness.md`.
+
+**Cost:** ~7–10 days. Recorder + replay client + harness orchestrator +
+report generator + scenario library scaffolding.
+
+**Dependency:** SH-WATCH (record layer attaches to the watcher poll). First
+meaningful backtest ~T+30 days from SH-WATCH ship — needs accumulated
+data. Soft synergy with SH-EDGE (parallel pipelines validating each
+other).
+
+### 🧊 SH-EDGE — Operator-specific PnL attribution + per-strategy edge measurement
+**Tags:** shared [engine, tui-mcp]
+
+**Trigger:** SH-1 TCA already measures *execution quality* (slippage vs
+arrival mid). SH-EDGE measures *strategy quality* — and crucially does so
+**operator-specifically**. Different operators trade different markets,
+have different private p's, different size budgets. A strategy that's
+great for one is net-negative for another. Today there's no answer to
+"for *me*, given the markets *I* trade, which strategies have edge?"
+
+**Proposed:** join existing journal entries (`'tca'`, `'synthetic_fired'`,
+`'order_filled'`, etc.) into per-fire P&L decomposition: entry edge / exit
+edge / market drift / execution slippage / trigger fire-quality. v1
+reports: per-strategy edge vs counterfactual benchmarks; per-trigger
+fire-timing histogram (fired Nc too early/late vs hindsight optimal);
+per-market segmentation; parameter-sensitivity analysis. CLI `kea edge` +
+MCP `kea_edge_summary` + TUI Edge tab.
+
+**Spec:** `engine-ts/docs/superpowers/specs/2026-05-05-pnl-attribution.md`.
+
+**Cost:** ~5–7 days. Pure analytics over existing journal; no new
+journal entry kinds required (consumes what's already written).
+
+**Dependency:** SH-WATCH live for ≥30 days (need fire data to attribute).
+Soft dep on SH-BACKTEST (validates attribution model against
+counterfactuals). Feeds SH-RECOMMENDER as operator-specific calibration
+prior.
+
+### 🧊 SH-RECOMMENDER — EV/Kelly calculator + strategy recommender
+**Tags:** shared [engine, tui-mcp, ext]
+
+**Trigger:** today the LLM-in-the-loop (Claude/GPT via MCP) reads
+positions and orderbooks but derives strategy/sizing math itself, often
+poorly. `harvestPlanner` already does the math for harvest decisions; the
+broader version covers entries, sizing, risk-of-ruin, strategy selection.
+Once exposed as MCP, the model becomes a real co-trader instead of a CLI
+wrapper.
+
+**Proposed:** three layered modules, each independently useful, all
+stateless functions extending `harvestPlanner.ts`:
+1. **EV calculator** — generic `computeDecisionEV(ctx)` covering enter /
+   hold / exit / scale-out / no-action. MCP tool `kea_ev`.
+2. **Position sizer** — Kelly fraction (half-Kelly default) with portfolio
+   correlation adjustment; respects `safety.ts` caps. MCP tool `kea_size`.
+3. **Strategy recommender** — composes EV + sizer + (optional)
+   operator-specific edge data from SH-EDGE → top-3 ranked strategies
+   with EV/Kelly-justified params. Honest "no-recommendation" output when
+   conditions fit no strategy. MCP tool `kea_recommend`.
+
+**Spec:** `engine-ts/docs/superpowers/specs/2026-05-05-ev-kelly-recommender.md`.
+
+**Cost:** ~4–5 days. Three modules, ~stateless, mostly math + light MCP
+wiring + minimal TUI panel.
+
+**Dependency:** none hard — extends `harvestPlanner.ts` which already
+ships. Most useful once SH-WATCH manages positions (recommendations land
+into actionable strategies). Richest output when SH-EDGE data is
+available; degrades gracefully to generic textbook math otherwise.
+
+### 🧊 SH-COMPOSE — Multi-stage workflow state machines + operator default policies
+**Tags:** shared [engine, tui-mcp]
+
+**Trigger:** synthetics + triggers solve "what to do when X happens" one
+event at a time. Real trading workflows are multi-stage state machines:
+"trail fires → rearm a fresh trailing stop on residual," "TP rung 3 fills
+→ swap remaining synthetics from TP to trailing," "stop-loss on KXNFL →
+register S-buy-dip on KXNBA." Today operators carry that state in their
+head and re-arm manually after each fire.
+
+**Proposed:** two complementary capabilities:
+1. **Workflow engine** — small declarative JSON workflow definitions (no
+   Turing-complete DSL). Long-running watcher subscribes to journal
+   events (`synthetic_fired`, `synthetic_canceled`, `fill_received`,
+   `time_elapsed`); advances active workflows; executes actions on
+   transitions. Anti-runaway: explicit `maxTransitions` cap (default 50,
+   hard 500), zero-event cycle rejection at load. 8 prebuilt templates
+   ship in v1.
+2. **Default policy engine** — separate watcher subscribing to
+   position-detection events; auto-applies operator-configured policies
+   ("every YES position above 50¢ auto-gets a 5¢ trailing stop and a TP
+   at 95¢"). Condition→action shape, no chaining at v1.
+
+Storage: `workflows.ndjson` mirroring `watchers.ndjson`. Both engines
+respect `safety.ts` caps; serial per-instance reentrancy.
+
+**Spec:** `engine-ts/docs/superpowers/specs/2026-05-05-strategy-composition.md`.
+
+**Cost:** ~5–7 days. Workflow definition schema + engine + policy
+engine + 8 templates + CLI/MCP/TUI surfaces.
+
+**Dependency:** SH-WATCH live (workflows subscribe to its journal events).
 
 ---
 
