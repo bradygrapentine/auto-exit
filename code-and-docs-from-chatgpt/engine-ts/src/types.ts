@@ -239,7 +239,9 @@ export type JournalKind =
   | 'passive_spread_too_tight'
   | 'passive_floor_hit'
   | 'passive_ceiling_hit'
-  | 'passive_walk_tick';
+  | 'passive_walk_tick'
+  | 'passive_no_opposite_liquidity'
+  | 'passive_safety_cap_breached';
 
 export interface TcaEntry {
   kind: 'tca';

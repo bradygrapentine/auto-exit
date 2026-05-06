@@ -432,6 +432,196 @@ describe('passive: loopDelayMs > 0', () => {
   });
 });
 
+describe('passive: default-fallback paths', () => {
+  it('uses default chunkSize / passiveTimeboxMs / loopDelayMs / dryRun when omitted', async () => {
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [normalBook],
+      behaviors: [{ fillCount: 100 }],
+    });
+    // Intentionally omit chunkSize, passiveTimeboxMs, loopDelayMs, dryRun.
+    const result = await run(mock, {
+      ticker: 'KXTEST',
+      side: 'sell',
+      size: 100,
+      keaHome: tmpDir,
+    });
+    expect(result.status).toBe('complete');
+  });
+});
+
+describe('passive: error path coverage', () => {
+  it('non-Error thrown from createOrder is stringified by error handler', async () => {
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [normalBook],
+      behaviors: [{ fillCount: 0 }],
+    });
+    const origCreate = mock.createOrder.bind(mock);
+    mock.createOrder = async (_p) => {
+      // Throw a non-Error to exercise the String(err) else branch.
+      throw { code: 'NON_ERROR_THROW' };
+    };
+    void origCreate;
+    const result = await run(mock, makeConfig({ size: 100 }));
+    expect(result.status).toBe('error');
+  });
+});
+
+describe('passive: deci-cent walk (walkStepCents)', () => {
+  it('uses 0.1¢ steps when walkStepCents=0.1', async () => {
+    const cheapBook: Orderbook = {
+      yes: [{ priceCents: 5.0, size: 10000 }],
+      no: [{ priceCents: 95.5, size: 10000 }],
+    };
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [cheapBook, cheapBook, cheapBook],
+      behaviors: [{ fillCount: 0 }, { fillCount: 0 }, { fillCount: 100 }],
+    });
+    const result = await run(mock, makeConfig({
+      size: 100,
+      chunkSize: 100,
+      walkStepCents: 0.1,
+      passiveTimeboxMs: 50,
+    }));
+    expect(result.status).toBe('complete');
+    const prices = mock.orders.map((o) => o.payload.yes_price_dollars);
+    // First post: bestAsk(5.0) - 0.1 = 4.9¢ → '0.0490'
+    expect(prices[0]).toBe('0.0490');
+    expect(prices[1]).toBe('0.0480');
+    expect(prices[2]).toBe('0.0470');
+  });
+
+  it('walkStepCents lowers spread_too_tight threshold (0.5¢ spread + 0.1¢ step is fine)', async () => {
+    const halfCentBook: Orderbook = {
+      yes: [{ priceCents: 5.0, size: 10000 }],
+      no: [{ priceCents: 95.5, size: 10000 }],
+    };
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [halfCentBook],
+      behaviors: [{ fillCount: 100 }],
+    });
+    const result = await run(mock, makeConfig({
+      size: 100,
+      chunkSize: 100,
+      walkStepCents: 0.1,
+    }));
+    // With default 1¢ threshold this would return spread_too_tight (5.0-4.5 = 0.5 < 1).
+    expect(result.status).toBe('complete');
+  });
+
+  it('walkStepCents=1 (default) preserves legacy 1¢ walk behavior', async () => {
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [normalBook, normalBook, normalBook],
+      behaviors: [{ fillCount: 0 }, { fillCount: 0 }, { fillCount: 100 }],
+    });
+    await run(mock, makeConfig({ size: 100, chunkSize: 100, passiveTimeboxMs: 50 }));
+    const prices = mock.orders.map((o) => o.payload.yes_price_dollars);
+    expect(prices.slice(0, 3)).toEqual(['0.5400', '0.5300', '0.5200']);
+  });
+});
+
+describe('passive: safety submitted-shares cap', () => {
+  it('blocks further reposts after totalSubmittedShares exceeds size × multiple', async () => {
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: Array(10).fill(normalBook),
+      behaviors: Array(10).fill({ fillCount: 0 }),
+    });
+    const result = await run(mock, makeConfig({
+      size: 100,
+      chunkSize: 100,
+      safetySubmittedMultiple: 2,
+      passiveTimeboxMs: 30,
+      keaHome: tmpDir,
+    }));
+    expect(result.status).toBe('partial');
+    expect(mock.orders.length).toBeLessThanOrEqual(2);
+
+    const journalPath = path.join(tmpDir, 'jobs', `${result.jobId}.jsonl`);
+    const lines = fs.readFileSync(journalPath, 'utf-8').trim().split('\n').filter(Boolean).map((s) => JSON.parse(s));
+    const kinds = new Set(lines.map((l) => l.kind));
+    expect(kinds.has('passive_safety_cap_breached')).toBe(true);
+  });
+
+  it('default safetySubmittedMultiple of 5 allows 4 full-position retries', async () => {
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: Array(6).fill(normalBook),
+      behaviors: [
+        { fillCount: 0 }, { fillCount: 0 }, { fillCount: 0 }, { fillCount: 0 },
+        { fillCount: 100 },
+      ],
+    });
+    const result = await run(mock, makeConfig({
+      size: 100,
+      chunkSize: 100,
+      passiveTimeboxMs: 30,
+    }));
+    expect(result.status).toBe('complete');
+  });
+});
+
+describe('passive: one-sided book (no opposite liquidity)', () => {
+  it('sell mode with empty noAsks journals passive_no_opposite_liquidity', async () => {
+    const oneSided: Orderbook = {
+      yes: [{ priceCents: 55, size: 10000 }],
+      no: [],
+    };
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [oneSided],
+      behaviors: [{ fillCount: 100 }],
+    });
+    const result = await run(mock, makeConfig({
+      size: 100,
+      chunkSize: 100,
+      keaHome: tmpDir,
+    }));
+    const journalPath = path.join(tmpDir, 'jobs', `${result.jobId}.jsonl`);
+    const lines = fs.readFileSync(journalPath, 'utf-8').trim().split('\n').filter(Boolean).map((s) => JSON.parse(s));
+    const kinds = lines.map((l) => l.kind);
+    expect(kinds).toContain('passive_no_opposite_liquidity');
+  });
+
+  it('buy mode with empty yesAsks journals passive_no_opposite_liquidity', async () => {
+    const oneSided: Orderbook = {
+      yes: [],
+      no: [{ priceCents: 50, size: 10000 }],
+    };
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [oneSided],
+      behaviors: [{ fillCount: 100 }],
+    });
+    const result = await run(mock, makeConfig({
+      size: 100,
+      side: 'buy',
+      maxPriceCents: 99,
+      chunkSize: 100,
+      keaHome: tmpDir,
+    }));
+    const journalPath = path.join(tmpDir, 'jobs', `${result.jobId}.jsonl`);
+    const lines = fs.readFileSync(journalPath, 'utf-8').trim().split('\n').filter(Boolean).map((s) => JSON.parse(s));
+    expect(lines.map((l) => l.kind)).toContain('passive_no_opposite_liquidity');
+  });
+
+  it('one-sided event is journaled at most once per run', async () => {
+    const oneSided: Orderbook = {
+      yes: [{ priceCents: 55, size: 10000 }],
+      no: [],
+    };
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [oneSided, oneSided, oneSided],
+      behaviors: [{ fillCount: 0 }, { fillCount: 0 }, { fillCount: 100 }],
+    });
+    const result = await run(mock, makeConfig({
+      size: 100,
+      chunkSize: 100,
+      passiveTimeboxMs: 30,
+      keaHome: tmpDir,
+    }));
+    const journalPath = path.join(tmpDir, 'jobs', `${result.jobId}.jsonl`);
+    const lines = fs.readFileSync(journalPath, 'utf-8').trim().split('\n').filter(Boolean).map((s) => JSON.parse(s));
+    const oneSidedEvents = lines.filter((l) => l.kind === 'passive_no_opposite_liquidity');
+    expect(oneSidedEvents.length).toBe(1);
+  });
+});
+
 describe('passive: multi-chunk outer loop', () => {
   it('fills chunk 1 then chunk 2, total filled === 200', async () => {
     // size: 200, chunkSize: 100 — two outer-loop iterations
