@@ -42,6 +42,11 @@ import { LimitLadderRunner } from './limitLadder.js';
 import { SStopAndReverseRunner } from './strategies/sStopAndReverse.js';
 import { SRollRunner } from './strategies/sRoll.js';
 import { buildSPrependThenSweepArgs, SPrependThenSweepRunner } from './strategies/sPrependThenSweep.js';
+import { buildSTwapArgs, STwapRunner } from './strategies/sTwap.js';
+import { buildSPreResolutionArbArgs, SPreResolutionArbRunner } from './strategies/sPreResolutionArb.js';
+import { buildSCashRaiseArgs, SCashRaiseRunner } from './strategies/sCashRaise.js';
+import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
+import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
 function parseFlags(argv: string[]): Record<string, string> {
@@ -615,6 +620,9 @@ function cmdSafety(subcommand: string | undefined, flags: Record<string, string>
     process.stdout.write(`floorPriceCents:         ${s.floorPriceCents}\n`);
     process.stdout.write(`tailSweepThreshold:      ${s.tailSweepThreshold}\n`);
     process.stdout.write(`forbiddenTickers:        ${s.forbiddenTickers.length}\n`);
+    if (s.maxParticipationRate !== undefined) {
+      process.stdout.write(`maxParticipationRate:    ${s.maxParticipationRate}\n`);
+    }
     return;
   }
   if (subcommand === 'set') {
@@ -628,8 +636,11 @@ function cmdSafety(subcommand: string | undefined, flags: Record<string, string>
     if (flags['tail-sweep-threshold'] !== undefined) {
       patch.tailSweepThreshold = Number(flags['tail-sweep-threshold']);
     }
+    if (flags['max-participation-rate'] !== undefined) {
+      patch.maxParticipationRate = Number(flags['max-participation-rate']);
+    }
     if (Object.keys(patch).length === 0) {
-      console.error('error: no fields specified. Use --floor-price-cents, --safety-submitted-multiple, or --tail-sweep-threshold');
+      console.error('error: no fields specified. Use --floor-price-cents, --safety-submitted-multiple, --tail-sweep-threshold, or --max-participation-rate');
       process.exit(2);
     }
     const updated = setSafety(patch);
@@ -637,6 +648,9 @@ function cmdSafety(subcommand: string | undefined, flags: Record<string, string>
     process.stdout.write(`safetySubmittedMultiple: ${updated.safetySubmittedMultiple}\n`);
     process.stdout.write(`floorPriceCents:         ${updated.floorPriceCents}\n`);
     process.stdout.write(`tailSweepThreshold:      ${updated.tailSweepThreshold}\n`);
+    if (updated.maxParticipationRate !== undefined) {
+      process.stdout.write(`maxParticipationRate:    ${updated.maxParticipationRate}\n`);
+    }
     return;
   }
   die(`unknown safety subcommand: ${subcommand}`);
@@ -828,6 +842,134 @@ async function cmdStrategyPrependThenSweep(flags: Record<string, string>): Promi
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }
 
+async function cmdStrategySTwap(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy s-twap requires --ticker <T>');
+  if (!flags.side) die('strategy s-twap requires --side buy|sell');
+  if (!flags.size) die('strategy s-twap requires --size <N>');
+  if (!flags['interval-minutes']) die('strategy s-twap requires --interval-minutes <N>');
+  if (!flags['num-intervals']) die('strategy s-twap requires --num-intervals <N>');
+  const config = buildSTwapArgs({
+    ticker: flags.ticker,
+    side: flags.side as 'buy' | 'sell',
+    size: Number(flags.size),
+    intervalMinutes: Number(flags['interval-minutes']),
+    numIntervals: Number(flags['num-intervals']),
+    jobId: flags['job-id'],
+  });
+  const client = new KalshiClient(makeMinimalConfig(config.ticker));
+  const result = await new STwapRunner({
+    ...config,
+    passiveInvoke: async (cfg) => {
+      const { run } = await import('./passive.js');
+      return run(client, cfg);
+    },
+  }).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategySPreResolutionArb(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy s-pre-resolution-arb requires --ticker <T>');
+  if (!flags.side) die('strategy s-pre-resolution-arb requires --side yes|no');
+  if (!flags.size) die('strategy s-pre-resolution-arb requires --size <N>');
+  if (!flags['arb-timebox-ms']) die('strategy s-pre-resolution-arb requires --arb-timebox-ms <N>');
+  if (!flags['floor-price-cents']) die('strategy s-pre-resolution-arb requires --floor-price-cents <N>');
+  const config = buildSPreResolutionArbArgs({
+    ticker: flags.ticker,
+    side: flags.side as 'yes' | 'no',
+    size: Number(flags.size),
+    arbTimeboxMs: Number(flags['arb-timebox-ms']),
+    floorPriceCents: Number(flags['floor-price-cents']),
+  });
+  const client = new KalshiClient(makeMinimalConfig(config.ticker));
+  const result = await new SPreResolutionArbRunner(client, config).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategySCashRaise(flags: Record<string, string>): Promise<void> {
+  if (!flags.positions) die('strategy s-cash-raise requires --positions <JSON array of {ticker,side,size,strategyName}>');
+  if (!flags['target-cash-dollars']) die('strategy s-cash-raise requires --target-cash-dollars <N>');
+  if (!flags['deadline-epoch-ms']) die('strategy s-cash-raise requires --deadline-epoch-ms <N>');
+  let positions: Array<{ ticker: string; side: 'sell'; size: number; strategyName: 'aggressive' | 'passive' }>;
+  try { positions = JSON.parse(flags.positions); } catch { die('--positions must be valid JSON array'); }
+  const client = new KalshiClient(makeMinimalConfig('KX_PLACEHOLDER'));
+  const config = buildSCashRaiseArgs({
+    positions,
+    targetCashDollars: Number(flags['target-cash-dollars']),
+    deadlineEpochMs: Number(flags['deadline-epoch-ms']),
+    aggressiveInvoke: async (cfg) => {
+      const { AggressiveRunner: AR } = await import('./aggressive.js');
+      return new AR(client, cfg).run();
+    },
+    passiveInvoke: async (cfg) => {
+      const { run } = await import('./passive.js');
+      return run(client, cfg);
+    },
+    getCurrentBidCents: async (ticker) => {
+      const book = await client.getOrderbook(ticker, 1);
+      return book.yes[0]?.priceCents ?? 0;
+    },
+  });
+  const result = await new SCashRaiseRunner(config).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategySIceberg(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy s-iceberg requires --ticker <T>');
+  if (!flags.side) die('strategy s-iceberg requires --side yes|no');
+  if (!flags.size) die('strategy s-iceberg requires --size <N>');
+  if (!flags['visible-size']) die('strategy s-iceberg requires --visible-size <N>');
+  if (!flags['price-cents']) die('strategy s-iceberg requires --price-cents <N>');
+  const validatedArgs = buildSIcebergArgs({
+    ticker: flags.ticker,
+    side: flags.side as 'yes' | 'no',
+    size: Number(flags.size),
+    visibleSize: Number(flags['visible-size']),
+    priceCents: Number(flags['price-cents']),
+  });
+  const client = new KalshiClient(makeMinimalConfig(validatedArgs.ticker));
+  const result = await new IcebergRunner({
+    ...validatedArgs,
+    postOrderInvoke: async (qty, orderSide, price) => {
+      const r = await client.createOrder({
+        ticker: validatedArgs.ticker,
+        side: orderSide,
+        action: 'sell',
+        type: 'limit',
+        count: qty,
+        yes_price: price,
+        time_in_force: 'good_till_canceled',
+        reduce_only: false,
+        client_order_id: `kea-iceberg-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      });
+      return r.orderId;
+    },
+    getOrderStatusInvoke: async (orderId) => {
+      const r = await client.getOrder(orderId);
+      return { filled: r.filledCount, remaining: r.remainingCount };
+    },
+    cancelOrderInvoke: async (orderId) => {
+      await client.cancelOrder(orderId);
+    },
+    jobId: flags['job-id'],
+  }).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategySTimeEmergency(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy s-time-emergency requires --ticker <T>');
+  if (!flags.size) die('strategy s-time-emergency requires --size <N>');
+  if (!flags['contract-close-epoch-ms']) die('strategy s-time-emergency requires --contract-close-epoch-ms <N>');
+  const config = buildSTimeEmergencyArgs({
+    ticker: flags.ticker,
+    side: 'sell',
+    size: Number(flags.size),
+    contractCloseEpochMs: Number(flags['contract-close-epoch-ms']),
+  });
+  const client = new KalshiClient(makeMinimalConfig(config.ticker));
+  const result = await new STimeEmergencyRunner(client, { ...config, jobId: flags['job-id'] }).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
 async function cmdStrategy(subcommand: string | undefined, rest: string[], flags: Record<string, string>): Promise<void> {
   switch (subcommand) {
     case 'aggressive': return cmdStrategyAggressive(flags);
@@ -836,8 +978,13 @@ async function cmdStrategy(subcommand: string | undefined, rest: string[], flags
     case 'stop-and-reverse': return cmdStrategyStopAndReverse(flags);
     case 'roll': return cmdStrategyRoll(flags);
     case 'prepend-then-sweep': return cmdStrategyPrependThenSweep(flags);
+    case 's-twap': return cmdStrategySTwap(flags);
+    case 's-pre-resolution-arb': return cmdStrategySPreResolutionArb(flags);
+    case 's-cash-raise': return cmdStrategySCashRaise(flags);
+    case 's-iceberg': return cmdStrategySIceberg(flags);
+    case 's-time-emergency': return cmdStrategySTimeEmergency(flags);
     default:
-      die(`unknown strategy subcommand: ${subcommand ?? '(none)'}. Valid: aggressive, stealth, limit-ladder, stop-and-reverse, roll, prepend-then-sweep`);
+      die(`unknown strategy subcommand: ${subcommand ?? '(none)'}. Valid: aggressive, stealth, limit-ladder, stop-and-reverse, roll, prepend-then-sweep, s-twap, s-pre-resolution-arb, s-cash-raise, s-iceberg, s-time-emergency`);
   }
 }
 

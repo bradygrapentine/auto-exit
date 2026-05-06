@@ -50,6 +50,11 @@ import { LimitLadderRunner } from './limitLadder.js';
 import { SStopAndReverseRunner } from './strategies/sStopAndReverse.js';
 import { SRollRunner } from './strategies/sRoll.js';
 import { buildSPrependThenSweepArgs, SPrependThenSweepRunner } from './strategies/sPrependThenSweep.js';
+import { buildSTwapArgs, STwapRunner } from './strategies/sTwap.js';
+import { buildSPreResolutionArbArgs, SPreResolutionArbRunner } from './strategies/sPreResolutionArb.js';
+import { buildSCashRaiseArgs, SCashRaiseRunner } from './strategies/sCashRaise.js';
+import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
+import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
 
 // ── Synthetic kind validation ─────────────────────────────────────────────────
 const SYNTHETIC_KINDS = ['stop_loss', 'stop_limit', 'trailing_stop', 'take_profit', 'oco', 'bracket', 'time_stop', 'step_trail'] as const;
@@ -285,6 +290,7 @@ export function buildMcpServer(): McpServer {
         safetySubmittedMultiple: z.number().min(1.0).max(1.2).optional().describe('Multiplier cap on submitted shares [1.0, 1.2]'),
         floorPriceCents: z.number().int().min(0).max(99).optional().describe('Minimum sell price in cents [0, 99]'),
         tailSweepThreshold: z.number().min(0).max(1_000_000).optional().describe('Tail sweep threshold [0, 1_000_000]'),
+        maxParticipationRate: z.number().min(0).max(1).optional().describe('W3.1: Max fraction of recent-minute volume to submit per minute [0, 1]. 0 = disabled.'),
       },
     },
     (args) => {
@@ -809,6 +815,177 @@ export function buildMcpServer(): McpServer {
         const s15config = buildSPrependThenSweepArgs({ ticker, side, action, size, prependWindowMs, confirmedPrepend: true, oneTickIn });
         const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
         const result = await new SPrependThenSweepRunner(client, s15config).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_s_twap',
+    {
+      description:
+        'S3: Time-Weighted Average Price (TWAP). Splits a position into N equal time slices, ' +
+        'executing each slice via S1 passive at fixed intervals. Minimizes market impact over time. ' +
+        'side is "buy" or "sell" (not yes/no — passive direction).',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['buy', 'sell']).describe('Direction of the TWAP execution'),
+        size: z.number().int().positive().describe('Total contracts to execute'),
+        intervalMinutes: z.number().positive().describe('Minutes between each TWAP slice'),
+        numIntervals: z.number().int().min(2).describe('Number of time slices (minimum 2)'),
+        jobId: z.string().optional().describe('Optional job ID for journaling'),
+      },
+    },
+    async ({ ticker, side, size, intervalMinutes, numIntervals, jobId }) => {
+      try {
+        const config = buildSTwapArgs({ ticker, side, size, intervalMinutes, numIntervals, jobId });
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const result = await new STwapRunner({
+          ...config,
+          passiveInvoke: async (cfg) => {
+            const { run } = await import('./passive.js');
+            return run(client, cfg);
+          },
+        }).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_s_pre_resolution_arb',
+    {
+      description:
+        'S6: Pre-resolution arbitrage exit. Phase 1 posts an IoC at bid+1¢ (sell) / ask-1¢ (buy) ' +
+        'for full size. If unfilled within arbTimeboxMs, phase 2 sweeps remainder via S2 aggressive ' +
+        'at best bid/ask respecting floorPriceCents.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['yes', 'no']).describe('Side held (yes/no)'),
+        size: z.number().int().positive().describe('Total contracts to exit'),
+        arbTimeboxMs: z.number().int().positive().describe('Max ms to wait for phase 1 before escalating to phase 2'),
+        floorPriceCents: z.number().int().min(1).max(99).describe('Minimum fill price in cents for phase 2 [1, 99]'),
+      },
+    },
+    async ({ ticker, side, size, arbTimeboxMs, floorPriceCents }) => {
+      try {
+        const config = buildSPreResolutionArbArgs({ ticker, side, size, arbTimeboxMs, floorPriceCents });
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const result = await new SPreResolutionArbRunner(client, config).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_s_cash_raise',
+    {
+      description:
+        'S10: Cash-raise sequencer. Executes a pre-ranked list of sell positions sequentially until ' +
+        'a target cash amount is raised or a deadline is hit. Stops early when target met or deadline passed.',
+      inputSchema: {
+        positions: z.array(z.object({
+          ticker: z.string().min(1).describe('Market ticker for this position'),
+          side: z.literal('sell').describe('Side (always sell for cash-raise)'),
+          size: z.number().int().positive().describe('Number of contracts to sell'),
+          strategyName: z.enum(['aggressive', 'passive']).describe('Execution strategy for this position'),
+        })).min(1).describe('Ordered list of positions to liquidate'),
+        targetCashDollars: z.number().positive().describe('Target cash to raise in dollars'),
+        deadlineEpochMs: z.number().int().positive().describe('Unix epoch ms after which sequencer halts'),
+      },
+    },
+    async ({ positions, targetCashDollars, deadlineEpochMs }) => {
+      try {
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: 'PLACEHOLDER' });
+        const config = buildSCashRaiseArgs({
+          positions,
+          targetCashDollars,
+          deadlineEpochMs,
+          aggressiveInvoke: async (cfg) => {
+            const { AggressiveRunner: AR } = await import('./aggressive.js');
+            return new AR(client, cfg).run();
+          },
+          passiveInvoke: async (cfg) => {
+            const { run } = await import('./passive.js');
+            return run(client, cfg);
+          },
+          getCurrentBidCents: async (ticker) => {
+            const book = await client.getOrderbook(ticker, 1);
+            return book.yes[0]?.priceCents ?? 0;
+          },
+        });
+        const result = await new SCashRaiseRunner(config).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_s_iceberg',
+    {
+      description:
+        'S13: Iceberg order. Hides the total order size by only showing a small visible slice at one time. ' +
+        'Reposts a fresh slice immediately after each fill until fully executed or stopped.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['yes', 'no']).describe('Side held (yes/no)'),
+        size: z.number().int().positive().describe('Total contracts to fill across all slices'),
+        visibleSize: z.number().int().positive().describe('Visible slice size per resting order (must be <= size)'),
+        priceCents: z.number().int().min(1).max(99).describe('Limit price in integer cents [1, 99]'),
+        jobId: z.string().optional().describe('Optional job ID for journaling'),
+      },
+    },
+    async ({ ticker, side, size, visibleSize, priceCents, jobId }) => {
+      try {
+        const validatedArgs = buildSIcebergArgs({ ticker, side, size, visibleSize, priceCents });
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const result = await new IcebergRunner({
+          ...validatedArgs,
+          postOrderInvoke: async (qty, orderSide, price) => {
+            const r = await client.createOrder({
+              ticker,
+              side: orderSide,
+              action: 'sell',
+              type: 'limit',
+              count: qty,
+              yes_price: price,
+              time_in_force: 'good_till_canceled',
+              reduce_only: false,
+              client_order_id: `kea-iceberg-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            });
+            return r.orderId;
+          },
+          getOrderStatusInvoke: async (orderId) => {
+            const r = await client.getOrder(orderId);
+            return { filled: r.filledCount, remaining: r.remainingCount };
+          },
+          cancelOrderInvoke: async (orderId) => { await client.cancelOrder(orderId); },
+          jobId,
+        }).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_s_time_emergency',
+    {
+      description:
+        'S16: Time-to-expiry emergency unwind (sell-only). Clock-driven 4-phase escalation: ' +
+        'T-60min passive → T-30min S7 scale-out → T-10min aggressive → T-2min cross-any-bid. ' +
+        'Transitions after each phase completes; skips phases already past at start time.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        size: z.number().int().positive().describe('Total contracts to unwind (sell-only)'),
+        contractCloseEpochMs: z.number().int().positive().describe('Unix epoch ms when the contract closes'),
+        jobId: z.string().optional().describe('Optional job ID for journaling'),
+      },
+    },
+    async ({ ticker, size, contractCloseEpochMs, jobId }) => {
+      try {
+        const config = buildSTimeEmergencyArgs({ ticker, side: 'sell', size, contractCloseEpochMs });
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const result = await new STimeEmergencyRunner(client, { ...config, jobId }).run();
         return jsonContent(result);
       } catch (err) { return errorContent(err); }
     },
