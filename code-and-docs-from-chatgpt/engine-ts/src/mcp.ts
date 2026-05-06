@@ -43,7 +43,7 @@ import { evaluate } from './synthetics/index.js';
 import type { Synthetic } from './types.js';
 
 // ── Synthetic kind validation ─────────────────────────────────────────────────
-const SYNTHETIC_KINDS = ['stop_loss', 'stop_limit', 'trailing_stop', 'take_profit', 'oco', 'bracket'] as const;
+const SYNTHETIC_KINDS = ['stop_loss', 'stop_limit', 'trailing_stop', 'take_profit', 'oco', 'bracket', 'time_stop', 'step_trail'] as const;
 
 const PriceLevelSchema = z.object({
   priceCents: z.number(),

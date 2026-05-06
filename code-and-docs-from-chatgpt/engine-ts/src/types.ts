@@ -372,7 +372,8 @@ export interface HarvestPlannerOutput {
 
 export type SyntheticKind =
   | 'stop_loss' | 'stop_limit' | 'trailing_stop'
-  | 'take_profit' | 'oco' | 'bracket';
+  | 'take_profit' | 'oco' | 'bracket'
+  | 'time_stop' | 'step_trail';
 
 export type SyntheticStatus = 'armed' | 'fired' | 'canceled' | 'fire_failed';
 
@@ -423,9 +424,32 @@ export interface BracketParams {
   stopLossCents: number;
 }
 
+/**
+ * Time-stop fires when wall-clock time passes a deadline AND (optional) the top
+ * bid is below an exit threshold. With no exitIfBelowCents, fires purely on time.
+ */
+export interface TimeStopParams {
+  deadlineTimestamp: string;        // ISO 8601
+  exitIfBelowCents?: number;
+  executionStrategy?: 'losing_exit' | 'aggressive';
+}
+
+/**
+ * Step-trail variant of trailing-stop: peak only updates when currentBid exceeds
+ * peak by at least `stepCents`. Smoother than continuous-peak trailing on noisy books.
+ */
+export interface StepTrailParams {
+  trailCents: number;
+  stepCents: number;
+  floorPriceCents?: number;
+}
+
+export interface StepTrailState { peakBidCentsExact: number; }
+
 export type SyntheticParams =
   | StopLossParams | StopLimitParams | TrailingStopParams
-  | TakeProfitParams | OcoParams | BracketParams;
+  | TakeProfitParams | OcoParams | BracketParams
+  | TimeStopParams | StepTrailParams;
 
 // State shapes — empty {} for stateless evaluators.
 export interface TrailingStopState { peakBidCentsExact: number; }
@@ -435,7 +459,8 @@ export interface BracketState { childIds: [string, string]; firedChildId?: strin
 
 export type SyntheticState =
   | Record<string, never>
-  | TrailingStopState | TakeProfitState | OcoState | BracketState;
+  | TrailingStopState | TakeProfitState | OcoState | BracketState
+  | StepTrailState;
 
 export interface Synthetic {
   id: string;                          // 'syn-<uuid>'
