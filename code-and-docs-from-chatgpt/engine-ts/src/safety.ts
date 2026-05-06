@@ -95,6 +95,11 @@ export function setSafety(
       throw new RangeError('tailSweepThreshold must be in [0, 1_000_000]');
     }
   }
+  if (patch.maxParticipationRate !== undefined) {
+    if (patch.maxParticipationRate < 0 || patch.maxParticipationRate > 1) {
+      throw new RangeError('maxParticipationRate must be in [0, 1]');
+    }
+  }
 
   const current = getSafety();
   const updated: SafetyConfig = { ...current, ...patch };

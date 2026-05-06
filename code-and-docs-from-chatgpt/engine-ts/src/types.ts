@@ -217,6 +217,8 @@ export interface SafetyConfig {
   dailyLossCircuitBreakerDollars?: number;
   /** Max % of portfolio NAV in one position (0–100). Skipped when portfolioNAV=0. */
   maxPositionConcentrationPct?: number;
+  /** W3.1: Max fraction of recent-minute volume to submit per minute (0–1). 0 = disabled. */
+  maxParticipationRate?: number;
 }
 
 export type JournalKind =

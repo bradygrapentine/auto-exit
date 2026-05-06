@@ -13,6 +13,11 @@ import { LimitLadderRunner } from './limitLadder.js';
 import { SStopAndReverseRunner } from './strategies/sStopAndReverse.js';
 import { SRollRunner } from './strategies/sRoll.js';
 import { buildSPrependThenSweepArgs, SPrependThenSweepRunner } from './strategies/sPrependThenSweep.js';
+import { buildSTwapArgs, STwapRunner } from './strategies/sTwap.js';
+import { buildSPreResolutionArbArgs, SPreResolutionArbRunner } from './strategies/sPreResolutionArb.js';
+import { buildSCashRaiseArgs, SCashRaiseRunner } from './strategies/sCashRaise.js';
+import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
+import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
   const payload = JSON.stringify(body, null, 2);
@@ -276,6 +281,125 @@ export function createServer(baseConfig: ExitConfig): http.Server {
           const s15config = buildSPrependThenSweepArgs({ ticker, side, action, size, prependWindowMs, confirmedPrepend: true, oneTickIn });
           const client = new KalshiClient(baseConfig);
           const result = await new SPrependThenSweepRunner(client, s15config).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/s-twap') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, side, size, intervalMinutes, numIntervals, jobId } = body ?? {};
+        if (!ticker || !side || size == null || intervalMinutes == null || numIntervals == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, side, size, intervalMinutes, numIntervals' });
+        }
+        try {
+          const config = buildSTwapArgs({ ticker, side, size, intervalMinutes, numIntervals, jobId });
+          const client = new KalshiClient(baseConfig);
+          const result = await new STwapRunner({
+            ...config,
+            passiveInvoke: async (cfg) => {
+              const { run } = await import('./passive.js');
+              return run(client, cfg);
+            },
+          }).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/s-pre-resolution-arb') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, side, size, arbTimeboxMs, floorPriceCents } = body ?? {};
+        if (!ticker || !side || size == null || arbTimeboxMs == null || floorPriceCents == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, side, size, arbTimeboxMs, floorPriceCents' });
+        }
+        try {
+          const config = buildSPreResolutionArbArgs({ ticker, side, size, arbTimeboxMs, floorPriceCents });
+          const client = new KalshiClient(baseConfig);
+          const result = await new SPreResolutionArbRunner(client, config).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/s-cash-raise') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { positions, targetCashDollars, deadlineEpochMs } = body ?? {};
+        if (!positions || targetCashDollars == null || deadlineEpochMs == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: positions, targetCashDollars, deadlineEpochMs' });
+        }
+        try {
+          const client = new KalshiClient(baseConfig);
+          const config = buildSCashRaiseArgs({
+            positions,
+            targetCashDollars,
+            deadlineEpochMs,
+            aggressiveInvoke: async (cfg) => {
+              const { AggressiveRunner: AR } = await import('./aggressive.js');
+              return new AR(client, cfg).run();
+            },
+            passiveInvoke: async (cfg) => {
+              const { run } = await import('./passive.js');
+              return run(client, cfg);
+            },
+            getCurrentBidCents: async (ticker) => {
+              const book = await client.getOrderbook(ticker, 1);
+              return book.yes[0]?.priceCents ?? 0;
+            },
+          });
+          const result = await new SCashRaiseRunner(config).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/s-iceberg') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, side, size, visibleSize, priceCents, jobId } = body ?? {};
+        if (!ticker || !side || size == null || visibleSize == null || priceCents == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, side, size, visibleSize, priceCents' });
+        }
+        try {
+          const validatedArgs = buildSIcebergArgs({ ticker, side, size, visibleSize, priceCents });
+          const client = new KalshiClient(baseConfig);
+          const result = await new IcebergRunner({
+            ...validatedArgs,
+            postOrderInvoke: async (qty, orderSide, price) => {
+              const r = await client.createOrder({
+                ticker,
+                side: orderSide,
+                action: 'sell',
+                type: 'limit',
+                count: qty,
+                yes_price: price,
+                time_in_force: 'good_till_canceled',
+                reduce_only: false,
+                client_order_id: `kea-iceberg-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              });
+              return r.orderId;
+            },
+            getOrderStatusInvoke: async (orderId) => {
+              const r = await client.getOrder(orderId);
+              return { filled: r.filledCount, remaining: r.remainingCount };
+            },
+            cancelOrderInvoke: async (orderId) => { await client.cancelOrder(orderId); },
+            jobId,
+          }).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/s-time-emergency') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, size, contractCloseEpochMs, jobId } = body ?? {};
+        if (!ticker || size == null || contractCloseEpochMs == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, size, contractCloseEpochMs' });
+        }
+        try {
+          const config = buildSTimeEmergencyArgs({ ticker, side: 'sell', size, contractCloseEpochMs });
+          const client = new KalshiClient(baseConfig);
+          const result = await new STimeEmergencyRunner(client, { ...config, jobId }).run();
           return json(res, 200, { ok: true, result });
         } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
       }
