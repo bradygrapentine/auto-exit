@@ -37,7 +37,23 @@ import { loadActive } from './credentials.js';
 import { getSafety, setSafety, listForbidden, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
 import { computeHarvestPlan } from './harvestPlanner.js';
 import { Journal } from './journal.js';
-import type { ExitConfig, Side, TcaEntry } from './types.js';
+import type { ExitConfig, Side, TcaEntry, PriceLevel } from './types.js';
+import { getWatcher, isWatcherInitialized } from './watcherSingleton.js';
+import { evaluate } from './synthetics/index.js';
+import type { Synthetic } from './types.js';
+
+// ── Synthetic kind validation ─────────────────────────────────────────────────
+const SYNTHETIC_KINDS = ['stop_loss', 'stop_limit', 'trailing_stop', 'take_profit', 'oco', 'bracket'] as const;
+
+const PriceLevelSchema = z.object({
+  priceCents: z.number(),
+  size: z.number(),
+});
+
+const OrderbookSchema = z.object({
+  yes: z.array(PriceLevelSchema),
+  no: z.array(PriceLevelSchema),
+});
 
 function jsonContent(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
@@ -353,6 +369,142 @@ export function buildMcpServer(): McpServer {
         }
         const avgSlippageCents = tcaEntries.reduce((s, e) => s + e.slippageCents, 0) / tcaEntries.length;
         return jsonContent({ jobId, chunks: tcaEntries.length, avgSlippageCents, entries: tcaEntries });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  // ── Synthetic order tools ────────────────────────────────────────────────────
+
+  server.registerTool(
+    'kea_synthetic_register',
+    {
+      description:
+        'Register a new synthetic order (stop-loss, stop-limit, trailing-stop, take-profit, OCO, bracket). ' +
+        'Returns the synthetic id. Watcher singleton must be initialized.',
+      inputSchema: {
+        kind: z.enum(SYNTHETIC_KINDS).describe('Synthetic order kind'),
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['yes', 'no']).describe('Side of the position held'),
+        positionSize: z.number().positive().describe('Number of contracts held'),
+        params: z.record(z.unknown()).describe('Kind-specific params (e.g. { triggerPriceCents: 30 })'),
+        autoCancelOnZeroPosition: z.boolean().optional().describe('Auto-cancel when position reaches zero (default true)'),
+        selfTradePrevention: z.enum(['taker_at_cross', 'maker']).optional().describe('STP mode'),
+      },
+    },
+    (args) => {
+      try {
+        if (!isWatcherInitialized()) {
+          return errorContent(new Error('Watcher singleton not initialized. Call initWatcher() or setWatcherForTests() first.'));
+        }
+        const id = getWatcher().register({
+          kind: args.kind,
+          ticker: args.ticker,
+          side: args.side as 'yes' | 'no',
+          positionSize: args.positionSize,
+          params: args.params as Synthetic['params'],
+          autoCancelOnZeroPosition: args.autoCancelOnZeroPosition,
+          selfTradePrevention: args.selfTradePrevention,
+        });
+        return jsonContent({ id });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_synthetic_list',
+    {
+      description: 'List all registered synthetics (all statuses) from the Watcher singleton.',
+      inputSchema: {},
+    },
+    () => {
+      try {
+        if (!isWatcherInitialized()) {
+          return errorContent(new Error('Watcher singleton not initialized. Call initWatcher() or setWatcherForTests() first.'));
+        }
+        return jsonContent(getWatcher().list());
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_synthetic_get',
+    {
+      description: 'Get a single synthetic by id. Returns null if not found.',
+      inputSchema: {
+        id: z.string().min(1).describe('Synthetic id (syn-<uuid>)'),
+      },
+    },
+    ({ id }) => {
+      try {
+        if (!isWatcherInitialized()) {
+          return errorContent(new Error('Watcher singleton not initialized. Call initWatcher() or setWatcherForTests() first.'));
+        }
+        return jsonContent(getWatcher().get(id) ?? null);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_synthetic_cancel',
+    {
+      description: 'Cancel an armed synthetic by id. Returns { canceled: true } on success, false if already fired/canceled.',
+      inputSchema: {
+        id: z.string().min(1).describe('Synthetic id to cancel'),
+      },
+    },
+    ({ id }) => {
+      try {
+        if (!isWatcherInitialized()) {
+          return errorContent(new Error('Watcher singleton not initialized. Call initWatcher() or setWatcherForTests() first.'));
+        }
+        return jsonContent({ canceled: getWatcher().cancel(id) });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_synthetic_preview',
+    {
+      description:
+        'Dry-run evaluation: given a synthetic spec and a snapshot orderbook, returns whether it would fire now and the distance to trigger. ' +
+        'DEVIATION FROM PLAN: caller must supply `book` (yes/no PriceLevel arrays) rather than fetching live — avoids coupling preview to the live client. ' +
+        'Use kea_orderbook to fetch a book snapshot first.',
+      inputSchema: {
+        kind: z.enum(SYNTHETIC_KINDS).describe('Synthetic order kind'),
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['yes', 'no']).describe('Side of the position held'),
+        positionSize: z.number().positive().describe('Number of contracts held'),
+        params: z.record(z.unknown()).describe('Kind-specific params'),
+        book: OrderbookSchema.describe('Orderbook snapshot ({ yes: PriceLevel[]; no: PriceLevel[] })'),
+      },
+    },
+    (args) => {
+      try {
+        const ephemeral: Synthetic = {
+          id: 'preview',
+          kind: args.kind,
+          ticker: args.ticker,
+          side: args.side as 'yes' | 'no',
+          positionSize: args.positionSize,
+          params: args.params as Synthetic['params'],
+          state: {},
+          status: 'armed',
+          createdAt: new Date().toISOString(),
+          selfTradePrevention: 'taker_at_cross',
+          autoCancelOnZeroPosition: true,
+        };
+
+        const book = args.book as { yes: PriceLevel[]; no: PriceLevel[] };
+        const result = evaluate(ephemeral, book);
+
+        const topBidCents = (book.yes[0]?.priceCents ?? 0);
+
+        return jsonContent({
+          wouldFireNow: result.fire,
+          reason: result.reason,
+          topBidCents,
+          distanceCentsToTrigger: result.distanceCentsToTrigger,
+        });
       } catch (err) { return errorContent(err); }
     },
   );
