@@ -1,4 +1,7 @@
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { loadConfig, mergeConfig, parseArgs } from './config.js';
 import { ExitRunner } from './exitRunner.js';
 import type { ExitConfig, ExitConfigPatch, JobStatus, Synthetic, Orderbook } from './types.js';
@@ -38,6 +41,9 @@ import {
 } from './workflows/index.js';
 import { validateWorkflow } from './workflows/validate.js';
 import type { Policy } from './workflows/policies.js';
+import { joinFires } from './edge/lifecycle.js';
+import { groupByStrategy, groupByMarket, triggerHistogram, paramSensitivity } from './edge/aggregate.js';
+import { attribute } from './edge/attribution.js';
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
   const payload = JSON.stringify(body, null, 2);
@@ -862,6 +868,100 @@ export function createServer(baseConfig: ExitConfig): http.Server {
         const removed = getPolicyEngine().removePolicy(policyId);
         if (!removed) return json(res, 404, { ok: false, error: `Policy not found: ${policyId}` });
         return json(res, 200, { ok: true, removed: policyId });
+      }
+
+      // ── Edge analytics routes ─────────────────────────────────────────────
+
+      if (req.method === 'GET' && url.pathname === '/edge/summary') {
+        try {
+          const sinceParam = url.searchParams.get('since');
+          const untilParam = url.searchParams.get('until');
+          const minNotionalParam = url.searchParams.get('minNotional');
+          const sinceMs = sinceParam ? new Date(sinceParam).getTime() : Date.now() - 30 * 24 * 60 * 60 * 1000;
+          const untilMs = untilParam ? new Date(untilParam).getTime() : Date.now();
+          const minNotional = minNotionalParam ? parseFloat(minNotionalParam) : 0;
+
+          const home = process.env['KEA_HOME'] ?? path.join(os.homedir(), '.kalshi-exit-assistant');
+          const jobsDir = path.join(home, 'jobs');
+          const allEntries = fs.existsSync(jobsDir)
+            ? fs.readdirSync(jobsDir)
+                .filter((f) => f.endsWith('.jsonl'))
+                .flatMap((f) => {
+                  try {
+                    return fs.readFileSync(path.join(jobsDir, f), 'utf8')
+                      .split('\n')
+                      .filter((l) => l.trim().length > 0)
+                      .flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+                  } catch { return []; }
+                })
+            : [];
+
+          const fires = joinFires(allEntries).filter((fire) => {
+            const jobTs = parseInt(fire.jobId.split('-')[0] ?? '0', 10);
+            if (jobTs < sinceMs || jobTs > untilMs) return false;
+            const notional = (fire.entryFills.reduce((s, f) => s + (f.size ?? 0), 0) * (fire.decisionMidCents ?? 50)) / 100 / 100;
+            return notional >= minNotional;
+          });
+
+          const groups = groupByStrategy(fires);
+          const table = groups.map((g) => ({
+            strategy: g.strategy,
+            fires: g.fires.length,
+            totalRealizedPnLDollars: g.totalRealizedPnLDollars,
+            avgEdgePerFireDollars: g.avgEdgePerFireDollars,
+            sharpeIsh: g.sharpeIsh,
+            attribution: g.attribution,
+          }));
+
+          const noiseWarning = groups.some((g) => g.fires.length < 5)
+            ? 'Some strategies have n<5 fires; edge estimates unreliable.'
+            : undefined;
+
+          return json(res, 200, { ok: true, since: new Date(sinceMs).toISOString(), until: new Date(untilMs).toISOString(), totalFires: fires.length, strategies: table, ...(noiseWarning ? { noiseWarning } : {}) });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'GET' && url.pathname === '/edge/per-strategy') {
+        try {
+          const strategy = url.searchParams.get('strategy');
+          if (!strategy) return json(res, 400, { ok: false, error: 'Missing required query param: strategy' });
+          const sinceParam = url.searchParams.get('since');
+          const paramNameParam = url.searchParams.get('paramName');
+          const sinceMs = sinceParam ? new Date(sinceParam).getTime() : Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+          const home = process.env['KEA_HOME'] ?? path.join(os.homedir(), '.kalshi-exit-assistant');
+          const jobsDir = path.join(home, 'jobs');
+          const allEntries = fs.existsSync(jobsDir)
+            ? fs.readdirSync(jobsDir)
+                .filter((f) => f.endsWith('.jsonl'))
+                .flatMap((f) => {
+                  try {
+                    return fs.readFileSync(path.join(jobsDir, f), 'utf8')
+                      .split('\n')
+                      .filter((l) => l.trim().length > 0)
+                      .flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+                  } catch { return []; }
+                })
+            : [];
+
+          const fires = joinFires(allEntries).filter((fire) => {
+            if (fire.strategy !== strategy) return false;
+            const jobTs = parseInt(fire.jobId.split('-')[0] ?? '0', 10);
+            return jobTs >= sinceMs;
+          });
+
+          if (fires.length === 0) {
+            return json(res, 200, { ok: true, strategy, fires: 0, message: 'No fires found for this strategy in the given window.' });
+          }
+
+          const components = fires.map((f) => ({ fireId: f.fireId, jobId: f.jobId, ticker: f.ticker, ts: f.jobId.split('-')[0], ...attribute(f) }));
+          const marketGroups = groupByMarket(fires).map((g) => ({ category: g.category, fires: g.fires.length, totalRealizedPnLDollars: g.totalRealizedPnLDollars }));
+          const histogram = triggerHistogram(fires);
+          const sensitivity = paramNameParam ? paramSensitivity(fires, paramNameParam) : undefined;
+          const noiseWarning = fires.length < 5 ? `n=${fires.length} fires; edge estimate unreliable.` : undefined;
+
+          return json(res, 200, { ok: true, strategy, since: new Date(sinceMs).toISOString(), fires: fires.length, components, marketSegmentation: marketGroups, triggerHistogram: histogram, ...(sensitivity ? { paramSensitivity: sensitivity } : {}), ...(noiseWarning ? { noiseWarning } : {}) });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
       }
 
       return json(res, 404, { ok: false, error: 'not_found' });

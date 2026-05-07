@@ -74,6 +74,7 @@ describe('MCP server — tool registration', () => {
       'kea_alert_register',
       'kea_balance',
       'kea_bracket_arm',
+      'kea_edge_per_strategy', 'kea_edge_summary',
       'kea_ev',
       'kea_forbidden_add', 'kea_forbidden_list', 'kea_forbidden_remove',
       'kea_harvest_planner',

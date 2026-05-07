@@ -26,6 +26,8 @@
  *   kea_recommend       — rank strategies by EV × sqrt(Kelly size)
  *   kea_ev              — compute EV for a discrete decision action
  *   kea_size            — Kelly-optimal position sizing
+ *   kea_edge_summary    — per-strategy realized-edge table across all jobs
+ *   kea_edge_per_strategy — drill-down: fires + components + market seg + param sensitivity
  *
  * Run: `npx tsx src/mcp.ts` (stdio transport — register in your MCP host config).
  */
@@ -48,6 +50,9 @@ import { evaluate } from './synthetics/index.js';
 import type { Synthetic } from './types.js';
 import { KalshiClient } from './kalshiClient.js';
 import { buildSAggressiveOpts } from './strategies/sAggressive.js';
+import { joinFires } from './edge/lifecycle.js';
+import { groupByStrategy, groupByMarket, triggerHistogram, paramSensitivity } from './edge/aggregate.js';
+import { attribute } from './edge/attribution.js';
 import { AggressiveRunner } from './aggressive.js';
 import { buildSStealthArgs, StealthRunner } from './strategies/sStealth.js';
 import { buildSLimitLadderArgs } from './strategies/sLimitLadder.js';
@@ -1796,6 +1801,128 @@ export function buildMcpServer(): McpServer {
         const removed = getPolicyEngine().removePolicy(args.id);
         if (!removed) return errorContent(new Error(`Policy not found: ${args.id}`));
         return jsonContent({ ok: true, removed: args.id });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  // ── Edge analytics tools ──────────────────────────────────────────────────
+
+  server.registerTool(
+    'kea_edge_summary',
+    {
+      description:
+        'Per-strategy realized-edge summary table across all journal files in $KEA_HOME/jobs/. ' +
+        'Returns one row per strategy with fire count, total P&L, avg edge per fire, and Sharpe-ish ratio.',
+      inputSchema: {
+        since: z.string().optional().describe('ISO 8601 start date (inclusive). Default: 30 days ago.'),
+        until: z.string().optional().describe('ISO 8601 end date (inclusive). Default: now.'),
+        minNotional: z.number().optional().describe('Minimum notional in dollars to include a fire. Default: 0.'),
+      },
+    },
+    (args) => {
+      try {
+        const home = process.env['KEA_HOME'] ?? path.join(os.homedir(), '.kalshi-exit-assistant');
+        const jobsDir = path.join(home, 'jobs');
+        const sinceMs = args.since ? new Date(args.since).getTime() : Date.now() - 30 * 24 * 60 * 60 * 1000;
+        const untilMs = args.until ? new Date(args.until).getTime() : Date.now();
+        const minNotional = args.minNotional ?? 0;
+
+        const allEntries = fs.existsSync(jobsDir)
+          ? fs.readdirSync(jobsDir)
+              .filter((f) => f.endsWith('.jsonl'))
+              .flatMap((f) => {
+                try {
+                  return fs.readFileSync(path.join(jobsDir, f), 'utf8')
+                    .split('\n')
+                    .filter((l) => l.trim().length > 0)
+                    .flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+                } catch { return []; }
+              })
+          : [];
+
+        const fires = joinFires(allEntries).filter((fire) => {
+          const jobTs = parseInt(fire.jobId.split('-')[0] ?? '0', 10);
+          if (jobTs < sinceMs || jobTs > untilMs) return false;
+          const notional = (fire.entryFills.reduce((s, f) => s + (f.size ?? 0), 0) * (fire.decisionMidCents ?? 50)) / 100 / 100;
+          return notional >= minNotional;
+        });
+
+        const groups = groupByStrategy(fires);
+        const table = groups.map((g) => ({
+          strategy: g.strategy,
+          fires: g.fires.length,
+          totalRealizedPnLDollars: g.totalRealizedPnLDollars,
+          avgEdgePerFireDollars: g.avgEdgePerFireDollars,
+          sharpeIsh: g.sharpeIsh,
+          attribution: g.attribution,
+        }));
+
+        const noiseWarning = groups.some((g) => g.fires.length < 5)
+          ? 'Some strategies have n<5 fires; edge estimates unreliable.'
+          : undefined;
+
+        return jsonContent({ since: new Date(sinceMs).toISOString(), until: new Date(untilMs).toISOString(), totalFires: fires.length, strategies: table, ...(noiseWarning ? { noiseWarning } : {}) });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_edge_per_strategy',
+    {
+      description:
+        'Drill-down edge report for one strategy: fire list, P&L component breakdown, market segmentation, and parameter sensitivity.',
+      inputSchema: {
+        strategy: z.string().min(1).describe('Strategy name (e.g. "s-trail", "s-aggressive").'),
+        since: z.string().optional().describe('ISO 8601 start date (inclusive). Default: 30 days ago.'),
+        paramName: z.string().optional().describe('Trigger param name for sensitivity analysis (e.g. "trailCents").'),
+      },
+    },
+    (args) => {
+      try {
+        const home = process.env['KEA_HOME'] ?? path.join(os.homedir(), '.kalshi-exit-assistant');
+        const jobsDir = path.join(home, 'jobs');
+        const sinceMs = args.since ? new Date(args.since).getTime() : Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+        const allEntries = fs.existsSync(jobsDir)
+          ? fs.readdirSync(jobsDir)
+              .filter((f) => f.endsWith('.jsonl'))
+              .flatMap((f) => {
+                try {
+                  return fs.readFileSync(path.join(jobsDir, f), 'utf8')
+                    .split('\n')
+                    .filter((l) => l.trim().length > 0)
+                    .flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+                } catch { return []; }
+              })
+          : [];
+
+        const fires = joinFires(allEntries).filter((fire) => {
+          if (fire.strategy !== args.strategy) return false;
+          const jobTs = parseInt(fire.jobId.split('-')[0] ?? '0', 10);
+          return jobTs >= sinceMs;
+        });
+
+        if (fires.length === 0) {
+          return jsonContent({ strategy: args.strategy, fires: 0, message: 'No fires found for this strategy in the given window.' });
+        }
+
+        const components = fires.map((f) => ({ fireId: f.fireId, jobId: f.jobId, ticker: f.ticker, ts: f.jobId.split('-')[0], ...attribute(f) }));
+        const marketGroups = groupByMarket(fires).map((g) => ({ category: g.category, fires: g.fires.length, totalRealizedPnLDollars: g.totalRealizedPnLDollars }));
+        const histogram = triggerHistogram(fires);
+        const sensitivity = args.paramName ? paramSensitivity(fires, args.paramName) : undefined;
+
+        const noiseWarning = fires.length < 5 ? `n=${fires.length} fires; edge estimate unreliable.` : undefined;
+
+        return jsonContent({
+          strategy: args.strategy,
+          since: new Date(sinceMs).toISOString(),
+          fires: fires.length,
+          components,
+          marketSegmentation: marketGroups,
+          triggerHistogram: histogram,
+          ...(sensitivity ? { paramSensitivity: sensitivity } : {}),
+          ...(noiseWarning ? { noiseWarning } : {}),
+        });
       } catch (err) { return errorContent(err); }
     },
   );
