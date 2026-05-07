@@ -52,7 +52,7 @@ export function buildDaemon(deps: WatcherDaemonDeps): { watcher: Watcher; start:
     ...deps.fireDeps,
   };
 
-  const fireHook: FireHook = (s, reason) => invokeFire(s, fireDeps);
+  const fireHook: FireHook = async (s, reason) => { await invokeFire(s, fireDeps); };
   watcher.setFireHook(fireHook);
 
   return {
