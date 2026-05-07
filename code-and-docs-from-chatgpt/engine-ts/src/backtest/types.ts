@@ -128,3 +128,61 @@ export interface CounterfactualReport {
   /** ISO timestamp of when the report was generated. */
   generated_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Phase B types — FillResult, FillModel, ReplayCursor, SimulatedPosition
+// ---------------------------------------------------------------------------
+
+/** Result of a single simulated fill. Cents-as-integers throughout. */
+export interface FillResult {
+  /** Contracts actually filled (≤ requested size). */
+  filled: number;
+  /** Contracts not filled (e.g. book depth < order size, or FOK rejected). */
+  remaining: number;
+  /** Weighted-average fill price in integer cents. 0 when filled=0. */
+  fillPriceCents: number;
+  /** True when the order was the aggressor (crossed the spread). */
+  isTaker: boolean;
+  /**
+   * Taker fees in integer cents (rounded up, $0.01 minimum per Kalshi fee schedule).
+   * Uses fee formula: rawFee = 0.07 * shares * (priceCents/100) * (1 - priceCents/100).
+   * feesCents = max(ceil(rawFee * 100), 1) per fill segment, summed.
+   */
+  feesCents: number;
+  /**
+   * Warnings appended when the model has reduced fidelity for this order.
+   * E.g. queue_aware stub returns fill=0 and flags the caveat here.
+   */
+  assumptionsAdded: string[];
+}
+
+/** Fill simulation model. 'naive' is the default; 'queue_aware' is experimental. */
+export type FillModel = 'naive' | 'queue_aware';
+
+/** Internal cursor state for the ReplayKalshiClient. */
+export interface ReplayCursor {
+  /** Index into the entries array of the current snapshot entry. */
+  snapshotIndex: number;
+  /** ISO timestamp of the entry at snapshotIndex. */
+  ts: string;
+}
+
+/** Simulated position held by the replay client. */
+export interface SimulatedPosition {
+  ticker: string;
+  side: 'yes' | 'no';
+  quantity: number;
+}
+
+/** A single simulated fill record kept in the replay client's fill log. */
+export interface SimulatedFillRecord {
+  ts: string;
+  ticker: string;
+  orderId: string;
+  side: 'yes' | 'no';
+  requestedSize: number;
+  filled: number;
+  fillPriceCents: number;
+  isTaker: boolean;
+  feesCents: number;
+}
