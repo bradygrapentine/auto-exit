@@ -13,7 +13,16 @@ import { StrategyDropdown } from './StrategyDropdown';
 import { TickerField } from './TickerField';
 import { SizeField } from './SizeField';
 import { ConfirmModal } from './ConfirmModal';
-import { StatusView } from './StatusView';
+import { StatusView, type TerminalStatus } from './StatusView';
+
+export interface ExecutionSummary {
+  strategyId: StrategyId;
+  jobId: string;
+  filledTotal: number;
+  initialPosition: number;
+  ordersAttempted: number;
+  durationMs: number;
+}
 
 const ENGINE_BASE = 'http://localhost:7777';
 
@@ -178,6 +187,8 @@ interface StrategyViewProps {
   fetchFn?: typeof fetch;
   /** Initial strategy selection (for testing). */
   initialStrategy?: StrategyId | '';
+  /** Fired once when the post-submit status stream reaches terminal state. */
+  onComplete?: (summary: ExecutionSummary) => void;
 }
 
 export function StrategyView({
@@ -186,6 +197,7 @@ export function StrategyView({
   serverUrl = ENGINE_BASE,
   fetchFn = fetch,
   initialStrategy = '',
+  onComplete,
 }: StrategyViewProps) {
   const [selectedId, setSelectedId]       = useState<StrategyId | ''>(initialStrategy);
   const [fieldValues, setFieldValues]     = useState<FieldValues>({});
@@ -340,7 +352,22 @@ export function StrategyView({
       {/* Live status stream */}
       {jobId && (
         <div data-testid="status-view-wrapper">
-          <StatusView jobId={jobId} serverUrl={serverUrl} />
+          <StatusView
+            jobId={jobId}
+            serverUrl={serverUrl}
+            onTerminal={(t: TerminalStatus) => {
+              if (selectedId !== '' && onComplete) {
+                onComplete({
+                  strategyId: selectedId,
+                  jobId: t.jobId,
+                  filledTotal: t.filledTotal,
+                  initialPosition: t.initialPosition,
+                  ordersAttempted: t.ordersAttempted,
+                  durationMs: t.durationMs,
+                });
+              }
+            }}
+          />
         </div>
       )}
 
