@@ -1,17 +1,17 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-06 (strategy cluster 2 shipped — S3/S6/S10/S13/S16 + W3.1)
+Last `/backlog-sync`: 2026-05-06 (strategy cluster 3 shipped — S5/S14/SP2.1)
 
 | Status | Count |
 |--------|-------|
 | 🧊 Foundation (W1) | 0 |
-| 🧊 Strategy library (S) | 3 |
+| 🧊 Strategy library (S) | 1 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 4 |
 | 🧊 Tooling ecosystem (SH) | 5 |
-| 🧊 Surface parity (SP1–SP4) | 12 |
+| 🧊 Surface parity (SP1–SP4) | 11 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 36 |
+| ✅ Shipped (this log) | 39 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -74,24 +74,7 @@ _S3 TWAP shipped 2026-05-06 — see §7._
 
 _S4 stealth shipped 2026-05-06 — see §7._
 
-### 🧊 S5 — Pair / multi-leg (atomic, side-parameterized)
-**Tags:** engine
-
-**Trigger:** agent wants to open or close a multi-leg position
-(spread, hedge, range bet) atomically. Closing one leg without the other
-re-introduces directional risk; opening one leg ahead of the other
-exposes execution risk. Was W2.6 + EW2.6.
-
-**Proposed:** mode `pair`. Inputs: list of `{ ticker, side, size }`
-legs. Engine runs all legs in parallel under one job-id, shares one
-journal, enforces atomicity-of-progress: if any leg's book becomes
-unfillable, halt *all legs* and surface to agent. No leg outpaces others
-by more than `legSkewPct` (default 10%).
-
-**Cost:** ~2 days. Multi-leg job runner, parallel orderbook streams,
-skew-throttle logic, replay covering partial-leg-failure cases.
-
-**Dependency:** W1.5 buy primitive, W1.2 TCA for skew impact.
+_S5 multi-leg primitive shipped 2026-05-06 — see §7._
 
 _S6 pre-resolution arbitrage shipped 2026-05-06 — see §7._
 
@@ -130,29 +113,7 @@ for scope creep during implementation.
 
 _S13 iceberg shipped 2026-05-06 — see §7._
 
-### 🧊 S14 — Cross-resolution basis arbitrage
-**Tags:** engine
-
-**Trigger (NEW per Sonnet B 2026-05-02):** when YES and NO on the *same*
-market both trade below $1 (e.g. YES at 60¢ + NO at 38¢ = 98¢), buying
-both sides simultaneously locks a $1 terminal payoff for 98¢, a 2¢
-risk-free arbitrage. Engine has no mode that buys two correlated legs
-of the *same* market expecting collapse to terminal value.
-
-**Proposed:** mode `basis-arb`. Inputs: ticker, total dollar budget.
-Engine simultaneously buys YES at best ask + NO at best ask in
-proportional sizes, halts if total cost ≥ $1 per pair (no longer
-arbitrage). Single journal; both legs share atomicity-of-progress like
-S5 pair.
-
-**Engine-vs-agent line note:** the *decision* that an arbitrage exists
-right now is the agent's call (read both sides, do math). The engine's
-job is to execute both buys atomically once told to. Hard fail if the
-arb closes mid-execution.
-
-**Cost:** ~1.5 days after W1.5 + S5.
-
-**Dependency:** W1.5, S5 multi-leg primitive.
+_S14 basis arbitrage shipped 2026-05-06 — see §7._
 
 _S15 GTC-prepend-then-sweep shipped 2026-05-06 — see §7._
 
@@ -647,23 +608,7 @@ tickers with add/remove (add requires reason). Posts to a new
 Once the strategy library exists, every surface needs a way to launch any
 named strategy with the right inputs.
 
-### 🧊 SP2.1 — MCP: `kea_strategy_run` unified launcher
-**Tags:** tui-mcp [shared]
-
-**Trigger:** today the only writer-style MCP tool is whatever W1.1 ships.
-Once strategies exist, the agent should be able to launch any of them
-through one well-shaped tool.
-
-**Proposed:** new MCP tool `kea_strategy_run` with schema `{ strategy:
-enum, ticker, side, size, options? }`. Server-side validation routes to
-the right runner module (exitRunner / buyRunner / pairRunner / etc.).
-Returns `{ jobId }`. Existing `kea_journal_*` tools handle progress
-reads.
-
-**Cost:** ~1 day per 3 strategies once at least one of each shape
-(single-leg / multi-leg / market-making) exists.
-
-**Dependency:** at least S1 + S2 landed.
+_SP2.1 unified `kea_strategy_run` MCP launcher shipped 2026-05-06 — see §7._
 
 ### 🧊 SP2.2 — TUI: strategy picker tab
 **Tags:** tui-mcp
@@ -928,6 +873,29 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-06 — SP2.1 unified `kea_strategy_run` MCP launcher + S5/S14 surface wiring.** PR #63.
+  New `kea_strategy_run` MCP tool with `z.discriminatedUnion('strategy', ...)`
+  schema covering 13 strategies (S2/S3/S4/S5/S6/S8/S9/S10/S11/S13/S14/S15/S16);
+  CLI `kea strategy run` + HTTP `POST /strategies/run`. Plus per-strategy
+  wiring for S5 (`kea_strategy_s_pair`) and S14 (`kea_strategy_s_basis_arb`).
+  Plan: `engine-ts/docs/superpowers/plans/2026-05-06-strategy-cluster-3.md`.
+  Gaps flagged: S1 (passive) and SH-WATCH presets (s-trail/s-step-trail/
+  s-bracketed-exit/s-conditional-roll) not yet in unified enum.
+
+- **2026-05-06 — S14 cross-resolution basis arbitrage.** PR #62.
+  `src/strategies/sBasisArb.ts` — composes S5 multiLeg with hardcoded YES+NO
+  legs of the same ticker. Pre-flight rejects when `yesAsk+noAsk ≥ 100 +
+  perPairSlippageCents`; mid-flight close (book moves) halts both legs and
+  journals `basis_arb_closed_midflight`. 20 tests.
+
+- **2026-05-06 — S5 multi-leg primitive + S-pair preset.** PR #61.
+  `src/multiLeg.ts` — `MultiLegJobRunner` parallel leg orchestrator with
+  `legSkewPct` throttle (pause leading legs when progress skew exceeds
+  threshold; hysteresis resume at half threshold) and atomicity-of-progress
+  halt-all on any leg unfillable. `src/strategies/sPair.ts` — preset wrapper.
+  22 tests covering skew detection, halt propagation, mixed execution modes,
+  validation.
 
 - **2026-05-06 — Strategy cluster 2 surface wiring (CLI + MCP + HTTP) + W3.1 safety field.** PR #59.
   Wired all 5 cluster-2 strategies (S3/S6/S10/S13/S16) into `kea strategy <name>`
