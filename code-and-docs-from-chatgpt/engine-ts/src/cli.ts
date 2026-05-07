@@ -74,6 +74,10 @@ import type { Policy } from './workflows/policies.js';
 import { createMultiTickerRecorder } from './backtest/multiTickerRecorder.js';
 import { discoverTickers, writeTickerFile, readTickerFile } from './backtest/discover.js';
 import { syncRecordings } from './backtest/sync.js';
+import { runBacktest } from './backtest/harness.js';
+import { runSweep } from './backtest/sweep.js';
+import { formatReport, writeReport } from './backtest/report.js';
+import type { BacktestConfig, SweepConfig, CounterfactualReport } from './backtest/types.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
 function parseFlags(argv: string[]): Record<string, string> {
@@ -650,6 +654,19 @@ Scanner / recording commands:
                                      Start multi-ticker NDJSON recorder (runs until SIGINT/SIGTERM)
   record sync --fly-app <app> [--remote <path>] [--to <local-path>]
                                      Pull recordings from Fly.io volume via tar-pipe over fly ssh console
+
+Backtest commands:
+  backtest run --recording <path> --strategy <name>
+       [--params <json>] [--initial-position <json>]
+       [--ts-from <iso>] [--ts-to <iso>]
+       [--fill-model naive|queue_aware]
+       [--report-path <path>] [--mode markdown|json]
+                                     Replay a recording against a strategy; print counterfactual report
+  backtest sweep --recording <path> --strategy <name> --grid <json>
+       [--rank-by <field>] [--initial-position <json>] [--out-dir <path>]
+                                     Cartesian-expand grid, run one backtest per combo, print comparison table
+  backtest report --report-path <path> [--mode markdown|json]
+                                     Re-render an existing JSON report to stdout
 
 Alert commands:
   alerts register --ticker <T> --kind <kind> --side yes|no --size <N> --params <JSON>
@@ -1599,6 +1616,121 @@ function cmdEdge(flags: Record<string, string>): void {
   out('\n');
 }
 
+// ── backtest commands ─────────────────────────────────────────────────────────
+
+async function cmdBacktest(
+  subcommand: string | undefined,
+  _rest: string[],
+  flags: Record<string, string>,
+): Promise<void> {
+  switch (subcommand) {
+    case 'run': {
+      if (!flags['recording']) die('backtest run requires --recording <path>');
+      if (!flags['strategy']) die('backtest run requires --strategy <name>');
+
+      const params = flags['params'] ? JSON.parse(flags['params']) : {};
+      const initialPositionRaw = flags['initial-position']
+        ? (JSON.parse(flags['initial-position']) as { size: number; side: 'yes' | 'no'; costBasisCents: number })
+        : undefined;
+
+      const config: BacktestConfig = {
+        recordingPath: flags['recording'],
+        strategyId: flags['strategy'],
+        params,
+        fillModel: (flags['fill-model'] as BacktestConfig['fillModel']) ?? 'naive',
+        tsFrom: flags['ts-from'],
+        tsTo: flags['ts-to'],
+        initialPosition: initialPositionRaw
+          ? {
+              ticker: (params['ticker'] as string | undefined) ?? '',
+              side: initialPositionRaw.side,
+              quantity: initialPositionRaw.size,
+            }
+          : undefined,
+      };
+
+      let report: CounterfactualReport;
+      try {
+        report = await runBacktest(config);
+      } catch (err) {
+        process.stderr.write(`✗ backtest run failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exit(1);
+      }
+
+      if (flags['report-path']) {
+        writeReport(report, flags['report-path']);
+        process.stderr.write(`[backtest] report written → ${flags['report-path']}\n`);
+      }
+
+      const mode = (flags['mode'] as 'markdown' | 'json') ?? 'markdown';
+      process.stdout.write(formatReport(report, mode) + '\n');
+      return;
+    }
+
+    case 'sweep': {
+      if (!flags['recording']) die('backtest sweep requires --recording <path>');
+      if (!flags['strategy']) die('backtest sweep requires --strategy <name>');
+      if (!flags['grid']) die('backtest sweep requires --grid <json>');
+
+      const grid = JSON.parse(flags['grid']) as Record<string, unknown[]>;
+      const initialPositionRaw = flags['initial-position']
+        ? (JSON.parse(flags['initial-position']) as { size: number; side: 'yes' | 'no'; costBasisCents: number })
+        : undefined;
+      const baseParams: Record<string, unknown> = {};
+
+      const config: SweepConfig = {
+        recordingPath: flags['recording'],
+        strategyId: flags['strategy'],
+        grid,
+        baseParams,
+        rankBy: (flags['rank-by'] as keyof CounterfactualReport['summary']) ?? 'pnl_cents',
+        initialPosition: initialPositionRaw
+          ? {
+              ticker: '',
+              side: initialPositionRaw.side,
+              quantity: initialPositionRaw.size,
+            }
+          : undefined,
+      };
+
+      const result = await runSweep(config);
+
+      if (flags['out-dir']) {
+        const outDir = flags['out-dir'];
+        fs.mkdirSync(outDir, { recursive: true });
+        const ndjsonPath = path.join(outDir, 'sweep.ndjson');
+        const tablePath = path.join(outDir, 'sweep.md');
+        fs.writeFileSync(ndjsonPath, result.ndjson, 'utf-8');
+        fs.writeFileSync(tablePath, result.table, 'utf-8');
+        process.stderr.write(`[backtest] sweep results written → ${outDir}\n`);
+      }
+
+      process.stdout.write(result.table + '\n');
+      return;
+    }
+
+    case 'report': {
+      if (!flags['report-path']) die('backtest report requires --report-path <path>');
+
+      let report: CounterfactualReport;
+      try {
+        const raw = fs.readFileSync(flags['report-path'], 'utf-8');
+        report = JSON.parse(raw) as CounterfactualReport;
+      } catch (err) {
+        process.stderr.write(`✗ failed to read report: ${err instanceof Error ? err.message : String(err)}\n`);
+        process.exit(1);
+      }
+
+      const mode = (flags['mode'] as 'markdown' | 'json') ?? 'markdown';
+      process.stdout.write(formatReport(report, mode) + '\n');
+      return;
+    }
+
+    default:
+      die(`unknown backtest subcommand: ${subcommand ?? '(none)'}. Valid: run, sweep, report`);
+  }
+}
+
 // ── record commands ───────────────────────────────────────────────────────────
 
 async function cmdRecord(
@@ -1742,6 +1874,10 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'record': {
       const sub = rest.find((x) => !x.startsWith('--'));
       return cmdRecord(sub, rest, flags);
+    }
+    case 'backtest': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      return cmdBacktest(sub, rest, flags);
     }
     case 'help':
     case '--help':
