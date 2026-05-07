@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-07 (SH-BACKTEST Phase A/B1/B2 + scanner deploy shipped)
+Last `/backlog-sync`: 2026-05-07 (post-cluster hygiene — scanner + pre-live-backtest cluster shipped; SH-BACKTEST-RUNTICK + ENGINE-NAV-WIRE filed)
 
 | Status | Count |
 |--------|-------|
@@ -8,10 +8,10 @@ Last `/backlog-sync`: 2026-05-07 (SH-BACKTEST Phase A/B1/B2 + scanner deploy shi
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 3 |
+| 🧊 Tooling ecosystem (SH) | 4 |
 | 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 63 |
+| ✅ Shipped (this log) | 65 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -380,37 +380,49 @@ prior.
 
 _SH-RECOMMENDER EV/Kelly/strategy recommender shipped 2026-05-06 — see §7._
 
-### 🧊 SH-SCANNER-RATELIMIT — tune scanner cadences to stay under Kalshi rate ceiling
-**Tags:** engine [ops]
+_SH-SCANNER-RATELIMIT shipped 2026-05-07 — see §7._
 
-**Trigger:** initial Fly deploy (2026-05-07) ran 15 hot @ 500ms + 42
-standard @ 2s = ~51 req/sec sustained. Kalshi returned HTTP 429 on a
-meaningful fraction of polls. Snapshot counts still rise (retries land),
-but each 429 is wasted bandwidth + adds latency to the next successful
-poll.
+### 🧊 SH-BACKTEST-RUNTICK — `runOneTick()` seam in exitRunner / buyRunner
+**Tags:** engine [backtest]
 
-**Proposed:**
-1. Reduce default cadences in `discover.ts`: hot 500ms → 1000ms,
-   standard 2000ms → 5000ms. Sustained req/sec drops from ~51 to ~16 —
-   well under any reasonable read-endpoint limit.
-2. Add a token-bucket rate limiter to `multiTickerRecorder.ts` —
-   globally cap req/sec across all tickers. Default cap: 30 req/sec
-   (configurable via env var). Bucket refills at the cap rate. When
-   over, polls queue and pace themselves.
-3. Add 429 backoff: on receiving 429, the per-ticker poll loop sleeps
-   for `Retry-After` (or 1s default) before resuming. Don't tight-loop
-   retry.
+**Trigger:** SH-BACKTEST Phase C delivered the harness CLI surface (PR
+#114) and one ExitRunner adapter (`s-passive` in PR #115) but four more
+adapters (`s-trail`, `s-aggressive`, `s-twap`, and synthetics
+`trailing_stop` / `take_profit` / `oco` / `bracket`) carry
+`TODO(SH-BACKTEST Phase C)` markers in `src/backtest/harness.ts:131-135`.
+The blocker is that `ExitRunner.run()` and `BuyRunner.run()` are
+blocking loops with internal `sleep()` / timebox polling — there is no
+single-tick callable seam. Cloning each strategy's pricing logic
+into `src/backtest/adapters/*.ts` (as `s-passive` does) duplicates code
+and risks divergence as the live runners evolve.
 
-**Decide after:** ~24h of REST data. Compare snapshot density per ticker
-on the current cadence vs a reduced cadence. If reducing cadence loses
-meaningful fidelity, instead implement the token-bucket and keep
-nominal cadences.
+**Proposed:** extract a `runOneTick(state, snapshot, now)` pure function
+from each runner. The blocking `run()` becomes `while (!done) { state =
+runOneTick(...); await sleep(...); }`. Backtest adapters call
+`runOneTick` directly with replayed snapshots, no mock sleep needed.
 
-**Cost:** ~3-4h (cadence default + token bucket + 429 backoff + tests).
-Tunable, no architectural change.
+**Cost:** ~1-2 days. ExitRunner is the larger lift; BuyRunner mirrors.
+Each adapter then collapses to ~30 lines.
 
-**Dependency:** none — pure scanner-side change. Doesn't block
-SH-SCANNER-WS.
+**Dependency:** none.
+
+### 🧊 ENGINE-NAV-WIRE — pass real `portfolioNAVDollars` to risk gate
+**Tags:** engine [shared]
+
+**Trigger:** `buyRunner.ts:220` and `exitRunner.ts:375` both pass
+`portfolioNAVDollars: 0` into the SH-2 pre-trade risk check, which
+short-circuits the concentration-cap check (0 NAV → all positions
+flagged or no positions flagged depending on threshold semantics).
+Need to call `kalshiClient.fetchBalance()` (already implemented per
+SH-2 design) on runner startup and at each tick.
+
+**Proposed:** add `getPortfolioNAVDollars()` helper in `src/balance.ts`
+that wraps `fetchBalance` with a short TTL cache (10s); call from both
+runners before invoking the risk gate.
+
+**Cost:** ~2-3h (helper + cache + 2 wire-ups + tests).
+
+**Dependency:** none — `fetchBalance` already shipped in SH-2.
 
 ### 🧊 SH-SCANNER-WS — WebSocket transport for the multi-ticker scanner
 **Tags:** shared [engine, ops]
@@ -691,6 +703,25 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-07 — Pre-live-backtest cluster (4 PRs).** PRs #112, #113, #114, #115.
+  #112 SH-EDGE: `synthetic_fired` journal entries now include `peakBidCents`
+  + `triggerKind` (closes SH-EDGE Phase B optimal-mid TODO in lifecycle.ts;
+  Phase B TODOs in benchmarks.ts/aggregate.ts deferred to optimal-hindsight
+  consumer wiring). #113 W3.1: POV pacing (`maxParticipationRate` +
+  `computePaceDelayMs`) adopted in S3 TWAP + S4 stealth — was already
+  shipped as a helper, now wired. #114 SH-BACKTEST Phase C: `kea backtest
+  run / sweep / report` CLI surface (14 tests). #115 SH-BACKTEST Phase C:
+  ExitRunner adapter for `s-passive` (passive-clone approach until
+  `runOneTick()` seam lands — see SH-BACKTEST-RUNTICK story). 50 new tests.
+
+- **2026-05-07 — Scanner cluster operational fixes (3 PRs).** PRs #109, #110, #111.
+  #109 SH-SCANNER-BOOTSTRAP: Dockerfile auto-discovers `tickers.json` on
+  first run if missing. #110 SH-SCANNER-RATELIMIT: token bucket (30 req/s
+  default), cadence reduction (1s hot / 5s standard), 429 `Retry-After`
+  backoff. #111 SH-SCANNER-SYNC-FIX: replaced broken rsync wrapper with
+  tar-pipe over `fly ssh console` (Fly machines authenticate via Fly's
+  cert system, not OpenSSH keys).
 
 - **2026-05-07 — Multi-ticker scanner + Fly.io deploy scaffolding.** PRs #100 (ops), #101 (engine).
   `kea record start/discover/sync` CLI + `multiTickerRecorder` (N concurrent
