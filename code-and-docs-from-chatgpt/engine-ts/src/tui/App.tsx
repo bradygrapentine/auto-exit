@@ -9,8 +9,9 @@ import { AccountTab } from './AccountTab.js';
 import { SafetyTab } from './SafetyTab.js';
 import { SyntheticsTab } from './SyntheticsTab.js';
 import { StrategiesTab } from './StrategiesTab.js';
+import { ReportsTab } from './ReportsTab.js';
 
-type Tab = 'dashboard' | 'preview' | 'book' | 'journal' | 'account' | 'synthetics' | 'safety' | 'strategies';
+type Tab = 'dashboard' | 'preview' | 'book' | 'journal' | 'account' | 'synthetics' | 'safety' | 'strategies' | 'reports';
 
 interface DashboardState {
   balance?: BalanceData;
@@ -65,6 +66,7 @@ export function App() {
       else if (input === '6') setTab('synthetics');
       else if (input === '5') setTab('safety');
       else if (input === '7') setTab('strategies');
+      else if (input === '8') setTab('reports');
       else if (input === 'r' || input === 'R') refreshDashboard();
       else if (tab === 'dashboard') {
         if (key.upArrow) setDash((s) => ({ ...s, cursor: Math.max(0, s.cursor - 1) }));
@@ -93,6 +95,7 @@ export function App() {
       {tab === 'synthetics' && <SyntheticsTab />}
       {tab === 'safety' && <SafetyTab />}
       {tab === 'strategies' && <StrategiesTab />}
+      {tab === 'reports' && <ReportsTab positions={dash.positions.map((p) => ({ ticker: p.ticker, side: p.side === 'YES' ? 'yes' : 'no', size: Math.floor(p.quantity) }))} />}
       <Footer tab={tab} />
     </Box>
   );
@@ -142,23 +145,26 @@ function TabBar({ tab }: { tab: Tab }) {
       {item('a', 'account', 'account')}<Text> </Text>
       {item('6', 'synthetics', 'synthetics')}<Text> </Text>
       {item('5', 'safety', 'safety')}<Text> </Text>
-      {item('7', 'strategies', 'strategies')}
+      {item('7', 'strategies', 'strategies')}<Text> </Text>
+      {item('8', 'reports', 'reports')}
     </Box>
   );
 }
 
 function Footer({ tab }: { tab: Tab }) {
   const hint = tab === 'dashboard'
-    ? '[↑↓] select   [enter] preview selected   [r] refresh   [1-4/a/5/6] tabs   [q] quit'
+    ? '[↑↓] select   [enter] preview selected   [r] refresh   [1-4/a/5-8] tabs   [q] quit'
     : tab === 'account'
-    ? '[s] switch profile   [1-4/a/5/6] tabs   [q] quit'
+    ? '[s] switch profile   [1-4/a/5-8] tabs   [q] quit'
     : tab === 'synthetics'
-    ? '[↑↓] select   [c] cancel   [n] new   [1-4/a/5/6] tabs   [q] quit'
+    ? '[↑↓] select   [c] cancel   [n] new   [1-4/a/5-8] tabs   [q] quit'
     : tab === 'safety'
-    ? '[↑↓] select   [d] remove ticker   [1-4/a/5-7] tabs   [q] quit'
+    ? '[↑↓] select   [d] remove ticker   [1-4/a/5-8] tabs   [q] quit'
     : tab === 'strategies'
-    ? '[↑↓] select   [enter] open   [1-4/a/5-7] tabs   [q] quit'
-    : '[1-4/a/5-7] tabs   [r] refresh   [q] quit';
+    ? '[↑↓] select   [enter] open   [1-4/a/5-8] tabs   [q] quit'
+    : tab === 'reports'
+    ? '[t] TCA   [p] portfolio   [1-4/a/5-8] tabs   [q] quit'
+    : '[1-4/a/5-8] tabs   [r] refresh   [q] quit';
   return (
     <Box marginTop={1}><Text color="gray">{hint}</Text></Box>
   );

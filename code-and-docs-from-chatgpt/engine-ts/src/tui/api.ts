@@ -211,6 +211,115 @@ export function listJournalSummaries(limit = 20): JournalSummary[] {
   return out.slice(0, limit);
 }
 
+// ── Reports helpers ──────────────────────────────────────────────────────────
+
+export interface TcaJobSummary {
+  jobId: string;
+  filePath: string;
+  ticker: string;
+  side: string;
+  tcaChunks: number;
+}
+
+export interface TcaChunkRow {
+  chunkIndex: number;
+  arrivalMidCents: number;
+  executedPriceCents: number;
+  slippageCents: number;
+  chunkSize: number;
+}
+
+export interface PortfolioPlanEntry {
+  rank: number;
+  ticker: string;
+  side: 'yes' | 'no';
+  size: number;
+  markToBidDollars: number;
+  evHoldDollars: number;
+  overvaluedDollars: number;
+  recommendedStrategy: 'aggressive' | 'passive';
+}
+
+/** Return jobs that have at least one tca entry, most-recent first. */
+export function listTcaJobs(limit = 20): TcaJobSummary[] {
+  const home = process.env.KEA_HOME ?? path.join(os.homedir(), '.kalshi-exit-assistant');
+  const dir = path.join(home, 'jobs');
+  if (!fs.existsSync(dir)) return [];
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
+  const out: TcaJobSummary[] = [];
+  for (const f of files) {
+    const fp = path.join(dir, f);
+    try {
+      const raw = fs.readFileSync(fp, 'utf8');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const lines = raw.split('\n').filter(Boolean).flatMap((l) => { try { return [JSON.parse(l) as any]; } catch { return []; } });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tcaLines = lines.filter((e: any) => e?.kind === 'tca');
+      if (tcaLines.length === 0) continue;
+      const first = tcaLines[0];
+      out.push({
+        jobId: f.replace(/\.jsonl$/, ''),
+        filePath: fp,
+        ticker: String(first?.data?.ticker ?? first?.ticker ?? '—'),
+        side: String(first?.data?.side ?? first?.side ?? '—'),
+        tcaChunks: tcaLines.length,
+      });
+    } catch { /* skip unreadable */ }
+  }
+  out.sort((a, b) => b.jobId.localeCompare(a.jobId));
+  return out.slice(0, limit);
+}
+
+/** Read tca chunk rows from a journal file. */
+export function readTcaEntries(filePath: string): TcaChunkRow[] {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const lines = raw.split('\n').filter(Boolean).flatMap((l) => { try { return [JSON.parse(l) as any]; } catch { return []; } });
+  return lines
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .filter((e: any) => e?.kind === 'tca')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    .map((e: any) => {
+      const d = e?.data ?? e;
+      return {
+        chunkIndex: Number(d.chunkIndex ?? 0),
+        arrivalMidCents: Number(d.arrivalMidCents ?? 0),
+        executedPriceCents: Number(d.executedPriceCents ?? 0),
+        slippageCents: Number(d.slippageCents ?? 0),
+        chunkSize: Number(d.chunkSize ?? 0),
+      } as TcaChunkRow;
+    })
+    .sort((a, b) => a.chunkIndex - b.chunkIndex);
+}
+
+/** POST /portfolio/plan with positions + synthetic bids/mids derived from positions.
+ *  For v1 we send uniform bids=50 and mids=0.5 per position so the server can rank. */
+export async function fetchPortfolioPlan(
+  positions: { ticker: string; side: 'yes' | 'no'; size: number }[],
+): Promise<PortfolioPlanEntry[]> {
+  const bidByTicker: Record<string, number> = {};
+  const midProbabilities: Record<string, number> = {};
+  for (const p of positions) {
+    bidByTicker[p.ticker] = 50;
+    midProbabilities[p.ticker] = 0.5;
+  }
+  const body = {
+    positions: positions.map((p) => ({ ticker: p.ticker, side: p.side, size: p.size })),
+    bidByTicker,
+    midProbabilities,
+  };
+  const r = await fetch('/portfolio/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const j = await r.json() as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (j?.ranked ?? []) as PortfolioPlanEntry[];
+}
+
 export async function fetchRestingOrders(): Promise<RestingOrderRow[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const j = await getJson<{ orders?: any[] }>('/portfolio/orders');
