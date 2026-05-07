@@ -3,16 +3,18 @@ import { StrategyView, type ExecutionSummary } from './StrategyView';
 import { ProfileSelector } from './ProfileSelector';
 import { SafetyView } from './SafetyView';
 import { SummaryCard } from './SummaryCard';
+import { ReportsView } from './ReportsView';
 
-type Tab = 'strategies' | 'safety';
+type Tab = 'strategies' | 'safety' | 'reports';
 
 /**
  * Popup shell — 3-zone layout.
  *
  *   ProfileSlot     header  — SP1.7 (account/profile switcher)
- *   TabBar          tabs    — Strategies | Safety
+ *   TabBar          tabs    — Strategies | Safety | Reports
  *     StrategyView          — Strategies tab
  *     SafetySlot            — SP1.8 (safety panel + forbidden tickers)
+ *     ReportsView           — SP4.3 (TCA + portfolio plan)
  *   SummarySlot     footer  — SP1.5 (post-completion summary card)
  */
 export function App() {
@@ -26,6 +28,7 @@ export function App() {
       <main>
         {tab === 'strategies' && <StrategyView onComplete={setSummary} />}
         {tab === 'safety' && <SafetySlot />}
+        {tab === 'reports' && <ReportsView />}
       </main>
       <SummarySlot summary={summary} />
     </div>
@@ -59,6 +62,14 @@ function TabBar({ tab, onTabChange }: { tab: Tab; onTabChange: (t: Tab) => void 
         style={tab === 'safety' ? activeBtn : baseBtn}
       >
         Safety
+      </button>
+      <button
+        data-testid="tab-reports"
+        onClick={() => onTabChange('reports')}
+        aria-pressed={tab === 'reports'}
+        style={tab === 'reports' ? activeBtn : baseBtn}
+      >
+        Reports
       </button>
     </nav>
   );
