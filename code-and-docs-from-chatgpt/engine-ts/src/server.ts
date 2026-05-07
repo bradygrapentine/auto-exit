@@ -25,6 +25,7 @@ import { buildPortfolioPlan } from './portfolio.js';
 import { computeDecisionEV } from './decisionEv.js';
 import { computeKellySize } from './kellySizer.js';
 import { recommendStrategies } from './strategyRecommender.js';
+import { getSafety, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
   const payload = JSON.stringify(body, null, 2);
@@ -623,6 +624,52 @@ export function createServer(baseConfig: ExitConfig): http.Server {
           const result = computeKellySize(body);
           return json(res, 200, { ok: true, ...result });
         } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      // ── Account / profile routes (SP1.7) ─────────────────────────────────
+      // No profile system exists yet — /whoami returns a stub single-profile state.
+      // POST /whoami returns 501 until a real profile switcher is implemented.
+
+      if (req.method === 'GET' && url.pathname === '/whoami') {
+        return json(res, 200, { active: 'default', available: ['default'] });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/whoami') {
+        return json(res, 501, { ok: false, error: 'Profile switching not implemented — no profile system exists yet.' });
+      }
+
+      // ── Safety routes (SP1.8) ─────────────────────────────────────────────
+
+      if (req.method === 'GET' && url.pathname === '/safety') {
+        try {
+          return json(res, 200, { ok: true, safety: getSafety() });
+        } catch (err) { return json(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/safety/forbidden/add') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, reason } = body ?? {};
+        if (!ticker || typeof ticker !== 'string') {
+          return json(res, 400, { ok: false, error: 'Missing required field: ticker' });
+        }
+        if (!reason || typeof reason !== 'string') {
+          return json(res, 400, { ok: false, error: 'Missing required field: reason' });
+        }
+        try {
+          const entry = addForbiddenTicker(ticker, reason, 'extension');
+          return json(res, 200, { ok: true, entry });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      const forbiddenDeleteMatch = url.pathname.match(/^\/safety\/forbidden\/([^/]+)$/);
+      if (forbiddenDeleteMatch && req.method === 'DELETE') {
+        const ticker = decodeURIComponent(forbiddenDeleteMatch[1]!);
+        try {
+          const removed = removeForbiddenTicker(ticker);
+          if (!removed) return json(res, 404, { ok: false, error: `Ticker not on forbidden list: ${ticker}` });
+          return json(res, 200, { ok: true, removed });
+        } catch (err) { return json(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
       }
 
       return json(res, 404, { ok: false, error: 'not_found' });

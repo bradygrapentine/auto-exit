@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { StrategyView, type ExecutionSummary } from './StrategyView';
+import { ProfileSelector } from './ProfileSelector';
+import { SafetyView } from './SafetyView';
 
 type Tab = 'strategies' | 'safety';
 
@@ -64,13 +66,11 @@ function TabBar({ tab, onTabChange }: { tab: Tab; onTabChange: (t: Tab) => void 
 }
 
 function ProfileSlot() {
-  // SP1.7 replaces this with <ProfileSelector />.
-  return <div data-testid="profile-slot" />;
+  return <ProfileSelector />;
 }
 
 function SafetySlot() {
-  // SP1.8 replaces this with <SafetyView />.
-  return <div data-testid="safety-slot" />;
+  return <SafetyView />;
 }
 
 function SummarySlot({ summary }: { summary: ExecutionSummary | null }) {
