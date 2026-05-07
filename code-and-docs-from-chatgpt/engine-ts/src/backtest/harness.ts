@@ -29,6 +29,7 @@ import type {
   CounterfactualReport,
   SimulatedFillRecord,
 } from './types.js';
+import { makePassiveAdapter } from './adapters/exitRunnerAdapter.js';
 
 // ---------------------------------------------------------------------------
 // §8 fidelity caveats — appended to every report
@@ -49,7 +50,8 @@ const FIDELITY_CAVEATS: string[] = [
 /**
  * Minimal interface the harness calls each tick.
  * Real strategy runners (ExitRunner, BuyRunner) plug in via thin adapter wrappers.
- * TODO(SH-BACKTEST Phase C): wire ExitRunner via DI seam in exitRunner.ts.
+ * Phase C wired: s-passive (passive-like adapter in adapters/exitRunnerAdapter.ts).
+ * TODO(SH-BACKTEST Phase C): wire ExitRunner properly once a tick-callable seam exists in exitRunner.ts.
  * TODO(SH-BACKTEST Phase C): wire BuyRunner via DI seam in buyRunner.ts.
  */
 export interface StrategyAdapter {
@@ -129,6 +131,12 @@ function resolveAdapter(
       return makeStopLossAdapter(params);
     case 'stub':
       return STUB_ADAPTER;
+    case 's-passive':
+      // Phase C: S1 passive-like adapter. Mirrors passive.ts pricing tick-by-tick.
+      // TODO(SH-BACKTEST Phase C): replace with real ExitRunner once a tick-callable
+      //   seam (e.g. runOneTick) is added to src/exitRunner.ts. The adapter intentionally
+      //   omits Journal writes and safety guard-rails — it is for counterfactual analysis only.
+      return makePassiveAdapter(params);
     // TODO(SH-BACKTEST Phase C): wire 's-trail' via ExitRunner DI seam in exitRunner.ts
     // TODO(SH-BACKTEST Phase C): wire 's-aggressive' via ExitRunner DI seam in exitRunner.ts
     // TODO(SH-BACKTEST Phase C): wire 's-twap' via ExitRunner DI seam in exitRunner.ts
@@ -137,7 +145,7 @@ function resolveAdapter(
     default:
       throw new Error(
         `runBacktest: unknown strategyId '${strategyId}'. ` +
-          `Wired: stop_loss, stub. Others pending Phase C DI seam.`,
+          `Wired: stop_loss, stub, s-passive. Others pending Phase C DI seam.`,
       );
   }
 }
