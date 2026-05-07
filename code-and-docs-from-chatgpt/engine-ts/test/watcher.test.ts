@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Watcher } from '../src/watcher.js';
 import { evaluators } from '../src/synthetics/index.js';
 import type { KalshiClientLike, Orderbook } from '../src/types.js';
+import type { WatcherJournal } from '../src/watcherJournal.js';
 
 const book: Orderbook = { yes: [{ priceCents: 50, size: 1 }], no: [] };
 
@@ -103,5 +104,78 @@ describe('Watcher', () => {
     expect(all).toHaveLength(3);
     const children = all.filter(s => s.parentId === ocoId);
     expect(children).toHaveLength(2);
+  });
+
+  it('tick() passes peakBidCents + triggerKind to journal when trailing_stop fires', async () => {
+    // Book: top bid 40¢. trailing_stop with trail=5 → peak initializes to 40, stop=35.
+    // Bid is AT stop (40 - 5 = 35). Use a book where bid <= stop: bid=30, trail=5 → stop=max(30-5,1)=25, fire only if bid<=stop.
+    // Easiest: pre-seed state with peakBidCentsExact=50 so stop=45, and book topBid=40 → 40<=45 → fires.
+    const firedBook: Orderbook = { yes: [{ priceCents: 40, size: 1 }], no: [] };
+    const client = {
+      getOrderbook: vi.fn(async () => firedBook),
+      getPosition: vi.fn(async () => ({ ticker: 'KX', side: 'yes', quantity: 5 })),
+    } as any;
+
+    const firedCalls: Array<{ id: string; reason: string; meta?: { peakBidCents?: number; triggerKind?: string } }> = [];
+    const journal = {
+      appendRegistered: vi.fn(),
+      appendFirePending: vi.fn(),
+      appendFired: vi.fn((id: string, reason: string, meta?: { peakBidCents?: number; triggerKind?: string }) => {
+        firedCalls.push({ id, reason, meta });
+      }),
+      appendFireFailed: vi.fn(),
+      appendCanceled: vi.fn(),
+      appendStateUpdate: vi.fn(),
+      replay: vi.fn(() => []),
+    } as unknown as WatcherJournal;
+
+    const w = new Watcher(client, baseCfg, journal);
+    const id = w.register({
+      kind: 'trailing_stop', ticker: 'KX', side: 'yes', positionSize: 5,
+      params: { trailCents: 5, floorPriceCents: 1 },
+    });
+    // Pre-seed peak so trigger fires immediately: set state on the synthetic
+    w.get(id)!.state = { peakBidCentsExact: 50 };
+
+    await w.tick();
+
+    const fired = firedCalls.find(c => c.id === id);
+    expect(fired).toBeDefined();
+    expect(fired!.meta?.peakBidCents).toBe(50); // peak stays 50 (topBid=40 < 50)
+    expect(fired!.meta?.triggerKind).toBe('trailing_stop');
+  });
+
+  it('tick() passes triggerKind but no peakBidCents to journal when stop_loss fires', async () => {
+    // stop_loss fires when topBid (50) <= triggerPriceCents (50)
+    const client = {
+      getOrderbook: vi.fn(async () => ({ yes: [{ priceCents: 50, size: 1 }], no: [] })),
+      getPosition: vi.fn(async () => ({ ticker: 'KX', side: 'yes', quantity: 5 })),
+    } as any;
+
+    const firedCalls: Array<{ id: string; reason: string; meta?: { peakBidCents?: number; triggerKind?: string } }> = [];
+    const journal = {
+      appendRegistered: vi.fn(),
+      appendFirePending: vi.fn(),
+      appendFired: vi.fn((id: string, reason: string, meta?: { peakBidCents?: number; triggerKind?: string }) => {
+        firedCalls.push({ id, reason, meta });
+      }),
+      appendFireFailed: vi.fn(),
+      appendCanceled: vi.fn(),
+      appendStateUpdate: vi.fn(),
+      replay: vi.fn(() => []),
+    } as unknown as WatcherJournal;
+
+    const w = new Watcher(client, baseCfg, journal);
+    const id = w.register({
+      kind: 'stop_loss', ticker: 'KX', side: 'yes', positionSize: 5,
+      params: { triggerPriceCents: 50 },
+    });
+
+    await w.tick();
+
+    const fired = firedCalls.find(c => c.id === id);
+    expect(fired).toBeDefined();
+    expect(fired!.meta?.peakBidCents).toBeUndefined();
+    expect(fired!.meta?.triggerKind).toBe('stop_loss');
   });
 });

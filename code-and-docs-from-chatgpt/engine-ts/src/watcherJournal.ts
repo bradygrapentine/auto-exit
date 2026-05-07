@@ -20,7 +20,7 @@ import type { Synthetic, SyntheticState } from './types.js';
 type Entry =
   | { kind: 'synthetic_registered'; ts: string; synthetic: Synthetic }
   | { kind: 'synthetic_fire_pending'; ts: string; id: string; reason: string }
-  | { kind: 'synthetic_fired'; ts: string; id: string; reason: string }
+  | { kind: 'synthetic_fired'; ts: string; id: string; reason: string; peakBidCents?: number; triggerKind?: string }
   | { kind: 'synthetic_fire_failed'; ts: string; id: string; reason: string }
   | { kind: 'synthetic_canceled'; ts: string; id: string }
   | { kind: 'synthetic_state_update'; ts: string; id: string; state: SyntheticState };
@@ -41,8 +41,15 @@ export class WatcherJournal {
   appendFirePending(id: string, reason: string): void {
     this.write({ kind: 'synthetic_fire_pending', ts: new Date().toISOString(), id, reason });
   }
-  appendFired(id: string, reason: string): void {
-    this.write({ kind: 'synthetic_fired', ts: new Date().toISOString(), id, reason });
+  appendFired(id: string, reason: string, meta?: { peakBidCents?: number; triggerKind?: string }): void {
+    this.write({
+      kind: 'synthetic_fired',
+      ts: new Date().toISOString(),
+      id,
+      reason,
+      ...(meta?.peakBidCents !== undefined ? { peakBidCents: meta.peakBidCents } : {}),
+      ...(meta?.triggerKind !== undefined ? { triggerKind: meta.triggerKind } : {}),
+    });
   }
   appendFireFailed(id: string, reason: string): void {
     this.write({ kind: 'synthetic_fire_failed', ts: new Date().toISOString(), id, reason });

@@ -82,8 +82,6 @@ function extractSide(entry: JournalEntry): 'yes' | 'no' {
  * If the same jobId later produces order_reconciled entries tagged as 'sell'
  * they become exit fills.  `synthetic_fired` augments the arming metadata.
  *
- * TODO(SH-EDGE Phase B): augment when watcher emits richer synthetic_fired
- * entries with peakBidCents, optimalHindsightMidCents in the data payload.
  */
 export function joinFires(entries: JournalEntry[]): Fire[] {
   const byJobId = new Map<string, PartialFire>();
@@ -196,7 +194,6 @@ export function joinFires(entries: JournalEntry[]): Fire[] {
     }
 
     if (entry.kind === 'synthetic_fired') {
-      // TODO(SH-EDGE Phase B): augment when watcher emits peakBidCents, triggerKind in data.
       const d = entry.data as Record<string, unknown> | null;
       if (!d) continue;
       const jobId = d['jobId'] as string | undefined;

@@ -39,5 +39,6 @@ export const evalTrailingStop: Evaluator = (s, book) => {
     reason: fire ? 'trailing_stop_breached' : undefined,
     newState: { peakBidCentsExact: peak } satisfies TrailingStopState,
     distanceCentsToTrigger: distance,
+    ...(fire ? { peakBidCents: peak, triggerKind: 'trailing_stop' } : {}),
   };
 };

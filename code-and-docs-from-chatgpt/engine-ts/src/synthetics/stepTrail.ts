@@ -37,5 +37,6 @@ export const evalStepTrail: Evaluator = (s, book) => {
     reason: fire ? 'step_trail_breached' : undefined,
     newState: { peakBidCentsExact: peak } satisfies StepTrailState,
     distanceCentsToTrigger: topBid - stop,
+    ...(fire ? { peakBidCents: peak, triggerKind: 'step_trail' } : {}),
   };
 };

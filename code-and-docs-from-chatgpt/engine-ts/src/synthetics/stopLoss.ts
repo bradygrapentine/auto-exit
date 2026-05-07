@@ -36,5 +36,6 @@ export const evalStopLoss: Evaluator = (
     fire: true,
     reason: 'stop_loss_breached',
     distanceCentsToTrigger,
+    triggerKind: 'stop_loss',
   };
 };
