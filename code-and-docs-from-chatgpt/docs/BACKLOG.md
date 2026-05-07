@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-07 (extension polish cluster shipped — SP1.5 + SP1.7 + SP1.8)
+Last `/backlog-sync`: 2026-05-07 (SH-COMPOSE workflow composition shipped)
 
 | Status | Count |
 |--------|-------|
@@ -8,10 +8,10 @@ Last `/backlog-sync`: 2026-05-07 (extension polish cluster shipped — SP1.5 + S
 | 🧊 Strategy library (S) | 1 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 3 |
-| 🧊 Tooling ecosystem (SH) | 4 |
+| 🧊 Tooling ecosystem (SH) | 3 |
 | 🧊 Surface parity (SP1–SP4) | 6 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 47 |
+| ✅ Shipped (this log) | 48 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -436,38 +436,7 @@ prior.
 
 _SH-RECOMMENDER EV/Kelly/strategy recommender shipped 2026-05-06 — see §7._
 
-### 🧊 SH-COMPOSE — Multi-stage workflow state machines + operator default policies
-**Tags:** shared [engine, tui-mcp]
-
-**Trigger:** synthetics + triggers solve "what to do when X happens" one
-event at a time. Real trading workflows are multi-stage state machines:
-"trail fires → rearm a fresh trailing stop on residual," "TP rung 3 fills
-→ swap remaining synthetics from TP to trailing," "stop-loss on KXNFL →
-register S-buy-dip on KXNBA." Today operators carry that state in their
-head and re-arm manually after each fire.
-
-**Proposed:** two complementary capabilities:
-1. **Workflow engine** — small declarative JSON workflow definitions (no
-   Turing-complete DSL). Long-running watcher subscribes to journal
-   events (`synthetic_fired`, `synthetic_canceled`, `fill_received`,
-   `time_elapsed`); advances active workflows; executes actions on
-   transitions. Anti-runaway: explicit `maxTransitions` cap (default 50,
-   hard 500), zero-event cycle rejection at load. 8 prebuilt templates
-   ship in v1.
-2. **Default policy engine** — separate watcher subscribing to
-   position-detection events; auto-applies operator-configured policies
-   ("every YES position above 50¢ auto-gets a 5¢ trailing stop and a TP
-   at 95¢"). Condition→action shape, no chaining at v1.
-
-Storage: `workflows.ndjson` mirroring `watchers.ndjson`. Both engines
-respect `safety.ts` caps; serial per-instance reentrancy.
-
-**Spec:** `engine-ts/docs/superpowers/specs/2026-05-05-strategy-composition.md`.
-
-**Cost:** ~5–7 days. Workflow definition schema + engine + policy
-engine + 8 templates + CLI/MCP/TUI surfaces.
-
-**Dependency:** SH-WATCH live (workflows subscribe to its journal events).
+_SH-COMPOSE workflow composition shipped 2026-05-07 — see §7._
 
 ---
 
@@ -735,6 +704,24 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-07 — SH-COMPOSE workflow state machines + default policy engine.**
+  PRs #80 (Phase A types/validator/predicate), #81 (B.2 default policy engine),
+  #82 (B.1 workflow engine + journal), #83 (Phase C 8 templates + surfaces).
+  New `src/workflows/` module: declarative JSON workflow definitions with
+  closed-set EventMatcher / Action / SimplePredicate (no Turing-completeness),
+  load-time validator (rejects unknown kinds, transitions to nonexistent
+  states, zero-event cycles, maxTransitions > 500), `WorkflowEngine` class
+  with first-match-wins transitions + maxTransitions runaway cap + TERMINAL
+  + idle-when-empty + replay-from-journal, `DefaultPolicyEngine` class with
+  applyOncePerPosition guard + atomic-write `policies.json` persistence,
+  8 prebuilt templates (continuous-trailing, take-profit-then-trail,
+  stop-then-rotate, bracket-and-roll, scale-out-then-rearm, time-decay-stop-
+  loss, drawdown-then-flatten, profit-target-then-iceberg), 9 new MCP tools
+  (`kea_workflow_*` + `kea_template_*` + `kea_policy_*`), `kea workflow` /
+  `kea policy` CLI subcommands, `/workflows/*` + `/policies/*` HTTP routes.
+  108+ new tests. Plan: `engine-ts/docs/superpowers/plans/2026-05-07-sh-compose-cluster.md`.
+  Spec: `engine-ts/docs/superpowers/specs/2026-05-05-strategy-composition.md`.
 
 - **2026-05-07 — SP1.7 extension account/profile switcher + SP1.8 safety panel + forbidden tickers UI.** PR #78.
   New `extension/popup/ProfileSelector.tsx` reads `GET /whoami` and renders
