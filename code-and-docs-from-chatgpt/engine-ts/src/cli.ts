@@ -62,6 +62,13 @@ import {
   listTemplates,
   getTemplate,
 } from './workflows/index.js';
+import { joinFires } from './edge/lifecycle.js';
+import {
+  groupByStrategy,
+  groupByMarket,
+  triggerHistogram,
+  paramSensitivity,
+} from './edge/aggregate.js';
 import { validateWorkflow } from './workflows/validate.js';
 import type { Policy } from './workflows/policies.js';
 
@@ -626,6 +633,12 @@ Read-only commands (no money moves):
                                      Rank strategies by EV × sqrt(Kelly size)
   portfolio plan --positions <JSON> --bids <JSON> --mids <JSON> [--strategy aggressive|passive]
                                      Sequence a portfolio exit by overvalued-to-hold priority
+  edge [--strategy <name>] [--trigger <kind>] [--market <category>]
+       [--param <paramName>] [--since <YYYY-MM-DD>] [--min-notional <dollars>]
+                                     P&L attribution by strategy × market × trigger
+                                     (default: 30-day summary; --strategy drills into one strategy;
+                                      --trigger shows fire-quality histogram; --market segments by
+                                      category; --param shows parameter sensitivity table)
 
 Alert commands:
   alerts register --ticker <T> --kind <kind> --side yes|no --size <N> --params <JSON>
@@ -1411,6 +1424,170 @@ async function cmdPolicy(subcommand: string | undefined, rest: string[], _flags:
   }
 }
 
+// ── edge command ─────────────────────────────────────────────────────────────
+
+function loadAllJournalEntries(since: Date): ReturnType<typeof import('./journal.js').Journal.prototype.readAll> {
+  const home = process.env['KEA_HOME'] ?? path.join(os.homedir(), '.kalshi-exit-assistant');
+  const jobsDir = path.join(home, 'jobs');
+  if (!fs.existsSync(jobsDir)) return [];
+  const files = fs.readdirSync(jobsDir).filter((f) => f.endsWith('.jsonl'));
+  const allEntries: ReturnType<typeof import('./journal.js').Journal.prototype.readAll> = [];
+  for (const file of files) {
+    const jobId = file.replace(/\.jsonl$/, '');
+    const j = new Journal(jobId, home);
+    const entries = j.readAll();
+    // Include entries on or after `since`
+    for (const e of entries) {
+      if (new Date(e.ts) >= since) allEntries.push(e);
+    }
+  }
+  return allEntries;
+}
+
+function fmtSign(n: number): string {
+  return (n >= 0 ? '+' : '') + fmtDollars(n);
+}
+
+function cmdEdge(flags: Record<string, string>): void {
+  const sinceFlag = flags['since'];
+  const minNotional = parseFloat(flags['min-notional'] ?? '1');
+  const sinceDate = sinceFlag
+    ? new Date(sinceFlag)
+    : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const entries = loadAllJournalEntries(sinceDate);
+  const allFires = joinFires(entries).filter((f) => {
+    const totalSize = f.entryFills.reduce((s, x) => s + x.size, 0);
+    return totalSize * (f.entryFills[0]?.priceCents ?? 0) / 100 >= minNotional;
+  });
+
+  const out = process.stdout.write.bind(process.stdout);
+
+  // ── --trigger mode ──────────────────────────────────────────────────────────
+  if (flags['trigger'] !== undefined) {
+    const kind = flags['trigger'];
+    const filtered = kind ? allFires.filter((f) => f.triggerKind === kind) : allFires;
+    const hist = triggerHistogram(filtered);
+    if (hist.length === 0) {
+      out('No trigger fires found.\n');
+      return;
+    }
+    const header = `${'Trigger'.padEnd(22)}  ${'Total'.padStart(6)}  ${'TooEarly'.padStart(9)}  ${'OnTime'.padStart(7)}  ${'TooLate'.padStart(8)}`;
+    out('\nTrigger Fire-Quality Histogram\n');
+    out(`${'-'.repeat(header.length)}\n`);
+    out(header + '\n');
+    out(`${'-'.repeat(header.length)}\n`);
+    for (const h of hist) {
+      out(
+        `${h.triggerKind.padEnd(22)}  ${String(h.totalFires).padStart(6)}  ${String(h.tooEarly).padStart(9)}  ${String(h.onTime).padStart(7)}  ${String(h.tooLate).padStart(8)}\n`,
+      );
+    }
+    out('\n');
+    return;
+  }
+
+  // ── --param mode ────────────────────────────────────────────────────────────
+  if (flags['param'] !== undefined) {
+    const paramName = flags['param'];
+    if (!paramName) die('--param requires a parameter name');
+    const sens = paramSensitivity(allFires, paramName);
+    if (sens.rows.length === 0) {
+      out(`No fires with param "${paramName}" found.\n`);
+      return;
+    }
+    const header = `${'Value'.padStart(10)}  ${'Fires'.padStart(6)}  ${'TotalEdge'.padStart(10)}  ${'AvgEdge'.padStart(10)}`;
+    out(`\nParameter Sensitivity — ${paramName}\n`);
+    out(`${'-'.repeat(header.length)}\n`);
+    out(header + '\n');
+    out(`${'-'.repeat(header.length)}\n`);
+    for (const r of sens.rows) {
+      const avg = r.fires > 0 ? r.totalEdgeDollars / r.fires : 0;
+      out(
+        `${String(r.paramValue).padStart(10)}  ${String(r.fires).padStart(6)}  ${fmtSign(r.totalEdgeDollars).padStart(10)}  ${fmtSign(avg).padStart(10)}\n`,
+      );
+    }
+    out('\n');
+    return;
+  }
+
+  // ── --market mode ───────────────────────────────────────────────────────────
+  if (flags['market'] !== undefined) {
+    const category = flags['market'];
+    const filtered = category ? allFires.filter((f) => f.marketCategory === category) : allFires;
+    const groups = groupByMarket(filtered);
+    if (groups.length === 0) {
+      out('No market fires found.\n');
+      return;
+    }
+    const header = `${'Category'.padEnd(16)}  ${'Fires'.padStart(6)}  ${'TotalPnL'.padStart(10)}`;
+    out('\nMarket Segmentation\n');
+    out(`${'-'.repeat(header.length)}\n`);
+    out(header + '\n');
+    out(`${'-'.repeat(header.length)}\n`);
+    for (const g of groups) {
+      out(
+        `${g.category.padEnd(16)}  ${String(g.fires.length).padStart(6)}  ${fmtSign(g.totalRealizedPnLDollars).padStart(10)}\n`,
+      );
+    }
+    out('\n');
+    return;
+  }
+
+  // ── --strategy drill-down ───────────────────────────────────────────────────
+  if (flags['strategy'] !== undefined) {
+    const stratName = flags['strategy'];
+    const filtered = stratName ? allFires.filter((f) => f.strategy === stratName) : allFires;
+    if (filtered.length === 0) {
+      out(`No fires found for strategy "${stratName}".\n`);
+      return;
+    }
+    const groups = groupByStrategy(filtered);
+    for (const g of groups) {
+      const a = g.attribution;
+      out(`\nStrategy: ${g.strategy}\n`);
+      out(`Fires:    ${g.fires.length}\n`);
+      out(`Total PnL: ${fmtSign(g.totalRealizedPnLDollars)}\n`);
+      out(`Avg/fire:  ${fmtSign(g.avgEdgePerFireDollars)}\n`);
+      out(`Sharpe-ish: ${isNaN(g.sharpeIsh) ? 'n/a' : g.sharpeIsh.toFixed(2)}\n\n`);
+      const header = `${'Component'.padEnd(22)}  ${'Total'.padStart(10)}`;
+      out(header + '\n');
+      out(`${'-'.repeat(header.length)}\n`);
+      out(`${'Entry Edge'.padEnd(22)}  ${fmtSign(a.entryEdgeDollars).padStart(10)}\n`);
+      out(`${'Exit Edge'.padEnd(22)}  ${fmtSign(a.exitEdgeDollars).padStart(10)}\n`);
+      out(`${'Market Drift'.padEnd(22)}  ${fmtSign(a.marketDriftDollars).padStart(10)}\n`);
+      out(`${'Slippage'.padEnd(22)}  ${fmtSign(a.slippageDollars).padStart(10)}\n`);
+      out(`${'Trigger Quality'.padEnd(22)}  ${fmtSign(a.triggerQualityDollars).padStart(10)}\n`);
+      out(`${'Residual'.padEnd(22)}  ${fmtSign(a.residualDollars).padStart(10)}\n`);
+      out(`${'─'.repeat(header.length)}\n`);
+      out(`${'Realized PnL'.padEnd(22)}  ${fmtSign(a.realizedPnLDollars).padStart(10)}\n`);
+      out('\n');
+    }
+    return;
+  }
+
+  // ── default: overall summary table ──────────────────────────────────────────
+  const groups = groupByStrategy(allFires);
+  if (groups.length === 0) {
+    const sinceStr = sinceDate.toISOString().slice(0, 10);
+    out(`No fires found since ${sinceStr} (min-notional $${minNotional.toFixed(2)}).\n`);
+    return;
+  }
+
+  const sinceStr = sinceDate.toISOString().slice(0, 10);
+  out(`\nEdge Summary — since ${sinceStr}\n`);
+  const header = `${'Strategy'.padEnd(26)}  ${'Fires'.padStart(5)}  ${'TotalPnL'.padStart(10)}  ${'Avg/Fire'.padStart(9)}  ${'Sharpe'.padStart(7)}  ${'EntryEdge'.padStart(10)}  ${'ExitEdge'.padStart(9)}  ${'Drift'.padStart(9)}  ${'Slip'.padStart(9)}`;
+  out(`${'-'.repeat(header.length)}\n`);
+  out(header + '\n');
+  out(`${'-'.repeat(header.length)}\n`);
+  for (const g of groups) {
+    const a = g.attribution;
+    out(
+      `${g.strategy.padEnd(26)}  ${String(g.fires.length).padStart(5)}  ${fmtSign(g.totalRealizedPnLDollars).padStart(10)}  ${fmtSign(g.avgEdgePerFireDollars).padStart(9)}  ${(isNaN(g.sharpeIsh) ? 'n/a' : g.sharpeIsh.toFixed(2)).padStart(7)}  ${fmtSign(a.entryEdgeDollars).padStart(10)}  ${fmtSign(a.exitEdgeDollars).padStart(9)}  ${fmtSign(a.marketDriftDollars).padStart(9)}  ${fmtSign(a.slippageDollars).padStart(9)}\n`,
+    );
+  }
+  out('\n');
+}
+
 // ── dispatch ──────────────────────────────────────────────────────────────────
 export async function runCli(argv: string[]): Promise<void> {
   const command = argv[0] ?? 'help';
@@ -1474,6 +1651,7 @@ export async function runCli(argv: string[]): Promise<void> {
       const sub = rest.find((x) => !x.startsWith('--'));
       return cmdPolicy(sub, rest, flags);
     }
+    case 'edge': return cmdEdge(flags);
     case 'help':
     case '--help':
     case '-h': return cmdHelp();
