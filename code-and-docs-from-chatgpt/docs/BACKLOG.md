@@ -8,7 +8,7 @@ Last `/backlog-sync`: 2026-05-07 (SH-BACKTEST Phase A/B1/B2 + scanner deploy shi
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 2 |
+| 🧊 Tooling ecosystem (SH) | 3 |
 | 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
 | ✅ Shipped (this log) | 63 |
@@ -379,6 +379,38 @@ prior.
 -->
 
 _SH-RECOMMENDER EV/Kelly/strategy recommender shipped 2026-05-06 — see §7._
+
+### 🧊 SH-SCANNER-RATELIMIT — tune scanner cadences to stay under Kalshi rate ceiling
+**Tags:** engine [ops]
+
+**Trigger:** initial Fly deploy (2026-05-07) ran 15 hot @ 500ms + 42
+standard @ 2s = ~51 req/sec sustained. Kalshi returned HTTP 429 on a
+meaningful fraction of polls. Snapshot counts still rise (retries land),
+but each 429 is wasted bandwidth + adds latency to the next successful
+poll.
+
+**Proposed:**
+1. Reduce default cadences in `discover.ts`: hot 500ms → 1000ms,
+   standard 2000ms → 5000ms. Sustained req/sec drops from ~51 to ~16 —
+   well under any reasonable read-endpoint limit.
+2. Add a token-bucket rate limiter to `multiTickerRecorder.ts` —
+   globally cap req/sec across all tickers. Default cap: 30 req/sec
+   (configurable via env var). Bucket refills at the cap rate. When
+   over, polls queue and pace themselves.
+3. Add 429 backoff: on receiving 429, the per-ticker poll loop sleeps
+   for `Retry-After` (or 1s default) before resuming. Don't tight-loop
+   retry.
+
+**Decide after:** ~24h of REST data. Compare snapshot density per ticker
+on the current cadence vs a reduced cadence. If reducing cadence loses
+meaningful fidelity, instead implement the token-bucket and keep
+nominal cadences.
+
+**Cost:** ~3-4h (cadence default + token bucket + 429 backoff + tests).
+Tunable, no architectural change.
+
+**Dependency:** none — pure scanner-side change. Doesn't block
+SH-SCANNER-WS.
 
 ### 🧊 SH-SCANNER-WS — WebSocket transport for the multi-ticker scanner
 **Tags:** shared [engine, ops]
