@@ -35,7 +35,7 @@ function makeDollarMarket(ticker: string, dollar_volume: number): RawMarket {
 function mockClient(markets: RawMarket[]): DiscoverClient {
   return {
     async listMarkets(_params) {
-      return markets;
+      return { markets };
     },
   };
 }

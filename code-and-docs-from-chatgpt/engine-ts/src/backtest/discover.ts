@@ -23,7 +23,7 @@ export interface RawMarket {
 }
 
 export interface DiscoverClient {
-  listMarkets(params: { status: string }): Promise<RawMarket[]>;
+  listMarkets(params: { status?: 'open' | 'closed' | 'settled'; limit?: number; cursor?: string }): Promise<{ markets: RawMarket[]; cursor?: string }>;
 }
 
 export interface DiscoverOptions {
@@ -108,7 +108,17 @@ export async function discoverTickers(opts: DiscoverOptions): Promise<TickerEntr
   const perCategory = opts.perCategory ?? 8;
   const hotPerCategory = opts.hotPerCategory ?? 2;
 
-  const markets = await client.listMarkets({ status: 'open' });
+  // Paginate through all open markets (Kalshi caps page size; cursor-based).
+  const markets: RawMarket[] = [];
+  let cursor: string | undefined;
+  let pages = 0;
+  do {
+    const page = await client.listMarkets({ status: 'open', limit: 1000, cursor });
+    markets.push(...page.markets);
+    cursor = page.cursor;
+    pages++;
+    if (pages > 20) break; // safety cap — 20k markets is more than Kalshi will ever return
+  } while (cursor);
 
   // Group by category
   const byCategory: Map<Category, RawMarket[]> = new Map();

@@ -192,6 +192,9 @@ export interface KalshiClientLike {
   /** Look up an order by client_order_id. Returns null if not found or on network error.
    *  Used during crash-safe resume to reconcile orders that were placed but not journaled. */
   findOrderByClientOrderId(clientOrderId: string): Promise<OrderResult | null>;
+  /** List markets matching a status filter. Used by SH-BACKTEST scanner ticker discovery.
+   *  Returns at most `limit` markets per page; cursor pagination via the returned `cursor`. */
+  listMarkets(opts: { status?: 'open' | 'closed' | 'settled'; limit?: number; cursor?: string }): Promise<{ markets: Array<{ ticker: string; volume?: number; dollar_volume?: number; status?: string }>; cursor?: string }>;
 }
 
 // ── Journal types ──────────────────────────────────────────────────────────────
