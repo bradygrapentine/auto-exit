@@ -146,4 +146,8 @@ export class MockKalshiClient implements KalshiClientLike {
       remainingCount: Math.max(0, state.requested - state.filled),
     };
   }
+
+  async listMarkets(_opts: { status?: 'open' | 'closed' | 'settled'; limit?: number; cursor?: string } = {}): Promise<{ markets: Array<{ ticker: string; volume?: number; dollar_volume?: number; status?: string }>; cursor?: string }> {
+    return { markets: [] };
+  }
 }

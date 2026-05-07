@@ -296,4 +296,21 @@ export class KalshiClient implements KalshiClientLike {
       return orders.filter((o) => o.ticker === ticker && o.status === 'resting').length;
     });
   }
+
+  async listMarkets(opts: { status?: 'open' | 'closed' | 'settled'; limit?: number; cursor?: string } = {}): Promise<{ markets: Array<{ ticker: string; volume?: number; dollar_volume?: number; status?: string }>; cursor?: string }> {
+    return withRetry(async () => {
+      const params = new URLSearchParams();
+      if (opts.status) params.set('status', opts.status);
+      if (opts.limit) params.set('limit', String(opts.limit));
+      if (opts.cursor) params.set('cursor', opts.cursor);
+      const path = `/markets${params.toString() ? '?' + params.toString() : ''}`;
+      const res = await fetchChecked(
+        this.fetchFn,
+        this.config.baseUrl + path,
+        { headers: this.authHeaders('GET', path) },
+      );
+      const json = (await res.json()) as { markets?: Array<{ ticker: string; volume?: number; dollar_volume?: number; status?: string }>; cursor?: string };
+      return { markets: json.markets ?? [], cursor: json.cursor };
+    });
+  }
 }
