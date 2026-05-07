@@ -150,4 +150,12 @@ export class MockKalshiClient implements KalshiClientLike {
   async listMarkets(_opts: { status?: 'open' | 'closed' | 'settled'; limit?: number; cursor?: string } = {}): Promise<{ markets: Array<{ ticker: string; volume?: number; dollar_volume?: number; status?: string }>; cursor?: string }> {
     return { markets: [] };
   }
+
+  async listSeries(_opts: { category?: string; include_volume?: boolean; cursor?: string; limit?: number } = {}): Promise<{ series: Array<{ ticker: string; title?: string; category?: string; volume_fp?: number }>; cursor?: string }> {
+    return { series: [] };
+  }
+
+  async listEvents(_opts: { series_ticker?: string; status?: 'open' | 'closed' | 'settled'; with_nested_markets?: boolean; min_close_ts?: number; max_close_ts?: number; cursor?: string; limit?: number } = {}): Promise<{ events: Array<{ event_ticker: string; series_ticker?: string; title?: string; markets?: Array<{ ticker: string; volume_24h_fp?: number; last_price_dollars?: number; close_time?: string; status?: string }> }>; cursor?: string }> {
+    return { events: [] };
+  }
 }

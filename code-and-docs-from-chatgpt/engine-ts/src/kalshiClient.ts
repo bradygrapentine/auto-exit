@@ -313,4 +313,35 @@ export class KalshiClient implements KalshiClientLike {
       return { markets: json.markets ?? [], cursor: json.cursor };
     });
   }
+
+  async listSeries(opts: { category?: string; include_volume?: boolean; cursor?: string; limit?: number } = {}): Promise<{ series: Array<{ ticker: string; title?: string; category?: string; volume_fp?: number }>; cursor?: string }> {
+    return withRetry(async () => {
+      const params = new URLSearchParams();
+      if (opts.category) params.set('category', opts.category);
+      if (opts.include_volume) params.set('include_volume', 'true');
+      if (opts.limit) params.set('limit', String(opts.limit));
+      if (opts.cursor) params.set('cursor', opts.cursor);
+      const path = `/series${params.toString() ? '?' + params.toString() : ''}`;
+      const res = await fetchChecked(this.fetchFn, this.config.baseUrl + path, { headers: this.authHeaders('GET', path) });
+      const json = (await res.json()) as { series?: Array<{ ticker: string; title?: string; category?: string; volume_fp?: number }>; cursor?: string };
+      return { series: json.series ?? [], cursor: json.cursor };
+    });
+  }
+
+  async listEvents(opts: { series_ticker?: string; status?: 'open' | 'closed' | 'settled'; with_nested_markets?: boolean; min_close_ts?: number; max_close_ts?: number; cursor?: string; limit?: number } = {}): Promise<{ events: Array<{ event_ticker: string; series_ticker?: string; title?: string; markets?: Array<{ ticker: string; volume_24h_fp?: number; last_price_dollars?: number; close_time?: string; status?: string }> }>; cursor?: string }> {
+    return withRetry(async () => {
+      const params = new URLSearchParams();
+      if (opts.series_ticker) params.set('series_ticker', opts.series_ticker);
+      if (opts.status) params.set('status', opts.status);
+      if (opts.with_nested_markets) params.set('with_nested_markets', 'true');
+      if (opts.min_close_ts) params.set('min_close_ts', String(opts.min_close_ts));
+      if (opts.max_close_ts) params.set('max_close_ts', String(opts.max_close_ts));
+      if (opts.limit) params.set('limit', String(opts.limit));
+      if (opts.cursor) params.set('cursor', opts.cursor);
+      const path = `/events${params.toString() ? '?' + params.toString() : ''}`;
+      const res = await fetchChecked(this.fetchFn, this.config.baseUrl + path, { headers: this.authHeaders('GET', path) });
+      const json = (await res.json()) as { events?: Array<{ event_ticker: string; series_ticker?: string; title?: string; markets?: Array<{ ticker: string; volume_24h_fp?: number; last_price_dollars?: number; close_time?: string; status?: string }> }>; cursor?: string };
+      return { events: json.events ?? [], cursor: json.cursor };
+    });
+  }
 }
