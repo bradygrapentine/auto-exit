@@ -648,8 +648,8 @@ Scanner / recording commands:
                                      Sample open markets by category, assign cadences, write ticker file
   record start --tickers-file <path> [--recordings-dir <path>]
                                      Start multi-ticker NDJSON recorder (runs until SIGINT/SIGTERM)
-  record sync --from <host:path> [--to <local-path>]
-                                     rsync recordings from remote scanner host to local disk
+  record sync --fly-app <app> [--remote <path>] [--to <local-path>]
+                                     Pull recordings from Fly.io volume via tar-pipe over fly ssh console
 
 Alert commands:
   alerts register --ticker <T> --kind <kind> --side yes|no --size <N> --params <JSON>
@@ -1659,16 +1659,14 @@ async function cmdRecord(
     }
 
     case 'sync': {
-      if (!flags.from) die('record sync requires --from <host:path>');
-      const colonIdx = flags.from.indexOf(':');
-      if (colonIdx === -1) die('record sync --from must be <host>:<path>');
-      const remoteHost = flags.from.slice(0, colonIdx);
-      const remotePath = flags.from.slice(colonIdx + 1);
+      // Resolve fly app: --fly-app flag > KEA_SYNC_FLY_APP env var
+      const flyApp = flags['fly-app'] ?? process.env['KEA_SYNC_FLY_APP'] ?? '';
+      if (!flyApp) die('record sync requires --fly-app <app-name> (or KEA_SYNC_FLY_APP env var)');
+      const remotePath = flags.remote ?? process.env['KEA_SYNC_REMOTE_PATH'] ?? '/data/recordings';
       const localDir = flags.to ?? path.join(os.homedir(), '.kea', 'recordings');
-      process.stderr.write(`[scanner] syncing ${remoteHost}:${remotePath} → ${localDir}\n`);
-      const result = await syncRecordings({ remoteHost, remotePath, localDir });
+      process.stderr.write(`[scanner] syncing fly:${flyApp}:${remotePath} → ${localDir}\n`);
+      const result = await syncRecordings({ flyApp, remotePath, localDir });
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-      if (result.errored.length > 0) process.exit(1);
       return;
     }
 

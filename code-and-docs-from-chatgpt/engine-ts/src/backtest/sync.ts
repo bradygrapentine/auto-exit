@@ -1,87 +1,142 @@
 /**
- * sync.ts — rsync recordings from a remote scanner host to local disk.
+ * sync.ts — pull recordings from a Fly.io scanner volume to local disk.
  *
- * Wraps: rsync -avz --partial --info=stats1 <remoteHost>:<remotePath>/ <localDir>/
- * Assumes operator's ~/.ssh/config has the host configured.
- * Returns lists of transferred and errored files.
+ * Uses `fly ssh console -a <app> -C "tar czf - -C <parent> <basename>"`
+ * piped to `tar xzf - -C <localDir>`.  No SSH keys, no fly proxy, no rsync —
+ * Fly's own auth handles the session.
+ *
+ * Environment variable overrides (lowest precedence):
+ *   KEA_SYNC_FLY_APP       — fly app name
+ *   KEA_SYNC_REMOTE_PATH   — remote path (default /data/recordings)
  */
 
 import { spawn } from 'node:child_process';
+import * as path from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
 export interface SyncOptions {
-  remoteHost: string;
-  remotePath: string;
-  localDir: string;
+  flyApp: string;       // fly app name, e.g. 'auto-exit-scanner'
+  remotePath: string;   // absolute path on remote volume, e.g. '/data/recordings'
+  localDir: string;     // local extract destination
 }
 
 export interface SyncResult {
-  transferred: string[];
-  errored: string[];
+  filesTransferred: number;    // count of extracted files from tar -v output
+  bytesTransferred?: number;   // not available from tar; kept for interface compat
+  durationMs: number;
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Parse transferred file paths from rsync stdout.
- *
- * rsync outputs one line per transferred file (relative paths).
- * Lines beginning with special prefixes (sending, receiving, sent, total, etc.)
- * are metadata — skip those and keep bare path lines.
+/** Split '/data/recordings' → { parent: '/data', base: 'recordings' }.
+ *  Normalises trailing slashes before splitting.
  */
-function parseTransferred(stdout: string): string[] {
-  return stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => {
-      if (!l) return false;
-      // Skip rsync status lines
-      if (/^(sending|receiving|sent|total|Number|speedup|created|deleting)/i.test(l)) return false;
-      // Skip lines that look like "X files transferred"
-      if (/^\d/.test(l)) return false;
-      return true;
-    });
+export function splitRemotePath(remotePath: string): { parent: string; base: string } {
+  const normalised = remotePath.replace(/\/+$/, '');
+  return {
+    parent: path.posix.dirname(normalised),
+    base: path.posix.basename(normalised),
+  };
+}
+
+/** Count non-empty lines in tar -v output (one line per extracted file). */
+function countVerboseLines(text: string): number {
+  return text.split('\n').filter((l) => l.trim().length > 0).length;
 }
 
 // ---------------------------------------------------------------------------
 // syncRecordings
 // ---------------------------------------------------------------------------
 
-export function syncRecordings(opts: SyncOptions): Promise<SyncResult> {
-  const { remoteHost, remotePath, localDir } = opts;
-  const src = `${remoteHost}:${remotePath}/`;
-  const dst = `${localDir}/`;
+export async function syncRecordings(opts: SyncOptions): Promise<SyncResult> {
+  const flyApp = opts.flyApp || process.env['KEA_SYNC_FLY_APP'] || '';
+  const remotePath = opts.remotePath || process.env['KEA_SYNC_REMOTE_PATH'] || '/data/recordings';
+  const { localDir } = opts;
 
-  return new Promise((resolve) => {
-    const chunks: string[] = [];
-    const errChunks: string[] = [];
+  if (!flyApp) throw new Error('syncRecordings: flyApp is required (or set KEA_SYNC_FLY_APP)');
 
-    const child = spawn('rsync', ['-avz', '--partial', '--info=stats1', src, dst]);
+  const { parent, base } = splitRemotePath(remotePath);
+  const remoteCmd = `tar czf - -C ${parent} ${base}`;
 
-    child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
-    child.stderr.on('data', (chunk: Buffer) => errChunks.push(chunk.toString()));
+  const startMs = Date.now();
 
-    child.on('close', (code) => {
-      const stdout = chunks.join('');
-      if (code === 0) {
-        resolve({ transferred: parseTransferred(stdout), errored: [] });
-      } else {
-        // rsync exit 23/24 = partial transfer; still parse what we got
-        const transferred = parseTransferred(stdout);
-        const stderrText = errChunks.join('').trim();
-        resolve({
-          transferred,
-          errored: stderrText ? [stderrText] : [`rsync exited with code ${code}`],
-        });
-      }
+  return new Promise<SyncResult>((resolve, reject) => {
+    // fly ssh console produces gzipped tar on stdout
+    const flyProc = spawn('fly', ['ssh', 'console', '-a', flyApp, '-C', remoteCmd], {
+      stdio: ['ignore', 'pipe', 'inherit'],
     });
 
-    child.on('error', (err) => {
-      resolve({ transferred: [], errored: [err.message] });
+    // local tar extracts verbose to stderr, which we capture for file count
+    const tarProc = spawn('tar', ['xzvf', '-', '-C', localDir], {
+      stdio: ['pipe', 'inherit', 'pipe'],
+    });
+
+    // pipe fly stdout → tar stdin
+    flyProc.stdout.pipe(tarProc.stdin);
+
+    // capture tar verbose lines (goes to stderr with -v on some platforms)
+    const tarVerbose: string[] = [];
+    tarProc.stderr.on('data', (chunk: Buffer) => tarVerbose.push(chunk.toString()));
+
+    let flyCode: number | null = null;
+    let tarCode: number | null = null;
+    let flyError: Error | null = null;
+    let tarError: Error | null = null;
+
+    function trySettle() {
+      if (flyCode === null || tarCode === null) return; // wait for both
+
+      if (flyError) {
+        reject(new Error(`fly ssh console failed to start: ${flyError.message}`));
+        return;
+      }
+      if (tarError) {
+        reject(new Error(`local tar failed to start: ${tarError.message}`));
+        return;
+      }
+      if (flyCode !== 0) {
+        reject(new Error(`fly ssh console exited with code ${flyCode}`));
+        return;
+      }
+      if (tarCode !== 0) {
+        reject(new Error(`local tar exited with code ${tarCode}`));
+        return;
+      }
+
+      const verboseText = tarVerbose.join('');
+      resolve({
+        filesTransferred: countVerboseLines(verboseText),
+        durationMs: Date.now() - startMs,
+      });
+    }
+
+    flyProc.on('error', (err) => {
+      flyError = err;
+      flyCode = -1;
+      trySettle();
+    });
+
+    tarProc.on('error', (err) => {
+      tarError = err;
+      tarCode = -1;
+      trySettle();
+    });
+
+    flyProc.on('close', (code) => {
+      flyCode = code ?? -1;
+      // Signal EOF to tar once fly is done
+      tarProc.stdin.end();
+      trySettle();
+    });
+
+    tarProc.on('close', (code) => {
+      tarCode = code ?? -1;
+      trySettle();
     });
   });
 }
