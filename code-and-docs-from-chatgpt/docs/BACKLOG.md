@@ -1,17 +1,17 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-06 (strategy cluster 3 shipped — S5/S14/SP2.1)
+Last `/backlog-sync`: 2026-05-06 (decision-layer cluster shipped — W4.3 + SH-ALERTS + SH-RECOMMENDER)
 
 | Status | Count |
 |--------|-------|
 | 🧊 Foundation (W1) | 0 |
 | 🧊 Strategy library (S) | 1 |
 | 🧊 Cross-cutting (W3) | 0 |
-| 🧊 Decision + optimization (W4) | 4 |
-| 🧊 Tooling ecosystem (SH) | 5 |
+| 🧊 Decision + optimization (W4) | 3 |
+| 🧊 Tooling ecosystem (SH) | 4 |
 | 🧊 Surface parity (SP1–SP4) | 11 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 39 |
+| ✅ Shipped (this log) | 42 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -199,24 +199,7 @@ analytic solutions.
 **Dependency:** W1.2 TCA (impact estimates), W4.1 (probability snapshots
 from triggers).
 
-### 🧊 W4.3 — Portfolio liquidation sequencer
-**Tags:** engine [tui-mcp]
-
-**Trigger:** when multiple losers exist — or under cash-raise pressure —
-the question is *which to exit first*. S10 solved one specific case
-(cash-raise); this generalizes.
-
-**Proposed:** new `kea portfolio plan` subcommand. Reads positions, computes
-`unrealizedLoss = costBasis − markToBid` and `EV(hold) = positionSize ×
-midProbability` per ticker, ranks by `markToBid − EV(hold)` (most-overvalued-
-to-hold first), emits a recommended sequence with named strategies per
-position. Optional `--auto-execute` runs them sequentially.
-
-**Cost:** ~2 days. Reads existing position/orderbook primitives + S
-library selection logic.
-
-**Dependency:** S library complete (sequencer routes each position to a
-strategy).
+_W4.3 portfolio liquidation sequencer shipped 2026-05-06 — see §7._
 
 ### 🧊 W4.4 — Smart Order Router (multi-venue)
 **Tags:** engine [shared]
@@ -393,30 +376,7 @@ presets).
 **Dependency:** W1.5 buyRunner (already shipped, PR #12). Non-blocking on
 W4.1 trigger layer — supersedes its first slice.
 
-### 🧊 SH-ALERTS — Notify-only synthetics (alerts layer)
-**Tags:** shared [engine, ext, tui-mcp]
-
-**Trigger:** triggers + synthetics commit operators to an auto-decision in
-advance. Many operators want the system to *watch* without firing —
-notify when KXMETGALA top YES bid drops below 5¢, ping when basis-arb
-opens, alert when mark-to-bid drawdown exceeds 10%. Decision stays with
-the operator; only the watching is outsourced.
-
-**Proposed:** alerts ride the SH-WATCH watcher infrastructure. Same
-evaluator engine; different action. New `action: 'fire' | 'notify'`
-discriminator on synthetics (alerts are synthetics that notify). Six v1
-alert kinds mirroring the synthetic set plus mark-to-bid drawdown and
-basis-arb-opens. v1 channels: webhook (Slack/Discord-compatible) +
-desktop. Email + extension toast deferred to v2. New `src/alerts/` dir;
-extends `watcher.ts`, `watcherJournal.ts`, `cli.ts`, MCP server.
-
-**Spec:** `engine-ts/docs/superpowers/specs/2026-05-05-alerts-layer.md`.
-
-**Cost:** ~3–4 days. Cheap because most plumbing reuses SH-WATCH; the
-work is mostly delivery channels + dedup/cooldown logic.
-
-**Dependency:** SH-WATCH (foundation). No data dependencies — useful
-day-one after SH-WATCH ships.
+_SH-ALERTS notify-only synthetics shipped 2026-05-06 — see §7._
 
 ### 🧊 SH-BACKTEST — Record-and-replay harness for empirical strategy validation
 **Tags:** shared [engine, tui-mcp]
@@ -474,36 +434,7 @@ Soft dep on SH-BACKTEST (validates attribution model against
 counterfactuals). Feeds SH-RECOMMENDER as operator-specific calibration
 prior.
 
-### 🧊 SH-RECOMMENDER — EV/Kelly calculator + strategy recommender
-**Tags:** shared [engine, tui-mcp, ext]
-
-**Trigger:** today the LLM-in-the-loop (Claude/GPT via MCP) reads
-positions and orderbooks but derives strategy/sizing math itself, often
-poorly. `harvestPlanner` already does the math for harvest decisions; the
-broader version covers entries, sizing, risk-of-ruin, strategy selection.
-Once exposed as MCP, the model becomes a real co-trader instead of a CLI
-wrapper.
-
-**Proposed:** three layered modules, each independently useful, all
-stateless functions extending `harvestPlanner.ts`:
-1. **EV calculator** — generic `computeDecisionEV(ctx)` covering enter /
-   hold / exit / scale-out / no-action. MCP tool `kea_ev`.
-2. **Position sizer** — Kelly fraction (half-Kelly default) with portfolio
-   correlation adjustment; respects `safety.ts` caps. MCP tool `kea_size`.
-3. **Strategy recommender** — composes EV + sizer + (optional)
-   operator-specific edge data from SH-EDGE → top-3 ranked strategies
-   with EV/Kelly-justified params. Honest "no-recommendation" output when
-   conditions fit no strategy. MCP tool `kea_recommend`.
-
-**Spec:** `engine-ts/docs/superpowers/specs/2026-05-05-ev-kelly-recommender.md`.
-
-**Cost:** ~4–5 days. Three modules, ~stateless, mostly math + light MCP
-wiring + minimal TUI panel.
-
-**Dependency:** none hard — extends `harvestPlanner.ts` which already
-ships. Most useful once SH-WATCH manages positions (recommendations land
-into actionable strategies). Richest output when SH-EDGE data is
-available; degrades gracefully to generic textbook math otherwise.
+_SH-RECOMMENDER EV/Kelly/strategy recommender shipped 2026-05-06 — see §7._
 
 ### 🧊 SH-COMPOSE — Multi-stage workflow state machines + operator default policies
 **Tags:** shared [engine, tui-mcp]
@@ -873,6 +804,40 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-06 — Decision-layer surface wiring (CLI + MCP + HTTP).** PR #70.
+  5 new MCP tools wired: `kea_portfolio_plan`, `kea_alert_register`,
+  `kea_recommend`, `kea_ev`, `kea_size`. CLI subcommands for portfolio,
+  alerts, ev, size, recommend. HTTP routes under `/portfolio/`, `/alerts/`,
+  `/recommend`, `/ev`, `/size`. 51 new tests (1253 total). Plan:
+  `engine-ts/docs/superpowers/plans/2026-05-06-decision-layer-cluster.md`.
+
+- **2026-05-06 — SH-RECOMMENDER (EV calculator + Kelly sizer + strategy recommender).** PR #67.
+  Three stateless math modules: `src/decisionEv.ts` (`computeDecisionEV`
+  for enter/hold/exit/scale-out/no-action), `src/kellySizer.ts`
+  (`computeKellySize` half-Kelly default with safety caps), `src/strategyRecommender.ts`
+  (composes EV+sizer to rank top-3 strategies; degrades gracefully when
+  SH-EDGE data absent). 53 tests across the 3 modules.
+
+- **2026-05-06 — SH-ALERTS notify-only synthetics.** PRs #68 + #69.
+  Backward-compatible `Synthetic.action: 'fire' | 'notify'` discriminator
+  + `notifyChannels` (PR #65). New `src/alerts/{index,channels,dedupe}.ts`:
+  webhook (5s timeout, non-throwing) + desktop (console.log fallback;
+  node-notifier injectable). Per-syntheticId cooldown dedupe (default
+  5min) with state persistence. Surgical edit to `src/synthetics/invoke.ts`
+  branches notify path before order placement. 31 tests. (PR #68 was
+  initially merged into wrong base; #69 re-targeted to main.)
+
+- **2026-05-06 — W4.3 portfolio liquidation sequencer.** PR #66.
+  `src/portfolio.ts` — `buildPortfolioPlan` ranks positions by
+  `markToBidDollars − evHoldDollars` (most-overvalued-first); auto-picks
+  'aggressive' strategy when overvalued > 50% of mark, else 'passive'.
+  `executePortfolioPlan` wraps the plan into an SCashRaiseConfig for
+  sequential execution. 21 tests.
+
+- **2026-05-06 — Synthetic.action discriminator + NotifyChannelConfig type.** PR #65.
+  Foundation for SH-ALERTS: backward-compatible additive change to
+  `Synthetic` interface (action defaults to 'fire' when undefined).
 
 - **2026-05-06 — SP2.1 unified `kea_strategy_run` MCP launcher + S5/S14 surface wiring.** PR #63.
   New `kea_strategy_run` MCP tool with `z.discriminatedUnion('strategy', ...)`
