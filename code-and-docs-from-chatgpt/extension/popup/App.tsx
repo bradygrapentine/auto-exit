@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { StrategyView, type ExecutionSummary } from './StrategyView';
+import { SummaryCard } from './SummaryCard';
 
 type Tab = 'strategies' | 'safety';
 
@@ -74,6 +75,9 @@ function SafetySlot() {
 }
 
 function SummarySlot({ summary }: { summary: ExecutionSummary | null }) {
-  // SP1.5 replaces this with <SummaryCard summary={summary} />.
-  return <div data-testid="summary-slot" data-has-summary={summary != null} />;
+  return (
+    <div data-testid="summary-slot" data-has-summary={summary != null}>
+      <SummaryCard summary={summary} />
+    </div>
+  );
 }
