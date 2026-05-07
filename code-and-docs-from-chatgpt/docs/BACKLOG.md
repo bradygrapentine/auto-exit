@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-07 (SP4 reports cluster shipped — TCA + portfolio surfaces)
+Last `/backlog-sync`: 2026-05-07 (SH-EDGE shipped — pnl attribution + 3 surfaces)
 
 | Status | Count |
 |--------|-------|
@@ -8,10 +8,10 @@ Last `/backlog-sync`: 2026-05-07 (SP4 reports cluster shipped — TCA + portfoli
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 3 |
+| 🧊 Tooling ecosystem (SH) | 2 |
 | 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 54 |
+| ✅ Shipped (this log) | 58 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -367,6 +367,11 @@ meaningful backtest ~T+30 days from SH-WATCH ship — needs accumulated
 data. Soft synergy with SH-EDGE (parallel pipelines validating each
 other).
 
+### ~~SH-EDGE — Operator-specific PnL attribution + per-strategy edge measurement~~
+
+_SH-EDGE shipped 2026-05-07 — see §7. Skip to following section._
+
+<!-- ARCHIVED — original spec body retained for cross-references
 ### 🧊 SH-EDGE — Operator-specific PnL attribution + per-strategy edge measurement
 **Tags:** shared [engine, tui-mcp]
 
@@ -394,6 +399,8 @@ journal entry kinds required (consumes what's already written).
 Soft dep on SH-BACKTEST (validates attribution model against
 counterfactuals). Feeds SH-RECOMMENDER as operator-specific calibration
 prior.
+
+-->
 
 _SH-RECOMMENDER EV/Kelly/strategy recommender shipped 2026-05-06 — see §7._
 
@@ -628,6 +635,24 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-07 — SH-EDGE Phase B surfaces (CLI + MCP/HTTP + TUI).** PRs #93, #94, #95.
+  CLI: `kea edge` subcommand with 6 modes (summary, `--strategy`, `--trigger`,
+  `--market`, `--param`, `--since`/`--min-notional`). MCP: `kea_edge_summary` +
+  `kea_edge_per_strategy` tools + `GET /edge/summary` + `GET /edge/per-strategy`
+  HTTP routes. TUI: Edge tab sorted by edge-per-fire with drill-down to
+  per-fire decomposition + market-category filter. 25 new tests across surfaces.
+
+- **2026-05-07 — SH-EDGE Phase A pnl attribution analytics module.** PR #92.
+  New `src/edge/` module: `marketCategory.ts` (ticker→category prefix table),
+  `lifecycle.ts` (joins journal entries → Fire[] by jobId), `benchmarks.ts`
+  (passive-hold / immediate-exit / optimal-hindsight), `attribution.ts`
+  (linear-additive 5-component decomposition: entryEdge + exitEdge +
+  marketDrift + slippage + triggerQuality + residual), `aggregate.ts`
+  (group-by + histograms + parameter sensitivity), `snapshot.ts` (persist
+  to `${KEA_HOME}/edge-snapshots/<date>.json`). Read-only consumer — no
+  new JournalKinds. 39 tests. Plan: `engine-ts/docs/superpowers/plans/2026-05-07-sh-edge-cluster.md`.
+  Spec: `engine-ts/docs/superpowers/specs/2026-05-05-pnl-attribution.md`.
 
 - **2026-05-07 — SP4.3 extension reports panel (TCA card + portfolio plan card).** PR #89.
   New `extension/popup/ReportsView.tsx` with two cards: Last-Job TCA (fetches
