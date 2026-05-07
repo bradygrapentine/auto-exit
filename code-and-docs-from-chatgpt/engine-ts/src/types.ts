@@ -508,6 +508,108 @@ export interface WatcherConfig {
   exitConfigTemplate?: Partial<ExitConfig>;
 }
 
+// ── Edge analytics types (SH-EDGE Phase A) ────────────────────────────────────
+
+export type MarketCategory = 'nfl' | 'entertainment' | 'political' | 'weather' | 'other';
+
+/** A single entry or exit fill within a fire. */
+export interface FillRecord {
+  priceCents: number;
+  size: number;
+  ts: string;
+}
+
+/**
+ * A "fire" is the lifecycle unit for P&L attribution:
+ * one job's entry fills + exit fills + resolution outcome.
+ */
+export interface Fire {
+  fireId: string;
+  jobId: string;
+  strategy: string;
+  ticker: string;
+  marketCategory: MarketCategory;
+  side: 'yes' | 'no';
+  entryFills: FillRecord[];
+  exitFills: FillRecord[];
+  /** Mid-price at decision time (entry orderbook snapshot). */
+  decisionMidCents?: number;
+  /** Mid-price at arrival (used as fair-value for entry-edge computation). */
+  arrivalMidCents?: number;
+  /** Mid-price at exit decision time (for market_drift computation). */
+  exitDecisionMidCents?: number;
+  /** ISO 8601 timestamp when synthetic trigger was armed (if applicable). */
+  triggerArmedAt?: string;
+  /** SyntheticKind string when a trigger fired this job. */
+  triggerKind?: string;
+  /** Numeric trigger params (e.g. { trailCents: 5 }) for parameter-sensitivity analysis. */
+  triggerParams?: Record<string, unknown>;
+  /** Peak bid recorded by the watcher before trigger fire (trailing-stop / take-profit). */
+  peakBidCents?: number;
+  /** Optimal hindsight exit mid in cents (best possible exit within trigger window). */
+  optimalHindsightMidCents?: number;
+  /** Resolution price in cents (100 = YES resolved, 0 = NO resolved). */
+  resolutionPriceCents?: number;
+  /** Pre-computed TCA slippage total: sum(slippageCents × chunkSize) across all chunks. */
+  slippageCents?: number;
+  /** True if market has not yet resolved (mark-to-mid used instead of resolution price). */
+  unresolved: boolean;
+}
+
+/** Additive P&L decomposition for one fire (all in dollars). */
+export interface EdgeComponents {
+  /** (arrivalMid − entryFill) × entrySize / 100 */
+  entryEdgeDollars: number;
+  /** (exitFill − benchmarkExit) × exitSize / 100 */
+  exitEdgeDollars: number;
+  /** (exitDecisionMid − entryDecisionMid) × exitSize / 100 */
+  marketDriftDollars: number;
+  /** sum(TCA slippageCents × chunkSize) / 100 */
+  slippageDollars: number;
+  /** (realizedExitMid − optimalHindsightMid) × exitSize / 100 */
+  triggerQualityDollars: number;
+  /** realizedPnL − sum(above components); non-zero = rounding / attribution gap */
+  residualDollars: number;
+  /** Realized P&L: exitProceeds − entryOutlay + resolution − fees */
+  realizedPnLDollars: number;
+}
+
+export interface EdgeSnapshotStrategyRow {
+  strategy: string;
+  fires: number;
+  totalRealizedPnLDollars: number;
+  avgEdgePerFireDollars: number;
+  sharpeIsh: number;
+  attribution: EdgeComponents;
+}
+
+export interface EdgeSnapshotMarketRow {
+  category: MarketCategory;
+  fires: number;
+  totalRealizedPnLDollars: number;
+}
+
+export interface EdgeSnapshotTriggerHistogram {
+  triggerKind: string;
+  tooEarly: number;
+  onTime: number;
+  tooLate: number;
+  totalFires: number;
+}
+
+/** Persisted snapshot: ${KEA_HOME}/edge-snapshots/<YYYY-MM-DD>.json. */
+export interface EdgeSnapshot {
+  generatedAt: string;
+  since: string;
+  until: string;
+  totalFires: number;
+  unresolvedFires: number;
+  totals: EdgeComponents;
+  perStrategy: EdgeSnapshotStrategyRow[];
+  perMarket: EdgeSnapshotMarketRow[];
+  triggerHistogram: EdgeSnapshotTriggerHistogram[];
+}
+
 export interface SyntheticEvalResult {
   fire: boolean;
   reason?: string;
