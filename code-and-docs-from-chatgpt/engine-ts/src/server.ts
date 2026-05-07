@@ -18,6 +18,9 @@ import { buildSPreResolutionArbArgs, SPreResolutionArbRunner } from './strategie
 import { buildSCashRaiseArgs, SCashRaiseRunner } from './strategies/sCashRaise.js';
 import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
 import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
+import { buildSPairArgs, SPairRunner } from './strategies/sPair.js';
+import { buildSBasisArbArgs, SBasisArbRunner } from './strategies/sBasisArb.js';
+import { Journal, generateJobId } from './journal.js';
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
   const payload = JSON.stringify(body, null, 2);
@@ -401,6 +404,118 @@ export function createServer(baseConfig: ExitConfig): http.Server {
           const client = new KalshiClient(baseConfig);
           const result = await new STimeEmergencyRunner(client, { ...config, jobId }).run();
           return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/s-pair') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { legs, legSkewPct, jobId } = body ?? {};
+        if (!Array.isArray(legs) || legs.length < 2) {
+          return json(res, 400, { ok: false, error: 'Missing required field: legs (array of 2+)' });
+        }
+        try {
+          const journal = new Journal(jobId ?? generateJobId());
+          const ticker = legs[0]?.ticker ?? 'PLACEHOLDER';
+          const client = new KalshiClient(baseConfig);
+          const args = buildSPairArgs({
+            legs,
+            legSkewPct,
+            journal,
+            client,
+            aggressiveInvoke: async (cfg) => {
+              const { AggressiveRunner: AR } = await import('./aggressive.js');
+              return new AR(client, cfg).run();
+            },
+            passiveInvoke: async (cfg) => {
+              const { run } = await import('./passive.js');
+              return run(client, cfg);
+            },
+            fetchOrderbook: async (t) => client.getOrderbook(t, 5),
+          });
+          void ticker;
+          const result = await new SPairRunner(args).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/s-basis-arb') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, totalDollarBudget, perPairSlippageCents, jobId } = body ?? {};
+        if (!ticker || totalDollarBudget == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, totalDollarBudget' });
+        }
+        try {
+          const journal = new Journal(jobId ?? generateJobId());
+          const client = new KalshiClient(baseConfig);
+          const args = buildSBasisArbArgs({
+            ticker,
+            totalDollarBudget,
+            perPairSlippageCents,
+            journal,
+            client,
+            aggressiveInvoke: async (cfg) => {
+              const { AggressiveRunner: AR } = await import('./aggressive.js');
+              return new AR(client, cfg).run();
+            },
+            passiveInvoke: async (cfg) => {
+              const { run } = await import('./passive.js');
+              return run(client, cfg);
+            },
+            fetchOrderbookInvoke: async (t) => client.getOrderbook(t, 5),
+          });
+          const result = await new SBasisArbRunner(args).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/strategies/run') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { strategy } = body ?? {};
+        if (!strategy || typeof strategy !== 'string') {
+          return json(res, 400, { ok: false, error: 'Missing required field: strategy' });
+        }
+        try {
+          const client = new KalshiClient(baseConfig);
+          const { jobId } = body;
+          switch (strategy) {
+            case 's-aggressive': {
+              const { ticker, side, action, size, oneTickIn } = body;
+              if (!ticker || !side || !action || size == null) throw new Error('s-aggressive requires: ticker, side, action, size');
+              const { buildSAggressiveOpts: b } = await import('./strategies/sAggressive.js');
+              const { AggressiveRunner: AR } = await import('./aggressive.js');
+              const config = b({ ticker, side, action, size, confirmedAggressive: true, oneTickIn });
+              return json(res, 200, { ok: true, result: await new AR(client, config).run() });
+            }
+            case 's-pair': {
+              const { legs, legSkewPct } = body;
+              if (!Array.isArray(legs) || legs.length < 2) throw new Error('s-pair requires: legs (2+)');
+              const journal = new Journal(jobId ?? generateJobId());
+              const args = buildSPairArgs({
+                legs, legSkewPct, journal, client,
+                aggressiveInvoke: async (cfg) => { const { AggressiveRunner: AR } = await import('./aggressive.js'); return new AR(client, cfg).run(); },
+                passiveInvoke: async (cfg) => { const { run } = await import('./passive.js'); return run(client, cfg); },
+                fetchOrderbook: async (t) => client.getOrderbook(t, 5),
+              });
+              return json(res, 200, { ok: true, result: await new SPairRunner(args).run() });
+            }
+            case 's-basis-arb': {
+              const { ticker, totalDollarBudget, perPairSlippageCents } = body;
+              if (!ticker || totalDollarBudget == null) throw new Error('s-basis-arb requires: ticker, totalDollarBudget');
+              const journal = new Journal(jobId ?? generateJobId());
+              const args = buildSBasisArbArgs({
+                ticker, totalDollarBudget, perPairSlippageCents, journal, client,
+                aggressiveInvoke: async (cfg) => { const { AggressiveRunner: AR } = await import('./aggressive.js'); return new AR(client, cfg).run(); },
+                passiveInvoke: async (cfg) => { const { run } = await import('./passive.js'); return run(client, cfg); },
+                fetchOrderbookInvoke: async (t) => client.getOrderbook(t, 5),
+              });
+              return json(res, 200, { ok: true, result: await new SBasisArbRunner(args).run() });
+            }
+            default:
+              return json(res, 400, { ok: false, error: `unknown strategy: ${strategy}` });
+          }
         } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
       }
 

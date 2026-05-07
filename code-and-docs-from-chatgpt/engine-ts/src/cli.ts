@@ -28,7 +28,7 @@ import {
 } from './credentials.js';
 import { getSafety, setSafety, listForbidden, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
 import { computeHarvestPlan } from './harvestPlanner.js';
-import { Journal } from './journal.js';
+import { Journal, generateJobId } from './journal.js';
 import readline from 'node:readline/promises';
 import type { ExitConfig, Orderbook, RiskReductionRow, TcaEntry, WatcherConfig } from './types.js';
 import { getWatcher, isWatcherInitialized, initWatcher } from './watcherSingleton.js';
@@ -47,6 +47,8 @@ import { buildSPreResolutionArbArgs, SPreResolutionArbRunner } from './strategie
 import { buildSCashRaiseArgs, SCashRaiseRunner } from './strategies/sCashRaise.js';
 import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
 import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
+import { buildSPairArgs, SPairRunner } from './strategies/sPair.js';
+import { buildSBasisArbArgs, SBasisArbRunner } from './strategies/sBasisArb.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
 function parseFlags(argv: string[]): Record<string, string> {
@@ -970,6 +972,60 @@ async function cmdStrategySTimeEmergency(flags: Record<string, string>): Promise
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }
 
+async function cmdStrategySPair(flags: Record<string, string>): Promise<void> {
+  if (!flags.legs) die('strategy s-pair requires --legs <json-array> (e.g. \'[{"ticker":"KXA","side":"yes","size":10,"executionMode":"aggressive"},{"ticker":"KXB","side":"no","size":10,"executionMode":"aggressive"}]\')');
+  let legs: Array<{ ticker: string; side: 'yes' | 'no'; size: number; executionMode: 'aggressive' | 'passive' }>;
+  try { legs = JSON.parse(flags.legs); } catch { die('strategy s-pair: --legs must be valid JSON array'); }
+  const legSkewPct = flags['leg-skew-pct'] !== undefined ? Number(flags['leg-skew-pct']) : undefined;
+  const client = new KalshiClient(makeMinimalConfig(legs[0]?.ticker ?? 'KX_PLACEHOLDER'));
+  const journal = new Journal(flags['job-id'] ?? generateJobId());
+  const args = buildSPairArgs({
+    legs,
+    legSkewPct,
+    journal,
+    client,
+    aggressiveInvoke: async (cfg) => {
+      const { AggressiveRunner: AR } = await import('./aggressive.js');
+      return new AR(client, cfg).run();
+    },
+    passiveInvoke: async (cfg) => {
+      const { run } = await import('./passive.js');
+      return run(client, cfg);
+    },
+    fetchOrderbook: async (t) => client.getOrderbook(t, 5),
+  });
+  const result = await new SPairRunner(args).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+async function cmdStrategySBasisArb(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy s-basis-arb requires --ticker <T>');
+  if (!flags['total-dollar-budget']) die('strategy s-basis-arb requires --total-dollar-budget <N>');
+  const ticker = flags.ticker;
+  const totalDollarBudget = Number(flags['total-dollar-budget']);
+  const perPairSlippageCents = flags['per-pair-slippage-cents'] !== undefined ? Number(flags['per-pair-slippage-cents']) : undefined;
+  const client = new KalshiClient(makeMinimalConfig(ticker));
+  const journal = new Journal(flags['job-id'] ?? generateJobId());
+  const args = buildSBasisArbArgs({
+    ticker,
+    totalDollarBudget,
+    perPairSlippageCents,
+    journal,
+    client,
+    aggressiveInvoke: async (cfg) => {
+      const { AggressiveRunner: AR } = await import('./aggressive.js');
+      return new AR(client, cfg).run();
+    },
+    passiveInvoke: async (cfg) => {
+      const { run } = await import('./passive.js');
+      return run(client, cfg);
+    },
+    fetchOrderbookInvoke: async (t) => client.getOrderbook(t, 5),
+  });
+  const result = await new SBasisArbRunner(args).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
 async function cmdStrategy(subcommand: string | undefined, rest: string[], flags: Record<string, string>): Promise<void> {
   switch (subcommand) {
     case 'aggressive': return cmdStrategyAggressive(flags);
@@ -983,8 +1039,10 @@ async function cmdStrategy(subcommand: string | undefined, rest: string[], flags
     case 's-cash-raise': return cmdStrategySCashRaise(flags);
     case 's-iceberg': return cmdStrategySIceberg(flags);
     case 's-time-emergency': return cmdStrategySTimeEmergency(flags);
+    case 's-pair': return cmdStrategySPair(flags);
+    case 's-basis-arb': return cmdStrategySBasisArb(flags);
     default:
-      die(`unknown strategy subcommand: ${subcommand ?? '(none)'}. Valid: aggressive, stealth, limit-ladder, stop-and-reverse, roll, prepend-then-sweep, s-twap, s-pre-resolution-arb, s-cash-raise, s-iceberg, s-time-emergency`);
+      die(`unknown strategy subcommand: ${subcommand ?? '(none)'}. Valid: aggressive, stealth, limit-ladder, stop-and-reverse, roll, prepend-then-sweep, s-twap, s-pre-resolution-arb, s-cash-raise, s-iceberg, s-time-emergency, s-pair, s-basis-arb`);
   }
 }
 
