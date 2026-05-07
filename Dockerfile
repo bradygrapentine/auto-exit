@@ -33,6 +33,11 @@ RUN printf '%s\n' \
   'chmod 600 /etc/kalshi/key.pem' \
   'export KALSHI_ACCESS_KEY="$KALSHI_API_KEY_ID"' \
   'export KALSHI_PRIVATE_KEY_PATH=/etc/kalshi/key.pem' \
+  'if [ ! -f /data/tickers.json ]; then' \
+  '  echo "[bootstrap] /data/tickers.json missing — running auto-discover..."' \
+  '  node dist/cli.js record discover --out /data/tickers.json' \
+  '  echo "[bootstrap] discover complete."' \
+  'fi' \
   'exec node dist/cli.js record start --tickers-file /data/tickers.json --recordings-dir /data/recordings' \
   > /usr/local/bin/scanner-entrypoint.sh \
   && chmod +x /usr/local/bin/scanner-entrypoint.sh
