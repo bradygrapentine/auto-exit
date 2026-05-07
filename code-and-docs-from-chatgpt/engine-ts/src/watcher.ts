@@ -200,7 +200,10 @@ export class Watcher {
           if (this.fireHook) await this.fireHook(s, reason);
           s.status = 'fired';
           s.firedAt = new Date().toISOString();
-          this.journal?.appendFired(s.id, reason);
+          this.journal?.appendFired(s.id, reason, {
+            peakBidCents: result.peakBidCents,
+            triggerKind: result.triggerKind,
+          });
           firedThisTick.add(s.id);
 
           // Successful fire: cascade parent + cancel siblings.

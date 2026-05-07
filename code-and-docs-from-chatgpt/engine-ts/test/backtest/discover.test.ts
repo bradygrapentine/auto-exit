@@ -7,7 +7,7 @@
  *  - Empty events: series present but no qualifying events → 0 contribution
  *  - Representative market selection: highest volume_24h_fp wins; tiebreak by |price - 0.5|
  *  - Event family dedup: multiple markets per event → only representative in output
- *  - Cadence assignment: top hotPerCategory per category get 500ms, rest 2000ms
+ *  - Cadence assignment: top hotPerCategory per category get 1000ms, rest 5000ms
  *  - writeTickerFile / readTickerFile round-trips
  */
 
@@ -263,7 +263,7 @@ describe('discoverTickers — event family dedup', () => {
 // ---------------------------------------------------------------------------
 
 describe('discoverTickers — cadence assignment', () => {
-  it('top hotPerCategory per category get 500ms cadence, rest get 2000ms', async () => {
+  it('top hotPerCategory per category get 1000ms cadence, rest get 5000ms', async () => {
     // 4 events for Crypto
     const events: EventRow[] = Array.from({ length: 4 }, (_, i) => ({
       event_ticker: `KXBTC-EV${i}`,
@@ -279,13 +279,13 @@ describe('discoverTickers — cadence assignment', () => {
     const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 2 });
     expect(tickers).toHaveLength(4);
     // Events are sorted by aggregate eventVolume desc; verify cadence by position
-    expect(tickers[0].cadenceMs).toBe(500);
-    expect(tickers[1].cadenceMs).toBe(500);
-    expect(tickers[2].cadenceMs).toBe(2000);
-    expect(tickers[3].cadenceMs).toBe(2000);
+    expect(tickers[0].cadenceMs).toBe(1000);
+    expect(tickers[1].cadenceMs).toBe(1000);
+    expect(tickers[2].cadenceMs).toBe(5000);
+    expect(tickers[3].cadenceMs).toBe(5000);
   });
 
-  it('hotPerCategory=0 → all 2000ms', async () => {
+  it('hotPerCategory=0 → all 5000ms', async () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
@@ -300,7 +300,7 @@ describe('discoverTickers — cadence assignment', () => {
     });
     const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 0 });
     for (const t of tickers) {
-      expect(t.cadenceMs).toBe(2000);
+      expect(t.cadenceMs).toBe(5000);
     }
   });
 
@@ -388,8 +388,8 @@ describe('writeTickerFile + readTickerFile', () => {
 
   it('round-trips tickers through disk', () => {
     const tickers = [
-      { ticker: 'KXBTC-EV1-YES', cadenceMs: 500 },
-      { ticker: 'KXPOL-EV2-M', cadenceMs: 2000 },
+      { ticker: 'KXBTC-EV1-YES', cadenceMs: 1000 },
+      { ticker: 'KXPOL-EV2-M', cadenceMs: 5000 },
     ];
     const filePath = path.join(dir, 'tickers.json');
     writeTickerFile(tickers, filePath);
@@ -402,13 +402,13 @@ describe('writeTickerFile + readTickerFile', () => {
 
   it('creates parent directories if needed', () => {
     const nested = path.join(dir, 'a', 'b', 'c', 'tickers.json');
-    writeTickerFile([{ ticker: 'KXBTC-T', cadenceMs: 500 }], nested);
+    writeTickerFile([{ ticker: 'KXBTC-T', cadenceMs: 1000 }], nested);
     expect(fs.existsSync(nested)).toBe(true);
   });
 
   it('output is valid JSON', () => {
     const filePath = path.join(dir, 'out.json');
-    writeTickerFile([{ ticker: 'KXBTC-X', cadenceMs: 500 }], filePath);
+    writeTickerFile([{ ticker: 'KXBTC-X', cadenceMs: 1000 }], filePath);
     const raw = fs.readFileSync(filePath, 'utf8');
     expect(() => JSON.parse(raw)).not.toThrow();
   });

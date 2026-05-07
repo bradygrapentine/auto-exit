@@ -20,6 +20,7 @@ export const evalTakeProfit: Evaluator = (s: Synthetic, book: Orderbook): Synthe
         reason: 'take_profit_rung_0_fired',
         unregister: true,
         distanceCentsToTrigger: distance,
+        triggerKind: 'take_profit',
       };
     }
     return {
@@ -69,6 +70,7 @@ export const evalTakeProfit: Evaluator = (s: Synthetic, book: Orderbook): Synthe
       newState: { firedRungIndices: newFired },
       unregister: allFired ? true : undefined,
       distanceCentsToTrigger: rungs[firedIdx].priceCents - topBid,
+      triggerKind: 'take_profit',
     };
   }
 

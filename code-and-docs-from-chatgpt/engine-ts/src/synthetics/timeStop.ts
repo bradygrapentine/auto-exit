@@ -46,6 +46,7 @@ export const evalTimeStop: Evaluator = (
       fire: true,
       reason: 'time_stop_breached',
       unregister: true,
+      triggerKind: 'time_stop',
     };
   }
 

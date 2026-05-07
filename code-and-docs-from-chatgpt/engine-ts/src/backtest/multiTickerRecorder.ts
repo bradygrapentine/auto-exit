@@ -2,6 +2,8 @@
  * multiTickerRecorder.ts — orchestrate independent per-ticker recording loops.
  *
  * Each ticker runs its own setInterval at the configured cadenceMs.
+ * A globally-shared token bucket (default 30 req/sec, override via KEA_SCANNER_RATE_PER_SEC)
+ * paces all polls to prevent 429 throttling from Kalshi.
  * Polls client.getOrderbook, hands snapshots to individual Recorders.
  * Graceful shutdown on SIGINT/SIGTERM (stop all intervals, close all recorders).
  */
@@ -9,6 +11,37 @@
 import { createRecorder } from './recorder.js';
 import type { Recorder } from './types.js';
 import type { Orderbook } from '../types.js';
+
+// ---------------------------------------------------------------------------
+// Token bucket
+// ---------------------------------------------------------------------------
+
+export interface TokenBucket {
+  capacity: number;
+  refillPerSec: number;
+  tokens: number;
+  lastRefillMs: number;
+}
+
+export function createTokenBucket(refillPerSec: number, burstCapacity?: number): TokenBucket {
+  const capacity = burstCapacity ?? refillPerSec * 2;
+  return { capacity, refillPerSec, tokens: capacity, lastRefillMs: Date.now() };
+}
+
+export async function acquireToken(bucket: TokenBucket): Promise<void> {
+  while (true) {
+    const now = Date.now();
+    const elapsedSec = (now - bucket.lastRefillMs) / 1000;
+    bucket.tokens = Math.min(bucket.capacity, bucket.tokens + elapsedSec * bucket.refillPerSec);
+    bucket.lastRefillMs = now;
+    if (bucket.tokens >= 1) {
+      bucket.tokens -= 1;
+      return;
+    }
+    const waitMs = Math.max(50, ((1 - bucket.tokens) / bucket.refillPerSec) * 1000);
+    await new Promise<void>((r) => setTimeout(r, waitMs));
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -34,6 +67,11 @@ export interface MultiTickerRecorderOptions {
   };
   /** Orderbook depth to record. Defaults to 10. */
   depthLevels?: number;
+  /**
+   * Shared token bucket for rate-limiting all polls.
+   * If omitted, one is created using KEA_SCANNER_RATE_PER_SEC (default 30 req/sec).
+   */
+  rateBucket?: TokenBucket;
 }
 
 export interface MultiTickerRecorder {
@@ -64,6 +102,8 @@ export function createMultiTickerRecorder(
 ): MultiTickerRecorder {
   const { tickers, dir, client } = opts;
   const depthLevels = opts.depthLevels ?? 10;
+  const ratePerSec = Number(process.env.KEA_SCANNER_RATE_PER_SEC ?? '30');
+  const bucket = opts.rateBucket ?? createTokenBucket(ratePerSec);
 
   const states: TickerState[] = tickers.map((entry) => ({
     entry,
@@ -95,6 +135,7 @@ export function createMultiTickerRecorder(
   }
 
   async function poll(state: TickerState): Promise<void> {
+    await acquireToken(bucket);
     const t0 = Date.now();
     try {
       const book = await client.getOrderbook(state.entry.ticker, depthLevels);

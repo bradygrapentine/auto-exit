@@ -125,4 +125,36 @@ describe('joinFires — basic lifecycle', () => {
     const fires = joinFires(entries);
     expect(fires).toHaveLength(0);
   });
+
+  it('backward-compat: synthetic_fired without peakBidCents still produces valid Fire', () => {
+    // Older journal entries omit peakBidCents — must not blow up
+    const entries: JournalEntry[] = [
+      ...miniJournal('job-compat'),
+      makeEntry('synthetic_fired', {
+        jobId: 'job-compat',
+        kind: 'stop_loss',
+        // no peakBidCents field
+      }, '2026-01-01T00:02:00Z'),
+    ];
+    const fires = joinFires(entries);
+    const f = fires[0]!;
+    expect(f.triggerKind).toBe('stop_loss');
+    expect(f.peakBidCents).toBeUndefined();
+    expect(f.triggerArmedAt).toBe('2026-01-01T00:02:00Z');
+  });
+
+  it('lifecycle reads peakBidCents from step_trail synthetic_fired entry', () => {
+    const entries: JournalEntry[] = [
+      ...miniJournal('job-step'),
+      makeEntry('synthetic_fired', {
+        jobId: 'job-step',
+        kind: 'step_trail',
+        peakBidCents: 85,
+      }, '2026-01-01T00:03:00Z'),
+    ];
+    const fires = joinFires(entries);
+    const f = fires[0]!;
+    expect(f.triggerKind).toBe('step_trail');
+    expect(f.peakBidCents).toBe(85);
+  });
 });
