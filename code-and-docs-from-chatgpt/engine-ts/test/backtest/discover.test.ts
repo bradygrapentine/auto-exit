@@ -51,7 +51,8 @@ function mockClient(opts: {
 
 /** Open market that closes far in the future (qualifies for >24h filter). */
 function openMarket(ticker: string, volume_24h_fp = 1000, last_price_dollars = 0.5): MarketRow {
-  return { ticker, volume_24h_fp, last_price_dollars, status: 'open' };
+  // Kalshi's live-trading status is 'active' (not 'open' — that's the event-level status).
+  return { ticker, volume_24h_fp, last_price_dollars, status: 'active' };
 }
 
 // ---------------------------------------------------------------------------

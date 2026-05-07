@@ -117,7 +117,9 @@ export async function discoverTickers(opts: DiscoverOptions): Promise<TickerEntr
       });
 
       for (const event of eventsPage.events) {
-        const markets = (event.markets ?? []).filter((m) => m.status === 'open');
+        // Kalshi market-level status is 'active' for live trading (NOT 'open' — that's the
+        // event-level status). 'initialized' = pre-open, 'finalized' = resolved.
+        const markets = (event.markets ?? []).filter((m) => m.status === 'active');
         if (markets.length === 0) continue;
 
         // Representative market: highest volume_24h_fp; tiebreak smallest |price - 0.5|
