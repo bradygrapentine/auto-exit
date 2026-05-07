@@ -21,6 +21,11 @@
  *   kea_forbidden_remove — remove a ticker from the forbidden list
  *   kea_harvest_planner — EV-weighted harvest vs hold analysis
  *   kea_tca_summary     — per-chunk slippage vs arrival mid for a completed job
+ *   kea_portfolio_plan  — sequence portfolio exit by overvalued-to-hold priority
+ *   kea_alert_register  — register a notify synthetic (webhook/desktop alert)
+ *   kea_recommend       — rank strategies by EV × sqrt(Kelly size)
+ *   kea_ev              — compute EV for a discrete decision action
+ *   kea_size            — Kelly-optimal position sizing
  *
  * Run: `npx tsx src/mcp.ts` (stdio transport — register in your MCP host config).
  */
@@ -57,6 +62,10 @@ import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
 import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
 import { buildSPairArgs, SPairRunner } from './strategies/sPair.js';
 import { buildSBasisArbArgs, SBasisArbRunner } from './strategies/sBasisArb.js';
+import { buildPortfolioPlan } from './portfolio.js';
+import { computeDecisionEV } from './decisionEv.js';
+import { computeKellySize } from './kellySizer.js';
+import { recommendStrategies } from './strategyRecommender.js';
 
 // ── Synthetic kind validation ─────────────────────────────────────────────────
 const SYNTHETIC_KINDS = ['stop_loss', 'stop_limit', 'trailing_stop', 'take_profit', 'oco', 'bracket', 'time_stop', 'step_trail'] as const;
@@ -1317,6 +1326,159 @@ export function buildMcpServer(): McpServer {
           default:
             throw new Error(`unknown strategy: ${strategy as string}`);
         }
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  // ── Decision-layer tools ──────────────────────────────────────────────────
+
+  server.registerTool(
+    'kea_portfolio_plan',
+    {
+      description:
+        'Build a ranked portfolio exit plan from position snapshots + market data. ' +
+        'Ranks positions by overvalued-to-hold (markToBid − EV) and auto-picks aggressive vs passive per position. ' +
+        'Returns a sequenced PortfolioPlan (pure data — no orders placed).',
+      inputSchema: {
+        positions: z.array(z.object({
+          ticker: z.string().min(1),
+          side: z.enum(['yes', 'no']),
+          size: z.number().positive(),
+        })).min(1).describe('Array of positions to sequence'),
+        bidByTicker: z.record(z.string(), z.number()).describe('Current bid price in cents per ticker'),
+        midProbByTicker: z.record(z.string(), z.number()).describe('Agent mid probability (0–1) per ticker'),
+        defaultStrategy: z.enum(['aggressive', 'passive']).optional().describe('Override auto-pick strategy for all positions'),
+      },
+    },
+    (args) => {
+      try {
+        const plan = buildPortfolioPlan(args);
+        return jsonContent(plan);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_alert_register',
+    {
+      description:
+        'Register a notify synthetic — fires an alert (webhook/desktop) when the trigger condition is met. ' +
+        'Mirrors kea_synthetic_register but sets action=\'notify\'. Watcher singleton must be initialized.',
+      inputSchema: {
+        kind: z.enum(SYNTHETIC_KINDS).describe('Synthetic order kind'),
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        side: z.enum(['yes', 'no']).describe('Side of the position held'),
+        positionSize: z.number().positive().describe('Number of contracts held'),
+        params: z.record(z.unknown()).describe('Kind-specific trigger params (e.g. {triggerPriceCents:30})'),
+        notifyChannels: z.array(z.object({
+          kind: z.enum(['webhook', 'desktop']),
+          webhookUrl: z.string().optional(),
+        })).optional().describe('Notification channels (default: [{kind:"desktop"}])'),
+      },
+    },
+    (args) => {
+      try {
+        if (!isWatcherInitialized()) {
+          return errorContent(new Error('Watcher singleton not initialized. Call initWatcher() or setWatcherForTests() first.'));
+        }
+        const id = getWatcher().register({
+          kind: args.kind,
+          ticker: args.ticker,
+          side: args.side as 'yes' | 'no',
+          positionSize: args.positionSize,
+          params: args.params as Synthetic['params'],
+          action: 'notify',
+          notifyChannels: args.notifyChannels ?? [{ kind: 'desktop' }],
+        });
+        return jsonContent({ id });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_recommend',
+    {
+      description:
+        'Rank strategies by EV × sqrt(Kelly size). Returns up to 3 ranked recommendations with rationale. ' +
+        'Requires agent market probability (marketProbability) and edge probability (edgeProbability).',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        bidCents: z.number().describe('Current best bid in cents'),
+        askCents: z.number().describe('Current best ask in cents'),
+        midProbability: z.number().min(0).max(1).describe('Agent mid probability belief'),
+        marketProbability: z.number().min(0).max(1).describe('Market-implied probability'),
+        edgeProbability: z.number().min(0).max(1).describe('Agent edge probability for Kelly sizing'),
+        bankrollDollars: z.number().positive().describe('Total bankroll in dollars'),
+        fractionalKelly: z.number().positive().max(1).optional().describe('Kelly fraction (default 0.5)'),
+        maxPositionDollars: z.number().positive().optional().describe('Hard cap on position size'),
+        availableStrategies: z.array(z.string()).min(1).describe('Strategy names from S library (e.g. ["s-passive","s-aggressive"])'),
+        position: z.object({
+          side: z.enum(['yes', 'no']),
+          size: z.number().positive(),
+          costBasisCents: z.number(),
+        }).optional().describe('Current position (required for exit/scale-out actions)'),
+        edgeData: z.object({
+          edgeProbabilityOverride: z.number().min(0).max(1).optional(),
+          historicalAccuracy: z.number().optional(),
+          sampleCount: z.number().optional(),
+        }).optional().describe('Optional SH-EDGE prior data'),
+      },
+    },
+    (args) => {
+      try {
+        const result = recommendStrategies(args);
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_ev',
+    {
+      description:
+        'Compute expected dollar payoff for a discrete decision action under the agent\'s midProbability belief. ' +
+        'Actions: enter-yes, enter-no, hold, exit-aggressive, exit-passive, scale-out-50, scale-out-25, no-action.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        bidCents: z.number().describe('Current best bid in cents'),
+        askCents: z.number().describe('Current best ask in cents'),
+        midProbability: z.number().min(0).max(1).describe('Agent mid probability belief (0–1)'),
+        action: z.enum(['enter-yes', 'enter-no', 'hold', 'exit-aggressive', 'exit-passive', 'scale-out-50', 'scale-out-25', 'no-action']).describe('Decision action to evaluate'),
+        feesEstimateCents: z.number().optional().describe('Estimated fee in cents (default 0)'),
+        timeToCloseHours: z.number().optional().describe('Hours until market close (optional context)'),
+        position: z.object({
+          side: z.enum(['yes', 'no']),
+          size: z.number().positive(),
+          costBasisCents: z.number(),
+        }).optional().describe('Current position (required for exit/scale-out actions)'),
+      },
+    },
+    (args) => {
+      try {
+        const result = computeDecisionEV(args, args.action);
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_size',
+    {
+      description:
+        'Compute Kelly-optimal position size. Returns full Kelly fraction, recommended fraction (half-Kelly by default), ' +
+        'and recommended dollars (capped by maxPositionDollars if supplied).',
+      inputSchema: {
+        edgeProbability: z.number().min(0).max(1).describe('Agent probability belief'),
+        marketProbability: z.number().min(0).max(1).describe('Market-implied probability'),
+        bankrollDollars: z.number().positive().describe('Total bankroll in dollars'),
+        fractionalKelly: z.number().positive().max(1).optional().describe('Kelly fraction multiplier (default 0.5)'),
+        maxPositionDollars: z.number().positive().optional().describe('Hard cap on recommended dollars'),
+      },
+    },
+    (args) => {
+      try {
+        const result = computeKellySize(args);
+        return jsonContent(result);
       } catch (err) { return errorContent(err); }
     },
   );

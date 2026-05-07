@@ -21,6 +21,10 @@ import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTim
 import { buildSPairArgs, SPairRunner } from './strategies/sPair.js';
 import { buildSBasisArbArgs, SBasisArbRunner } from './strategies/sBasisArb.js';
 import { Journal, generateJobId } from './journal.js';
+import { buildPortfolioPlan } from './portfolio.js';
+import { computeDecisionEV } from './decisionEv.js';
+import { computeKellySize } from './kellySizer.js';
+import { recommendStrategies } from './strategyRecommender.js';
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
   const payload = JSON.stringify(body, null, 2);
@@ -516,6 +520,111 @@ export function createServer(baseConfig: ExitConfig): http.Server {
             default:
               return json(res, 400, { ok: false, error: `unknown strategy: ${strategy}` });
           }
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      // ── Decision-layer routes ──────────────────────────────────────────────
+
+      if (req.method === 'POST' && url.pathname === '/portfolio/plan') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { positions, bidByTicker, midProbByTicker, defaultStrategy } = body ?? {};
+        if (!Array.isArray(positions) || positions.length === 0) {
+          return json(res, 400, { ok: false, error: 'Missing required field: positions (non-empty array)' });
+        }
+        if (!bidByTicker || typeof bidByTicker !== 'object') {
+          return json(res, 400, { ok: false, error: 'Missing required field: bidByTicker (object)' });
+        }
+        if (!midProbByTicker || typeof midProbByTicker !== 'object') {
+          return json(res, 400, { ok: false, error: 'Missing required field: midProbByTicker (object)' });
+        }
+        try {
+          const plan = buildPortfolioPlan({ positions, bidByTicker, midProbByTicker, defaultStrategy });
+          return json(res, 200, { ok: true, plan });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/alerts/register') {
+        if (!isWatcherInitialized()) {
+          return json(res, 503, { ok: false, error: 'Watcher not initialized. Start the watcher daemon first.' });
+        }
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { kind, ticker, side, positionSize, params, notifyChannels } = body ?? {};
+        if (!kind || !ticker || !side || positionSize == null || !params) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: kind, ticker, side, positionSize, params' });
+        }
+        try {
+          const id = getWatcher().register({
+            kind,
+            ticker,
+            side,
+            positionSize,
+            params,
+            action: 'notify',
+            notifyChannels: notifyChannels ?? [{ kind: 'desktop' }],
+          });
+          return json(res, 201, { ok: true, id });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'GET' && url.pathname === '/alerts/list') {
+        if (!isWatcherInitialized()) {
+          return json(res, 200, { ok: true, alerts: [] });
+        }
+        const all = getWatcher().list();
+        const alerts = all.filter((s: Synthetic) => s.action === 'notify');
+        return json(res, 200, { ok: true, alerts });
+      }
+
+      if (req.method === 'DELETE' && url.pathname === '/alerts/cancel') {
+        if (!isWatcherInitialized()) {
+          return json(res, 503, { ok: false, error: 'Watcher not initialized.' });
+        }
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { id } = body ?? {};
+        if (!id || typeof id !== 'string') {
+          return json(res, 400, { ok: false, error: 'Missing required field: id' });
+        }
+        const canceled = getWatcher().cancel(id);
+        return json(res, 200, { ok: true, canceled });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/recommend') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        if (!body?.availableStrategies || !Array.isArray(body.availableStrategies)) {
+          return json(res, 400, { ok: false, error: 'Missing required field: availableStrategies (array)' });
+        }
+        try {
+          const result = recommendStrategies(body);
+          return json(res, 200, { ok: true, ...result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/ev') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { action } = body ?? {};
+        if (!action) {
+          return json(res, 400, { ok: false, error: 'Missing required field: action' });
+        }
+        try {
+          const result = computeDecisionEV(body, action);
+          return json(res, 200, { ok: true, ...result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'POST' && url.pathname === '/size') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        if (body?.edgeProbability == null || body?.marketProbability == null || body?.bankrollDollars == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: edgeProbability, marketProbability, bankrollDollars' });
+        }
+        try {
+          const result = computeKellySize(body);
+          return json(res, 200, { ok: true, ...result });
         } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
       }
 
