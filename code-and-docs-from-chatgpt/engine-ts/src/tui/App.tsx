@@ -8,8 +8,9 @@ import type { Orderbook } from '../types.js';
 import { AccountTab } from './AccountTab.js';
 import { SafetyTab } from './SafetyTab.js';
 import { SyntheticsTab } from './SyntheticsTab.js';
+import { StrategiesTab } from './StrategiesTab.js';
 
-type Tab = 'dashboard' | 'preview' | 'book' | 'journal' | 'account' | 'synthetics' | 'safety';
+type Tab = 'dashboard' | 'preview' | 'book' | 'journal' | 'account' | 'synthetics' | 'safety' | 'strategies';
 
 interface DashboardState {
   balance?: BalanceData;
@@ -63,6 +64,7 @@ export function App() {
       else if (input === 'a' || input === 'A') setTab('account');
       else if (input === '6') setTab('synthetics');
       else if (input === '5') setTab('safety');
+      else if (input === '7') setTab('strategies');
       else if (input === 'r' || input === 'R') refreshDashboard();
       else if (tab === 'dashboard') {
         if (key.upArrow) setDash((s) => ({ ...s, cursor: Math.max(0, s.cursor - 1) }));
@@ -90,6 +92,7 @@ export function App() {
       {tab === 'account' && <AccountTab />}
       {tab === 'synthetics' && <SyntheticsTab />}
       {tab === 'safety' && <SafetyTab />}
+      {tab === 'strategies' && <StrategiesTab />}
       <Footer tab={tab} />
     </Box>
   );
@@ -138,7 +141,8 @@ function TabBar({ tab }: { tab: Tab }) {
       {item('4', 'journal', 'journal')}<Text> </Text>
       {item('a', 'account', 'account')}<Text> </Text>
       {item('6', 'synthetics', 'synthetics')}<Text> </Text>
-      {item('5', 'safety', 'safety')}
+      {item('5', 'safety', 'safety')}<Text> </Text>
+      {item('7', 'strategies', 'strategies')}
     </Box>
   );
 }
@@ -151,8 +155,10 @@ function Footer({ tab }: { tab: Tab }) {
     : tab === 'synthetics'
     ? '[↑↓] select   [c] cancel   [n] new   [1-4/a/5/6] tabs   [q] quit'
     : tab === 'safety'
-    ? '[↑↓] select   [d] remove ticker   [1-4/a/5/6] tabs   [q] quit'
-    : '[1-4/a/5/6] tabs   [r] refresh   [q] quit';
+    ? '[↑↓] select   [d] remove ticker   [1-4/a/5-7] tabs   [q] quit'
+    : tab === 'strategies'
+    ? '[↑↓] select   [enter] open   [1-4/a/5-7] tabs   [q] quit'
+    : '[1-4/a/5-7] tabs   [r] refresh   [q] quit';
   return (
     <Box marginTop={1}><Text color="gray">{hint}</Text></Box>
   );
