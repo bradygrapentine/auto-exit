@@ -21,7 +21,8 @@ export type StrategyId =
   | 's-iceberg'
   | 's-basis-arb'
   | 's-prepend-then-sweep'
-  | 's-time-emergency';
+  | 's-time-emergency'
+  | 's-market-make';
 
 export type DangerLevel = 'low' | 'medium' | 'high';
 export type FieldKind = 'string' | 'number' | 'enum' | 'boolean' | 'array';
@@ -252,6 +253,18 @@ export const STRATEGY_REGISTRY: Readonly<Record<StrategyId, StrategyMetadata>> =
       COMMON_TICKER,
       COMMON_SIZE,
       { name: 'contractCloseEpochMs', label: 'Contract close (epoch ms)', kind: 'number', required: true },
+    ],
+  },
+  's-market-make': {
+    id: 's-market-make',
+    displayName: 'Market making (two-sided GTC)',
+    shortDescription: 'Maintain bid + ask GTCs inside the spread; flatten when inventory hits maxInventory.',
+    dangerLevel: 'medium',
+    fields: [
+      COMMON_TICKER,
+      { name: 'targetInventory', label: 'Target inventory', kind: 'number', required: true },
+      { name: 'maxInventory', label: 'Max inventory (must be > targetInventory)', kind: 'number', required: true },
+      { name: 'quoteOffsetCents', label: 'Quote offset inside spread (cents)', kind: 'number', required: true },
     ],
   },
 };
