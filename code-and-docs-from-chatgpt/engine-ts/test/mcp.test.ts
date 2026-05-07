@@ -78,7 +78,7 @@ describe('MCP server — tool registration', () => {
       'kea_forbidden_add', 'kea_forbidden_list', 'kea_forbidden_remove',
       'kea_harvest_planner',
       'kea_journal_list', 'kea_journal_read',
-      'kea_orderbook', 'kea_positions', 'kea_portfolio_plan', 'kea_preview',
+      'kea_orderbook', 'kea_portfolio_plan', 'kea_positions', 'kea_preview',
       'kea_recommend',
       'kea_replay', 'kea_resting_orders',
       'kea_safety_get', 'kea_safety_set',

@@ -528,18 +528,18 @@ export function createServer(baseConfig: ExitConfig): http.Server {
       if (req.method === 'POST' && url.pathname === '/portfolio/plan') {
         let body: any;
         try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
-        const { positions, bidByTicker, midProbByTicker, defaultStrategy } = body ?? {};
+        const { positions, bidByTicker, midProbabilities, defaultStrategy } = body ?? {};
         if (!Array.isArray(positions) || positions.length === 0) {
           return json(res, 400, { ok: false, error: 'Missing required field: positions (non-empty array)' });
         }
         if (!bidByTicker || typeof bidByTicker !== 'object') {
           return json(res, 400, { ok: false, error: 'Missing required field: bidByTicker (object)' });
         }
-        if (!midProbByTicker || typeof midProbByTicker !== 'object') {
-          return json(res, 400, { ok: false, error: 'Missing required field: midProbByTicker (object)' });
+        if (!midProbabilities || typeof midProbabilities !== 'object') {
+          return json(res, 400, { ok: false, error: 'Missing required field: midProbabilities (object)' });
         }
         try {
-          const plan = buildPortfolioPlan({ positions, bidByTicker, midProbByTicker, defaultStrategy });
+          const plan = buildPortfolioPlan({ positions, bidByTicker, midProbabilities, defaultStrategy });
           return json(res, 200, { ok: true, plan });
         } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
       }
@@ -555,15 +555,12 @@ export function createServer(baseConfig: ExitConfig): http.Server {
           return json(res, 400, { ok: false, error: 'Missing required fields: kind, ticker, side, positionSize, params' });
         }
         try {
-          const id = getWatcher().register({
-            kind,
-            ticker,
-            side,
-            positionSize,
-            params,
-            action: 'notify',
-            notifyChannels: notifyChannels ?? [{ kind: 'desktop' }],
-          });
+          const id = getWatcher().register({ kind, ticker, side, positionSize, params });
+          const syn = getWatcher().get(id);
+          if (syn) {
+            syn.action = 'notify';
+            syn.notifyChannels = notifyChannels ?? [{ kind: 'desktop' }];
+          }
           return json(res, 201, { ok: true, id });
         } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
       }

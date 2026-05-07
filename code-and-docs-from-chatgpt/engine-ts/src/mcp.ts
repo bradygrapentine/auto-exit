@@ -1346,7 +1346,7 @@ export function buildMcpServer(): McpServer {
           size: z.number().positive(),
         })).min(1).describe('Array of positions to sequence'),
         bidByTicker: z.record(z.string(), z.number()).describe('Current bid price in cents per ticker'),
-        midProbByTicker: z.record(z.string(), z.number()).describe('Agent mid probability (0–1) per ticker'),
+        midProbabilities: z.record(z.string(), z.number()).describe('Agent mid probability (0–1) per ticker'),
         defaultStrategy: z.enum(['aggressive', 'passive']).optional().describe('Override auto-pick strategy for all positions'),
       },
     },
@@ -1387,9 +1387,12 @@ export function buildMcpServer(): McpServer {
           side: args.side as 'yes' | 'no',
           positionSize: args.positionSize,
           params: args.params as Synthetic['params'],
-          action: 'notify',
-          notifyChannels: args.notifyChannels ?? [{ kind: 'desktop' }],
         });
+        const syn = getWatcher().get(id);
+        if (syn) {
+          syn.action = 'notify';
+          syn.notifyChannels = args.notifyChannels ?? [{ kind: 'desktop' }];
+        }
         return jsonContent({ id });
       } catch (err) { return errorContent(err); }
     },

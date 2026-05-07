@@ -1057,14 +1057,14 @@ async function cmdPortfolio(subcommand: string | undefined, flags: Record<string
     if (!flags['mids']) die('portfolio plan requires --mids <JSON of {ticker:midProbability}>');
     let positions: Array<{ ticker: string; side: 'yes' | 'no'; size: number }>;
     let bidByTicker: Record<string, number>;
-    let midProbByTicker: Record<string, number>;
+    let midProbabilities: Record<string, number>;
     try { positions = JSON.parse(flags['positions']); } catch { die('--positions must be valid JSON array'); return; }
     try { bidByTicker = JSON.parse(flags['bids']); } catch { die('--bids must be valid JSON object'); return; }
-    try { midProbByTicker = JSON.parse(flags['mids']); } catch { die('--mids must be valid JSON object'); return; }
+    try { midProbabilities = JSON.parse(flags['mids']); } catch { die('--mids must be valid JSON object'); return; }
     const plan = buildPortfolioPlan({
       positions,
       bidByTicker,
-      midProbByTicker,
+      midProbabilities,
       defaultStrategy: flags['strategy'] as 'aggressive' | 'passive' | undefined,
     });
     process.stdout.write(JSON.stringify(plan, null, 2) + '\n');
@@ -1108,9 +1108,12 @@ async function cmdAlerts(subcommand: string | undefined, flags: Record<string, s
       side: flags.side as 'yes' | 'no',
       positionSize: Number(flags.size),
       params: params as any,
-      action: 'notify',
-      notifyChannels,
     });
+    const syn = getWatcher().get(id);
+    if (syn) {
+      syn.action = 'notify';
+      syn.notifyChannels = notifyChannels;
+    }
     process.stdout.write(`${id}\n`);
     return;
   }
