@@ -1,0 +1,15 @@
+app = "auto-exit-scanner"
+primary_region = "iad"
+
+[build]
+
+[[mounts]]
+source = "scanner_data"
+destination = "/data"
+
+[[vm]]
+size = "shared-cpu-1x"
+memory = "256mb"
+
+[[restart]]
+policy = "always"
