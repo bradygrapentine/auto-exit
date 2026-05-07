@@ -66,6 +66,16 @@ import { buildPortfolioPlan } from './portfolio.js';
 import { computeDecisionEV } from './decisionEv.js';
 import { computeKellySize } from './kellySizer.js';
 import { recommendStrategies } from './strategyRecommender.js';
+import {
+  getWorkflowEngine,
+  isWorkflowEngineInitialized,
+  getPolicyEngine,
+  isPolicyEngineInitialized,
+  listTemplates,
+  getTemplate,
+} from './workflows/index.js';
+import { validateWorkflow } from './workflows/validate.js';
+import type { Policy } from './workflows/policies.js';
 
 // ── Synthetic kind validation ─────────────────────────────────────────────────
 const SYNTHETIC_KINDS = ['stop_loss', 'stop_limit', 'trailing_stop', 'take_profit', 'oco', 'bracket', 'time_stop', 'step_trail'] as const;
@@ -1482,6 +1492,192 @@ export function buildMcpServer(): McpServer {
       try {
         const result = computeKellySize(args);
         return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  // ── Workflow tools ────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    'kea_workflow_register',
+    {
+      description:
+        'Register (start) a new workflow instance from a prebuilt template or an inline workflow definition JSON string. ' +
+        'Returns the instanceId of the newly started instance.',
+      inputSchema: {
+        templateId: z.string().optional().describe('ID of a prebuilt template (see kea_template_list)'),
+        definition: z.string().optional().describe('Inline WorkflowDefinition as a JSON string (alternative to templateId)'),
+      },
+    },
+    (args) => {
+      try {
+        if (!isWorkflowEngineInitialized()) {
+          return errorContent(new Error('WorkflowEngine not initialized'));
+        }
+        const engine = getWorkflowEngine();
+        let def;
+        if (args.templateId) {
+          def = getTemplate(args.templateId);
+          if (!def) return errorContent(new Error(`Unknown template: ${args.templateId}`));
+        } else if (args.definition) {
+          let raw: unknown;
+          try { raw = JSON.parse(args.definition); } catch { return errorContent(new Error('definition must be valid JSON')); }
+          const result = validateWorkflow(raw);
+          if (!result.ok) return errorContent(new Error(`Invalid workflow definition: ${result.errors.join('; ')}`));
+          def = result.def;
+        } else {
+          return errorContent(new Error('Provide templateId or definition'));
+        }
+        const { instanceId } = engine.register(def);
+        return jsonContent({ ok: true, instanceId, definitionId: def.id });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_workflow_list',
+    {
+      description: 'List all workflow instances (active, terminal, and halted). Returns instanceId, definitionId, currentState, status, transitionCount.',
+      inputSchema: {
+        status: z.enum(['active', 'terminal', 'halted', 'all']).optional().default('all').describe('Filter by status (default: all)'),
+      },
+    },
+    (args) => {
+      try {
+        if (!isWorkflowEngineInitialized()) return jsonContent({ ok: true, instances: [] });
+        const all = getWorkflowEngine().list();
+        const filtered = (args.status && args.status !== 'all')
+          ? all.filter((i) => i.status === args.status)
+          : all;
+        return jsonContent({ ok: true, instances: filtered, total: filtered.length });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_workflow_get',
+    {
+      description: 'Get the full state of a single workflow instance by instanceId, including vars and transition history.',
+      inputSchema: {
+        instanceId: z.string().min(1).describe('UUID of the workflow instance'),
+      },
+    },
+    (args) => {
+      try {
+        if (!isWorkflowEngineInitialized()) return errorContent(new Error('WorkflowEngine not initialized'));
+        const inst = getWorkflowEngine().get(args.instanceId);
+        if (!inst) return errorContent(new Error(`Workflow instance not found: ${args.instanceId}`));
+        return jsonContent({ ok: true, instance: inst });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_workflow_cancel',
+    {
+      description: 'Cancel an active workflow instance. The instance transitions to status=halted with haltReason=canceled.',
+      inputSchema: {
+        instanceId: z.string().min(1).describe('UUID of the workflow instance to cancel'),
+      },
+    },
+    (args) => {
+      try {
+        if (!isWorkflowEngineInitialized()) return errorContent(new Error('WorkflowEngine not initialized'));
+        getWorkflowEngine().cancel(args.instanceId);
+        return jsonContent({ ok: true, canceled: args.instanceId });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_template_list',
+    {
+      description: 'List all 8 prebuilt workflow templates with their id, version, initialState, state count, and maxTransitions.',
+      inputSchema: {},
+    },
+    () => {
+      try {
+        const templates = listTemplates().map((t) => ({
+          id: t.id,
+          version: t.version,
+          initialState: t.initialState,
+          stateCount: t.states.length,
+          maxTransitions: t.maxTransitions,
+        }));
+        return jsonContent({ ok: true, templates });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_template_register',
+    {
+      description: 'Register a workflow instance from a prebuilt template by id. Equivalent to kea_workflow_register with a templateId.',
+      inputSchema: {
+        templateId: z.string().min(1).describe('Prebuilt template id (e.g. "continuous-trailing")'),
+      },
+    },
+    (args) => {
+      try {
+        if (!isWorkflowEngineInitialized()) return errorContent(new Error('WorkflowEngine not initialized'));
+        const def = getTemplate(args.templateId);
+        if (!def) return errorContent(new Error(`Unknown template: ${args.templateId}`));
+        const { instanceId } = getWorkflowEngine().register(def);
+        return jsonContent({ ok: true, instanceId, definitionId: def.id });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  // ── Policy tools ──────────────────────────────────────────────────────────────
+
+  server.registerTool(
+    'kea_policy_list',
+    {
+      description: 'List all currently configured workflow policies (if-then rules that fire on position detection).',
+      inputSchema: {},
+    },
+    () => {
+      try {
+        if (!isPolicyEngineInitialized()) return jsonContent({ ok: true, policies: [] });
+        const policies = getPolicyEngine().listPolicies();
+        return jsonContent({ ok: true, policies, total: policies.length });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_policy_add',
+    {
+      description: 'Add a new policy rule. A policy fires at most once per (ticker, side) position when its condition matches. Persisted to policies.json.',
+      inputSchema: {
+        policy: z.string().describe('Policy object as JSON string with fields: id, condition (SimplePredicate), action (Action[]), applyOncePerPosition: true'),
+      },
+    },
+    (args) => {
+      try {
+        if (!isPolicyEngineInitialized()) return errorContent(new Error('PolicyEngine not initialized'));
+        let policy: Policy;
+        try { policy = JSON.parse(args.policy) as Policy; } catch { return errorContent(new Error('policy must be valid JSON')); }
+        getPolicyEngine().addPolicy(policy);
+        return jsonContent({ ok: true, added: policy.id });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_policy_remove',
+    {
+      description: 'Remove a policy rule by id. Persisted immediately to policies.json.',
+      inputSchema: {
+        id: z.string().min(1).describe('Policy id to remove'),
+      },
+    },
+    (args) => {
+      try {
+        if (!isPolicyEngineInitialized()) return errorContent(new Error('PolicyEngine not initialized'));
+        const removed = getPolicyEngine().removePolicy(args.id);
+        if (!removed) return errorContent(new Error(`Policy not found: ${args.id}`));
+        return jsonContent({ ok: true, removed: args.id });
       } catch (err) { return errorContent(err); }
     },
   );

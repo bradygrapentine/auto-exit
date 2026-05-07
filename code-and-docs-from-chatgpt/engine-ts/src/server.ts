@@ -26,6 +26,16 @@ import { computeDecisionEV } from './decisionEv.js';
 import { computeKellySize } from './kellySizer.js';
 import { recommendStrategies } from './strategyRecommender.js';
 import { getSafety, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
+import {
+  getWorkflowEngine,
+  isWorkflowEngineInitialized,
+  getPolicyEngine,
+  isPolicyEngineInitialized,
+  listTemplates,
+  getTemplate,
+} from './workflows/index.js';
+import { validateWorkflow } from './workflows/validate.js';
+import type { Policy } from './workflows/policies.js';
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
   const payload = JSON.stringify(body, null, 2);
@@ -670,6 +680,105 @@ export function createServer(baseConfig: ExitConfig): http.Server {
           if (!removed) return json(res, 404, { ok: false, error: `Ticker not on forbidden list: ${ticker}` });
           return json(res, 200, { ok: true, removed });
         } catch (err) { return json(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      // ── Workflow routes ───────────────────────────────────────────────────────
+
+      if (req.method === 'POST' && url.pathname === '/workflows/register') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        if (!isWorkflowEngineInitialized()) return json(res, 503, { ok: false, error: 'WorkflowEngine not initialized' });
+        const engine = getWorkflowEngine();
+        let def;
+        if (body?.templateId) {
+          def = getTemplate(body.templateId as string);
+          if (!def) return json(res, 404, { ok: false, error: `Unknown template: ${body.templateId}` });
+        } else if (body?.definition) {
+          const result = validateWorkflow(body.definition);
+          if (!result.ok) return json(res, 400, { ok: false, error: result.errors.join('; ') });
+          def = result.def;
+        } else {
+          return json(res, 400, { ok: false, error: 'Provide templateId or definition' });
+        }
+        try {
+          const { instanceId } = engine.register(def);
+          return json(res, 201, { ok: true, instanceId, definitionId: def.id });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      if (req.method === 'GET' && url.pathname === '/workflows') {
+        if (!isWorkflowEngineInitialized()) return json(res, 200, { ok: true, instances: [] });
+        const statusFilter = url.searchParams.get('status');
+        const all = getWorkflowEngine().list();
+        const instances = statusFilter && statusFilter !== 'all'
+          ? all.filter((i) => i.status === statusFilter)
+          : all;
+        return json(res, 200, { ok: true, instances, total: instances.length });
+      }
+
+      const workflowGetMatch = url.pathname.match(/^\/workflows\/([^/]+)$/);
+      if (workflowGetMatch && req.method === 'GET') {
+        const instanceId = decodeURIComponent(workflowGetMatch[1]!);
+        if (!isWorkflowEngineInitialized()) return json(res, 503, { ok: false, error: 'WorkflowEngine not initialized' });
+        const inst = getWorkflowEngine().get(instanceId);
+        if (!inst) return json(res, 404, { ok: false, error: `Workflow instance not found: ${instanceId}` });
+        return json(res, 200, { ok: true, instance: inst });
+      }
+
+      const workflowCancelMatch = url.pathname.match(/^\/workflows\/([^/]+)\/cancel$/);
+      if (workflowCancelMatch && req.method === 'POST') {
+        const instanceId = decodeURIComponent(workflowCancelMatch[1]!);
+        if (!isWorkflowEngineInitialized()) return json(res, 503, { ok: false, error: 'WorkflowEngine not initialized' });
+        getWorkflowEngine().cancel(instanceId);
+        return json(res, 200, { ok: true, canceled: instanceId });
+      }
+
+      // ── Template routes ───────────────────────────────────────────────────────
+
+      if (req.method === 'GET' && url.pathname === '/workflows/templates') {
+        const templates = listTemplates().map((t) => ({
+          id: t.id,
+          version: t.version,
+          initialState: t.initialState,
+          stateCount: t.states.length,
+          maxTransitions: t.maxTransitions,
+        }));
+        return json(res, 200, { ok: true, templates });
+      }
+
+      const templateGetMatch = url.pathname.match(/^\/workflows\/templates\/([^/]+)$/);
+      if (templateGetMatch && req.method === 'GET') {
+        const id = decodeURIComponent(templateGetMatch[1]!);
+        const tmpl = getTemplate(id);
+        if (!tmpl) return json(res, 404, { ok: false, error: `Unknown template: ${id}` });
+        return json(res, 200, { ok: true, template: tmpl });
+      }
+
+      // ── Policy routes ─────────────────────────────────────────────────────────
+
+      if (req.method === 'GET' && url.pathname === '/policies') {
+        if (!isPolicyEngineInitialized()) return json(res, 200, { ok: true, policies: [] });
+        const policies = getPolicyEngine().listPolicies();
+        return json(res, 200, { ok: true, policies, total: policies.length });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/policies') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        if (!isPolicyEngineInitialized()) return json(res, 503, { ok: false, error: 'PolicyEngine not initialized' });
+        try {
+          getPolicyEngine().addPolicy(body as Policy);
+          return json(res, 201, { ok: true, added: (body as Policy).id });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
+      const policyDeleteMatch = url.pathname.match(/^\/policies\/([^/]+)$/);
+      if (policyDeleteMatch && req.method === 'DELETE') {
+        const policyId = decodeURIComponent(policyDeleteMatch[1]!);
+        if (!isPolicyEngineInitialized()) return json(res, 503, { ok: false, error: 'PolicyEngine not initialized' });
+        const removed = getPolicyEngine().removePolicy(policyId);
+        if (!removed) return json(res, 404, { ok: false, error: `Policy not found: ${policyId}` });
+        return json(res, 200, { ok: true, removed: policyId });
       }
 
       return json(res, 404, { ok: false, error: 'not_found' });

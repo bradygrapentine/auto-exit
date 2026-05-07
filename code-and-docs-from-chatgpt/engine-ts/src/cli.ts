@@ -54,6 +54,14 @@ import { dispatch as dispatchAlert } from './alerts/index.js';
 import { computeDecisionEV } from './decisionEv.js';
 import { computeKellySize } from './kellySizer.js';
 import { recommendStrategies } from './strategyRecommender.js';
+import {
+  getWorkflowEngine,
+  isWorkflowEngineInitialized,
+  listTemplates,
+  getTemplate,
+} from './workflows/index.js';
+import { validateWorkflow } from './workflows/validate.js';
+import type { Policy } from './workflows/policies.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
 function parseFlags(argv: string[]): Record<string, string> {
@@ -1226,6 +1234,126 @@ async function cmdStrategy(subcommand: string | undefined, rest: string[], flags
   }
 }
 
+// ── workflow commands ─────────────────────────────────────────────────────────
+
+async function cmdWorkflow(subcommand: string | undefined, rest: string[], flags: Record<string, string>): Promise<void> {
+  switch (subcommand) {
+    case 'register': {
+      // kea workflow register --template <id>  OR  --def <json-string>
+      if (!isWorkflowEngineInitialized()) die('workflow engine not initialized (start the watcher daemon first)');
+      const engine = getWorkflowEngine();
+      let def;
+      if (flags.template) {
+        const tmpl = getTemplate(flags.template);
+        if (!tmpl) die(`unknown template: ${flags.template}. Run: kea workflow template-list`);
+        def = tmpl;
+      } else if (flags.def) {
+        let raw: unknown;
+        try { raw = JSON.parse(flags.def); } catch { die('--def must be valid JSON'); }
+        const result = validateWorkflow(raw);
+        if (!result.ok) die(`invalid workflow definition: ${result.errors.join('; ')}`);
+        def = result.def;
+      } else {
+        die('workflow register requires --template <id> or --def <json>');
+      }
+      const { instanceId } = engine.register(def!);
+      process.stdout.write(JSON.stringify({ ok: true, instanceId, definitionId: def!.id }, null, 2) + '\n');
+      break;
+    }
+    case 'list': {
+      if (!isWorkflowEngineInitialized()) {
+        process.stdout.write(JSON.stringify({ ok: true, instances: [] }, null, 2) + '\n');
+        return;
+      }
+      const instances = getWorkflowEngine().list();
+      process.stdout.write(JSON.stringify({ ok: true, instances }, null, 2) + '\n');
+      break;
+    }
+    case 'get': {
+      const id = rest.find((x) => !x.startsWith('--') && x !== subcommand);
+      if (!id) die('workflow get <instanceId>');
+      if (!isWorkflowEngineInitialized()) die('workflow engine not initialized');
+      const inst = getWorkflowEngine().get(id);
+      if (!inst) die(`workflow instance not found: ${id}`);
+      process.stdout.write(JSON.stringify({ ok: true, instance: inst }, null, 2) + '\n');
+      break;
+    }
+    case 'cancel': {
+      const id = rest.find((x) => !x.startsWith('--') && x !== subcommand);
+      if (!id) die('workflow cancel <instanceId>');
+      if (!isWorkflowEngineInitialized()) die('workflow engine not initialized');
+      getWorkflowEngine().cancel(id);
+      process.stdout.write(JSON.stringify({ ok: true, canceled: id }, null, 2) + '\n');
+      break;
+    }
+    case 'template-list': {
+      const templates = listTemplates().map((t) => ({
+        id: t.id,
+        version: t.version,
+        initialState: t.initialState,
+        stateCount: t.states.length,
+        maxTransitions: t.maxTransitions,
+      }));
+      process.stdout.write(JSON.stringify({ ok: true, templates }, null, 2) + '\n');
+      break;
+    }
+    case 'template-register': {
+      // Alias for `workflow register --template <id>`
+      const id = rest.find((x) => !x.startsWith('--') && x !== subcommand) ?? flags.template;
+      if (!id) die('workflow template-register <templateId>');
+      const newRest = [...rest, '--template', id];
+      return cmdWorkflow('register', newRest, { ...flags, template: id });
+    }
+    default:
+      die(`unknown workflow subcommand: ${subcommand ?? '(none)'}. Valid: register, list, get, cancel, template-list, template-register`);
+  }
+}
+
+// ── policy commands ───────────────────────────────────────────────────────────
+
+async function cmdPolicy(subcommand: string | undefined, rest: string[], _flags: Record<string, string>): Promise<void> {
+  switch (subcommand) {
+    case 'list': {
+      if (!isWorkflowEngineInitialized()) {
+        process.stdout.write(JSON.stringify({ ok: true, policies: [] }, null, 2) + '\n');
+        return;
+      }
+      // Policy engine is separate from workflow engine; import lazily to avoid circular
+      const { getPolicyEngine, isPolicyEngineInitialized } = await import('./workflows/index.js');
+      if (!isPolicyEngineInitialized()) {
+        process.stdout.write(JSON.stringify({ ok: true, policies: [] }, null, 2) + '\n');
+        return;
+      }
+      const policies = getPolicyEngine().listPolicies();
+      process.stdout.write(JSON.stringify({ ok: true, policies }, null, 2) + '\n');
+      break;
+    }
+    case 'add': {
+      const { getPolicyEngine, isPolicyEngineInitialized } = await import('./workflows/index.js');
+      if (!isPolicyEngineInitialized()) die('policy engine not initialized');
+      const jsonArg = rest.find((x) => !x.startsWith('--') && x !== subcommand);
+      if (!jsonArg) die('policy add <json-policy-object>');
+      let policy: Policy;
+      try { policy = JSON.parse(jsonArg) as Policy; } catch { die('policy argument must be valid JSON'); }
+      getPolicyEngine().addPolicy(policy);
+      process.stdout.write(JSON.stringify({ ok: true, added: policy.id }, null, 2) + '\n');
+      break;
+    }
+    case 'remove': {
+      const { getPolicyEngine, isPolicyEngineInitialized } = await import('./workflows/index.js');
+      if (!isPolicyEngineInitialized()) die('policy engine not initialized');
+      const id = rest.find((x) => !x.startsWith('--') && x !== subcommand);
+      if (!id) die('policy remove <policyId>');
+      const removed = getPolicyEngine().removePolicy(id);
+      if (!removed) die(`policy not found: ${id}`);
+      process.stdout.write(JSON.stringify({ ok: true, removed: id }, null, 2) + '\n');
+      break;
+    }
+    default:
+      die(`unknown policy subcommand: ${subcommand ?? '(none)'}. Valid: list, add, remove`);
+  }
+}
+
 // ── dispatch ──────────────────────────────────────────────────────────────────
 export async function runCli(argv: string[]): Promise<void> {
   const command = argv[0] ?? 'help';
@@ -1281,6 +1409,14 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'recommend': return cmdRecommend(flags);
     case 'ev': return cmdEv(flags);
     case 'size': return cmdSize(flags);
+    case 'workflow': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      return cmdWorkflow(sub, rest, flags);
+    }
+    case 'policy': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      return cmdPolicy(sub, rest, flags);
+    }
     case 'help':
     case '--help':
     case '-h': return cmdHelp();
