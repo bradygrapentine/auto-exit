@@ -6,7 +6,7 @@
  *   2. GET /events?series_ticker=<s>&status=open&with_nested_markets=true&min_close_ts=<now+86400>
  *       → collect events with >24h close; pick representative market per event
  *   3. Sort events by aggregate 24h volume; take top perCategory
- *   4. Assign cadenceMs: first hotPerCategory → 500ms, rest → 2000ms
+ *   4. Assign cadenceMs: first hotPerCategory → 1000ms, rest → 5000ms
  *
  * 'other' is not a Kalshi category; all six CATEGORIES are real API values.
  */
@@ -152,7 +152,7 @@ export async function discoverTickers(opts: DiscoverOptions): Promise<TickerEntr
     topEvents.forEach((e, idx) => {
       result.push({
         ticker: e.representativeMarket,
-        cadenceMs: idx < hotPerCategory ? 500 : 2000,
+        cadenceMs: idx < hotPerCategory ? 1000 : 5000,
       });
     });
   }
