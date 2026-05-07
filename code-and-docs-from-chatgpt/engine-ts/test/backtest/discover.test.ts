@@ -1,11 +1,13 @@
 /**
  * discover.test.ts
  *
- * Verifies:
- *  - sampling honors perCategory + hotPerCategory
- *  - sort order (hot first, then standard, by volume)
- *  - categories cap at perCategory
- *  - 'other' category excluded
+ * Verifies the events+series discovery flow:
+ *  - Happy path: multiple categories × series × events → expected ticker count
+ *  - Empty category: listSeries returns [] → contributes 0, others unaffected
+ *  - Empty events: series present but no qualifying events → 0 contribution
+ *  - Representative market selection: highest volume_24h_fp wins; tiebreak by |price - 0.5|
+ *  - Event family dedup: multiple markets per event → only representative in output
+ *  - Cadence assignment: top hotPerCategory per category get 500ms, rest 2000ms
  *  - writeTickerFile / readTickerFile round-trips
  */
 
@@ -14,7 +16,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { discoverTickers, writeTickerFile, readTickerFile } from '../../src/backtest/discover.js';
-import type { RawMarket, DiscoverClient } from '../../src/backtest/discover.js';
+import type { DiscoverClient } from '../../src/backtest/discover.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -24,125 +26,343 @@ function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'kea-disc-test-'));
 }
 
-function makeMarket(ticker: string, volume: number): RawMarket {
-  return { ticker, volume };
-}
+type SeriesRow = { ticker: string; title?: string; category?: string; volume_fp?: number };
+type MarketRow = { ticker: string; volume_24h_fp?: number; last_price_dollars?: number; close_time?: string; status?: string };
+type EventRow = { event_ticker: string; series_ticker?: string; title?: string; markets?: MarketRow[] };
 
-function makeDollarMarket(ticker: string, dollar_volume: number): RawMarket {
-  return { ticker, dollar_volume };
-}
-
-function mockClient(markets: RawMarket[]): DiscoverClient {
+/** Build a mock DiscoverClient from maps of category → series and series_ticker → events. */
+function mockClient(opts: {
+  seriesByCategory?: Record<string, SeriesRow[]>;
+  eventsBySeries?: Record<string, EventRow[]>;
+}): DiscoverClient {
+  const seriesByCategory = opts.seriesByCategory ?? {};
+  const eventsBySeries = opts.eventsBySeries ?? {};
   return {
-    async listMarkets(_params) {
-      return { markets };
+    async listSeries(o = {}) {
+      const cat = o.category ?? '';
+      return { series: seriesByCategory[cat] ?? [] };
+    },
+    async listEvents(o = {}) {
+      const st = o.series_ticker ?? '';
+      return { events: eventsBySeries[st] ?? [] };
     },
   };
 }
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-const SPORTS_MARKETS: RawMarket[] = [
-  makeMarket('KXNFL-2024-WK1', 9000),
-  makeMarket('KXNFL-2024-WK2', 8000),
-  makeMarket('KXNBA-FINALS', 7000),
-  makeMarket('KXNBA-EAST1', 6000),
-  makeMarket('KXMLB-WS24', 5000),
-  makeMarket('KXNHL-CUP24', 4000),
-  makeMarket('KXNFL-2024-WK3', 3000),
-  makeMarket('KXNFL-2024-WK4', 2000),
-  makeMarket('KXNFL-2024-WK5', 1000), // 9th — should be excluded at perCategory=8
-];
-
-const CRYPTO_MARKETS: RawMarket[] = [
-  makeMarket('KXBTC-100K', 50000),
-  makeMarket('KXETH-5K', 30000),
-];
-
-const OTHER_MARKETS: RawMarket[] = [
-  makeMarket('KXUNKNOWN-123', 99999), // should be excluded (other)
-];
+/** Open market that closes far in the future (qualifies for >24h filter). */
+function openMarket(ticker: string, volume_24h_fp = 1000, last_price_dollars = 0.5): MarketRow {
+  return { ticker, volume_24h_fp, last_price_dollars, status: 'open' };
+}
 
 // ---------------------------------------------------------------------------
-// Tests
+// Happy path
 // ---------------------------------------------------------------------------
 
-describe('discoverTickers', () => {
-  it('caps at perCategory per category', async () => {
-    const client = mockClient([...SPORTS_MARKETS, ...CRYPTO_MARKETS]);
-    const tickers = await discoverTickers({ client, perCategory: 4, hotPerCategory: 1 });
-    const sports = tickers.filter((t) => t.ticker.startsWith('KXN') || t.ticker.startsWith('KXMLB'));
-    expect(sports.length).toBeLessThanOrEqual(4);
-  });
-
-  it('assigns hot cadence to first hotPerCategory entries per category', async () => {
-    const client = mockClient([...CRYPTO_MARKETS]);
-    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 1 });
-    const btc = tickers.find((t) => t.ticker === 'KXBTC-100K');
-    const eth = tickers.find((t) => t.ticker === 'KXETH-5K');
-    expect(btc?.cadenceMs).toBe(500);   // hotPerCategory=1 → first is hot
-    expect(eth?.cadenceMs).toBe(2000);  // second is standard
-  });
-
-  it('excludes other category markets', async () => {
-    const client = mockClient([...CRYPTO_MARKETS, ...OTHER_MARKETS]);
+describe('discoverTickers — happy path', () => {
+  it('6 categories × 1 series × 2 events → up to 6×2 tickers (perCategory=8)', async () => {
+    const seriesByCategory: Record<string, SeriesRow[]> = {
+      Sports:        [{ ticker: 'KXSPORTS', volume_fp: 5000 }],
+      Politics:      [{ ticker: 'KXPOL', volume_fp: 4000 }],
+      Climate:       [{ ticker: 'KXCLIM', volume_fp: 3000 }],
+      Economics:     [{ ticker: 'KXECON', volume_fp: 2000 }],
+      Crypto:        [{ ticker: 'KXCRYPTO', volume_fp: 1000 }],
+      Entertainment: [{ ticker: 'KXENT', volume_fp: 500 }],
+    };
+    const eventsBySeries: Record<string, EventRow[]> = {
+      KXSPORTS:  [
+        { event_ticker: 'KXSPORTS-EV1', markets: [openMarket('KXSPORTS-EV1-A', 100)] },
+        { event_ticker: 'KXSPORTS-EV2', markets: [openMarket('KXSPORTS-EV2-A', 200)] },
+      ],
+      KXPOL:     [
+        { event_ticker: 'KXPOL-EV1', markets: [openMarket('KXPOL-EV1-A', 100)] },
+        { event_ticker: 'KXPOL-EV2', markets: [openMarket('KXPOL-EV2-A', 200)] },
+      ],
+      KXCLIM:    [
+        { event_ticker: 'KXCLIM-EV1', markets: [openMarket('KXCLIM-EV1-A', 100)] },
+        { event_ticker: 'KXCLIM-EV2', markets: [openMarket('KXCLIM-EV2-A', 200)] },
+      ],
+      KXECON:    [
+        { event_ticker: 'KXECON-EV1', markets: [openMarket('KXECON-EV1-A', 100)] },
+        { event_ticker: 'KXECON-EV2', markets: [openMarket('KXECON-EV2-A', 200)] },
+      ],
+      KXCRYPTO:  [
+        { event_ticker: 'KXCRYPTO-EV1', markets: [openMarket('KXCRYPTO-EV1-A', 100)] },
+        { event_ticker: 'KXCRYPTO-EV2', markets: [openMarket('KXCRYPTO-EV2-A', 200)] },
+      ],
+      KXENT:     [
+        { event_ticker: 'KXENT-EV1', markets: [openMarket('KXENT-EV1-A', 100)] },
+        { event_ticker: 'KXENT-EV2', markets: [openMarket('KXENT-EV2-A', 200)] },
+      ],
+    };
+    const client = mockClient({ seriesByCategory, eventsBySeries });
     const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 2 });
-    const unknown = tickers.find((t) => t.ticker.startsWith('KXUNKNOWN'));
-    expect(unknown).toBeUndefined();
+    expect(tickers.length).toBe(12); // 6 categories × 2 events each
   });
+});
 
-  it('sorts by volume descending within each category', async () => {
-    const markets: RawMarket[] = [
-      makeMarket('KXBTC-LOW', 100),
-      makeMarket('KXBTC-HIGH', 9999),
-      makeMarket('KXBTC-MID', 5000),
-    ];
-    const client = mockClient(markets);
-    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 1 });
-    const crypto = tickers.filter((t) => t.ticker.startsWith('KXBTC'));
-    expect(crypto[0]!.ticker).toBe('KXBTC-HIGH');
-    expect(crypto[1]!.ticker).toBe('KXBTC-MID');
-    expect(crypto[2]!.ticker).toBe('KXBTC-LOW');
-  });
+// ---------------------------------------------------------------------------
+// Empty category
+// ---------------------------------------------------------------------------
 
-  it('handles dollar_volume field when volume is absent', async () => {
-    const markets: RawMarket[] = [
-      makeDollarMarket('KXBTC-A', 1000),
-      makeDollarMarket('KXBTC-B', 5000),
-    ];
-    const client = mockClient(markets);
+describe('discoverTickers — empty category', () => {
+  it('category with no series contributes 0, others unaffected', async () => {
+    const client = mockClient({
+      seriesByCategory: {
+        Sports:        [], // empty
+        Politics:      [],
+        Climate:       [],
+        Economics:     [],
+        Crypto:        [{ ticker: 'KXBTC', volume_fp: 50000 }],
+        Entertainment: [],
+      },
+      eventsBySeries: {
+        KXBTC: [
+          { event_ticker: 'KXBTC-EV1', markets: [openMarket('KXBTC-EV1-YES', 9999)] },
+          { event_ticker: 'KXBTC-EV2', markets: [openMarket('KXBTC-EV2-YES', 8888)] },
+        ],
+      },
+    });
     const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 1 });
-    const crypto = tickers.filter((t) => t.ticker.startsWith('KXBTC'));
-    expect(crypto[0]!.ticker).toBe('KXBTC-B'); // higher dollar_volume first
-  });
-
-  it('returns only non-empty categories', async () => {
-    const client = mockClient(CRYPTO_MARKETS); // only crypto present
-    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 1 });
-    expect(tickers.every((t) => t.ticker.startsWith('KX'))).toBe(true);
     expect(tickers.length).toBe(2);
+    expect(tickers.every((t) => t.ticker.startsWith('KXBTC'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Empty events
+// ---------------------------------------------------------------------------
+
+describe('discoverTickers — empty events', () => {
+  it('series present but listEvents returns [] → 0 contribution', async () => {
+    const client = mockClient({
+      seriesByCategory: {
+        Crypto: [{ ticker: 'KXBTC', volume_fp: 10000 }],
+        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+      },
+      eventsBySeries: { KXBTC: [] },
+    });
+    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 2 });
+    expect(tickers.length).toBe(0);
   });
 
-  it('hotPerCategory=0 → all standard cadence', async () => {
-    const client = mockClient(CRYPTO_MARKETS);
+  it('event with no open markets is skipped', async () => {
+    const client = mockClient({
+      seriesByCategory: {
+        Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
+        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+      },
+      eventsBySeries: {
+        KXBTC: [
+          {
+            event_ticker: 'KXBTC-EV1',
+            markets: [
+              { ticker: 'KXBTC-EV1-YES', volume_24h_fp: 500, status: 'closed' }, // not open
+            ],
+          },
+        ],
+      },
+    });
+    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 1 });
+    expect(tickers.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Representative market selection
+// ---------------------------------------------------------------------------
+
+describe('discoverTickers — representative market selection', () => {
+  it('picks highest volume_24h_fp as representative', async () => {
+    const client = mockClient({
+      seriesByCategory: {
+        Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
+        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+      },
+      eventsBySeries: {
+        KXBTC: [
+          {
+            event_ticker: 'KXBTC-EV1',
+            markets: [
+              openMarket('KXBTC-EV1-LOW', 100, 0.5),
+              openMarket('KXBTC-EV1-HIGH', 9999, 0.5),
+              openMarket('KXBTC-EV1-MID', 500, 0.5),
+            ],
+          },
+        ],
+      },
+    });
+    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 1 });
+    expect(tickers).toHaveLength(1);
+    expect(tickers[0].ticker).toBe('KXBTC-EV1-HIGH');
+  });
+
+  it('tiebreaks by smallest |price - 0.5| when volumes equal', async () => {
+    const client = mockClient({
+      seriesByCategory: {
+        Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
+        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+      },
+      eventsBySeries: {
+        KXBTC: [
+          {
+            event_ticker: 'KXBTC-EV1',
+            markets: [
+              openMarket('KXBTC-EV1-FAR', 1000, 0.9),  // |0.9-0.5| = 0.4
+              openMarket('KXBTC-EV1-MID', 1000, 0.55), // |0.55-0.5| = 0.05 ← wins
+            ],
+          },
+        ],
+      },
+    });
+    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 1 });
+    expect(tickers[0].ticker).toBe('KXBTC-EV1-MID');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event family dedup
+// ---------------------------------------------------------------------------
+
+describe('discoverTickers — event family dedup', () => {
+  it('two markets in same event → only one ticker in output', async () => {
+    const client = mockClient({
+      seriesByCategory: {
+        Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
+        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+      },
+      eventsBySeries: {
+        KXBTC: [
+          {
+            event_ticker: 'KXBTC-EV1',
+            markets: [
+              openMarket('KXBTC-EV1-YES', 500, 0.7),
+              openMarket('KXBTC-EV1-NO', 200, 0.3),
+            ],
+          },
+        ],
+      },
+    });
+    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 1 });
+    expect(tickers).toHaveLength(1);
+    expect(tickers[0].ticker).toBe('KXBTC-EV1-YES'); // higher volume_24h_fp
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cadence assignment
+// ---------------------------------------------------------------------------
+
+describe('discoverTickers — cadence assignment', () => {
+  it('top hotPerCategory per category get 500ms cadence, rest get 2000ms', async () => {
+    // 4 events for Crypto
+    const events: EventRow[] = Array.from({ length: 4 }, (_, i) => ({
+      event_ticker: `KXBTC-EV${i}`,
+      markets: [openMarket(`KXBTC-EV${i}-M`, (4 - i) * 1000)],
+    }));
+    const client = mockClient({
+      seriesByCategory: {
+        Crypto: [{ ticker: 'KXBTC', volume_fp: 10000 }],
+        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+      },
+      eventsBySeries: { KXBTC: events },
+    });
+    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 2 });
+    expect(tickers).toHaveLength(4);
+    // Events are sorted by aggregate eventVolume desc; verify cadence by position
+    expect(tickers[0].cadenceMs).toBe(500);
+    expect(tickers[1].cadenceMs).toBe(500);
+    expect(tickers[2].cadenceMs).toBe(2000);
+    expect(tickers[3].cadenceMs).toBe(2000);
+  });
+
+  it('hotPerCategory=0 → all 2000ms', async () => {
+    const client = mockClient({
+      seriesByCategory: {
+        Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
+        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+      },
+      eventsBySeries: {
+        KXBTC: [
+          { event_ticker: 'KXBTC-EV1', markets: [openMarket('KXBTC-EV1-M', 100)] },
+          { event_ticker: 'KXBTC-EV2', markets: [openMarket('KXBTC-EV2-M', 200)] },
+        ],
+      },
+    });
     const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 0 });
     for (const t of tickers) {
       expect(t.cadenceMs).toBe(2000);
     }
   });
 
-  it('default perCategory=8, hotPerCategory=2', async () => {
-    const manyBtc = Array.from({ length: 10 }, (_, i) =>
-      makeMarket(`KXBTC-${String(i).padStart(2, '0')}`, (10 - i) * 1000),
-    );
-    const client = mockClient(manyBtc);
-    const tickers = await discoverTickers({ client });
-    const crypto = tickers.filter((t) => t.ticker.startsWith('KXBTC'));
-    expect(crypto).toHaveLength(8); // default perCategory=8
-    expect(crypto.filter((t) => t.cadenceMs === 500)).toHaveLength(2); // default hotPerCategory=2
-    expect(crypto.filter((t) => t.cadenceMs === 2000)).toHaveLength(6);
+  it('perCategory caps output per category', async () => {
+    const events: EventRow[] = Array.from({ length: 10 }, (_, i) => ({
+      event_ticker: `KXBTC-EV${i}`,
+      markets: [openMarket(`KXBTC-EV${i}-M`, (10 - i) * 100)],
+    }));
+    const client = mockClient({
+      seriesByCategory: {
+        Crypto: [{ ticker: 'KXBTC', volume_fp: 10000 }],
+        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+      },
+      eventsBySeries: { KXBTC: events },
+    });
+    const tickers = await discoverTickers({ client, perCategory: 4, hotPerCategory: 1 });
+    expect(tickers).toHaveLength(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event volume ordering
+// ---------------------------------------------------------------------------
+
+describe('discoverTickers — event ordering by volume', () => {
+  it('returns events sorted by aggregate event volume desc', async () => {
+    const client = mockClient({
+      seriesByCategory: {
+        Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
+        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+      },
+      eventsBySeries: {
+        KXBTC: [
+          { event_ticker: 'KXBTC-LOW',  markets: [openMarket('KXBTC-LOW-M', 100)] },
+          { event_ticker: 'KXBTC-HIGH', markets: [openMarket('KXBTC-HIGH-M', 9999)] },
+          { event_ticker: 'KXBTC-MID',  markets: [openMarket('KXBTC-MID-M', 5000)] },
+        ],
+      },
+    });
+    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 1 });
+    expect(tickers[0].ticker).toBe('KXBTC-HIGH-M');
+    expect(tickers[1].ticker).toBe('KXBTC-MID-M');
+    expect(tickers[2].ticker).toBe('KXBTC-LOW-M');
+  });
+
+  it('aggregates multi-market event volume correctly', async () => {
+    const client = mockClient({
+      seriesByCategory: {
+        Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
+        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+      },
+      eventsBySeries: {
+        KXBTC: [
+          {
+            event_ticker: 'KXBTC-EV1',
+            // Two markets: combined vol = 2000+3000 = 5000
+            markets: [
+              openMarket('KXBTC-EV1-YES', 2000, 0.6),
+              openMarket('KXBTC-EV1-NO', 3000, 0.4),
+            ],
+          },
+          {
+            event_ticker: 'KXBTC-EV2',
+            markets: [openMarket('KXBTC-EV2-M', 4999)],
+          },
+        ],
+      },
+    });
+    const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 1 });
+    // EV1 aggregate = 5000 > EV2 = 4999 → EV1 first
+    expect(tickers[0].ticker).toBe('KXBTC-EV1-NO'); // highest individual vol in EV1 is NO(3000)
+    expect(tickers[1].ticker).toBe('KXBTC-EV2-M');
   });
 });
 
@@ -158,8 +378,8 @@ describe('writeTickerFile + readTickerFile', () => {
 
   it('round-trips tickers through disk', () => {
     const tickers = [
-      { ticker: 'KXBTC-100K', cadenceMs: 500 },
-      { ticker: 'KXETH-5K', cadenceMs: 2000 },
+      { ticker: 'KXBTC-EV1-YES', cadenceMs: 500 },
+      { ticker: 'KXPOL-EV2-M', cadenceMs: 2000 },
     ];
     const filePath = path.join(dir, 'tickers.json');
     writeTickerFile(tickers, filePath);

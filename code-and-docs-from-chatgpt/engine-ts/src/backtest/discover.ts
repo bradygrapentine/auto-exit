@@ -1,10 +1,14 @@
 /**
- * discover.ts — sample open Kalshi markets, assign cadences, produce TickerEntry[].
+ * discover.ts — sample open Kalshi markets via category-aware series+events API.
  *
- * Calls client.listMarkets({status:'open'}), groups by prefix → category,
- * ranks by volume descending, takes top perCategory per category,
- * marks the hotPerCategory fastest as cadenceMs:500, rest as 2000.
- * 'other' category is excluded from output.
+ * Flow per category:
+ *   1. GET /series?category=<cat>&include_volume=true → top-K series by volume_fp
+ *   2. GET /events?series_ticker=<s>&status=open&with_nested_markets=true&min_close_ts=<now+86400>
+ *       → collect events with >24h close; pick representative market per event
+ *   3. Sort events by aggregate 24h volume; take top perCategory
+ *   4. Assign cadenceMs: first hotPerCategory → 500ms, rest → 2000ms
+ *
+ * 'other' is not a Kalshi category; all six CATEGORIES are real API values.
  */
 
 import * as fs from 'node:fs';
@@ -15,15 +19,39 @@ import type { TickerEntry } from './multiTickerRecorder.js';
 // Types
 // ---------------------------------------------------------------------------
 
-export interface RawMarket {
-  ticker: string;
-  volume?: number;
-  dollar_volume?: number;
-  [key: string]: unknown;
-}
-
 export interface DiscoverClient {
-  listMarkets(params: { status?: 'open' | 'closed' | 'settled'; limit?: number; cursor?: string }): Promise<{ markets: RawMarket[]; cursor?: string }>;
+  listSeries(opts?: {
+    category?: string;
+    include_volume?: boolean;
+    cursor?: string;
+    limit?: number;
+  }): Promise<{
+    series: Array<{ ticker: string; title?: string; category?: string; volume_fp?: number }>;
+    cursor?: string;
+  }>;
+  listEvents(opts?: {
+    series_ticker?: string;
+    status?: 'open' | 'closed' | 'settled';
+    with_nested_markets?: boolean;
+    min_close_ts?: number;
+    max_close_ts?: number;
+    cursor?: string;
+    limit?: number;
+  }): Promise<{
+    events: Array<{
+      event_ticker: string;
+      series_ticker?: string;
+      title?: string;
+      markets?: Array<{
+        ticker: string;
+        volume_24h_fp?: number;
+        last_price_dollars?: number;
+        close_time?: string;
+        status?: string;
+      }>;
+    }>;
+    cursor?: string;
+  }>;
 }
 
 export interface DiscoverOptions {
@@ -38,66 +66,14 @@ export interface TickerFileContent {
 }
 
 // ---------------------------------------------------------------------------
-// Prefix → category table (longest prefix first within each category)
+// Constants
 // ---------------------------------------------------------------------------
 
-type Category =
-  | 'sports'
-  | 'political'
-  | 'weather'
-  | 'entertainment'
-  | 'economics'
-  | 'crypto'
-  | 'other';
+const CATEGORIES = ['Sports', 'Politics', 'Climate', 'Economics', 'Crypto', 'Entertainment'] as const;
+type Category = (typeof CATEGORIES)[number];
 
-const PREFIX_TABLE: Array<[string, Category]> = [
-  // sports
-  ['KXNFL',   'sports'],
-  ['KXNBA',   'sports'],
-  ['KXMLB',   'sports'],
-  ['KXNHL',   'sports'],
-  // political
-  ['KXPRES',  'political'],
-  ['KXSEN',   'political'],
-  ['KXHOUSE', 'political'],
-  // weather
-  ['KXTEMP',  'weather'],
-  ['KXSNOW',  'weather'],
-  ['KXRAIN',  'weather'],
-  // entertainment (longest first)
-  ['KXMETGALA',  'entertainment'],
-  ['KXEMMY',     'entertainment'],
-  ['KXOSCAR',    'entertainment'],
-  // economics
-  ['KXFEDRATE', 'economics'],
-  ['KXJOBS',    'economics'],
-  ['KXCPI',     'economics'],
-  // crypto
-  ['KXBTC', 'crypto'],
-  ['KXETH', 'crypto'],
-];
-
-const KNOWN_CATEGORIES: Category[] = [
-  'sports',
-  'political',
-  'weather',
-  'entertainment',
-  'economics',
-  'crypto',
-];
-
-function categorize(ticker: string): Category {
-  const upper = ticker.toUpperCase();
-  for (const [prefix, cat] of PREFIX_TABLE) {
-    if (upper.startsWith(prefix)) return cat;
-  }
-  return 'other';
-}
-
-function marketVolume(m: RawMarket): number {
-  const v = m.dollar_volume ?? m.volume ?? 0;
-  return typeof v === 'number' ? v : Number(v) || 0;
-}
+/** Markets must close at least 24h from now to be eligible. */
+const MIN_CLOSE_LOOKAHEAD_SEC = 86400;
 
 // ---------------------------------------------------------------------------
 // discoverTickers
@@ -108,49 +84,82 @@ export async function discoverTickers(opts: DiscoverOptions): Promise<TickerEntr
   const perCategory = opts.perCategory ?? 8;
   const hotPerCategory = opts.hotPerCategory ?? 2;
 
-  // Paginate through all open markets (Kalshi caps page size; cursor-based).
-  const markets: RawMarket[] = [];
-  let cursor: string | undefined;
-  let pages = 0;
-  do {
-    const page = await client.listMarkets({ status: 'open', limit: 1000, cursor });
-    markets.push(...page.markets);
-    cursor = page.cursor;
-    pages++;
-    if (pages > 20) break; // safety cap — 20k markets is more than Kalshi will ever return
-  } while (cursor);
-
-  // Group by category
-  const byCategory: Map<Category, RawMarket[]> = new Map();
-  for (const cat of KNOWN_CATEGORIES) byCategory.set(cat, []);
-
-  for (const m of markets) {
-    const cat = categorize(m.ticker);
-    if (cat === 'other') continue;
-    byCategory.get(cat)!.push(m);
-  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  const minCloseTs = nowSec + MIN_CLOSE_LOOKAHEAD_SEC;
 
   const result: TickerEntry[] = [];
 
-  for (const cat of KNOWN_CATEGORIES) {
-    const sorted = byCategory.get(cat)!.sort(
-      (a, b) => marketVolume(b) - marketVolume(a),
-    );
-    const top = sorted.slice(0, perCategory);
+  for (const category of CATEGORIES) {
+    // Step 1: top series in this category by volume_fp
+    const seriesPage = await client.listSeries({ category, include_volume: true, limit: 50 });
+    const topSeries = seriesPage.series
+      .slice()
+      .sort((a, b) => (b.volume_fp ?? 0) - (a.volume_fp ?? 0))
+      .slice(0, perCategory * 3); // 3× buffer in case some series have no qualifying events
 
-    top.forEach((m, idx) => {
+    // Step 2: collect events across these series, filtered to >24h close
+    const eventsByVolume: Array<{
+      event_ticker: string;
+      representativeMarket: string;
+      eventVolume: number;
+    }> = [];
+
+    for (const series of topSeries) {
+      const eventsPage = await client.listEvents({
+        series_ticker: series.ticker,
+        status: 'open',
+        with_nested_markets: true,
+        min_close_ts: minCloseTs,
+        limit: 50,
+      });
+
+      for (const event of eventsPage.events) {
+        const markets = (event.markets ?? []).filter((m) => m.status === 'open');
+        if (markets.length === 0) continue;
+
+        // Representative market: highest volume_24h_fp; tiebreak smallest |price - 0.5|
+        const rep = markets.slice().sort((a, b) => {
+          const vDiff = (b.volume_24h_fp ?? 0) - (a.volume_24h_fp ?? 0);
+          if (vDiff !== 0) return vDiff;
+          const aDist = Math.abs((a.last_price_dollars ?? 0.5) - 0.5);
+          const bDist = Math.abs((b.last_price_dollars ?? 0.5) - 0.5);
+          return aDist - bDist;
+        })[0];
+
+        const eventVolume = markets.reduce((sum, m) => sum + (m.volume_24h_fp ?? 0), 0);
+        eventsByVolume.push({
+          event_ticker: event.event_ticker,
+          representativeMarket: rep.ticker,
+          eventVolume,
+        });
+      }
+    }
+
+    // Step 3: top N events by aggregate 24h volume
+    eventsByVolume.sort((a, b) => b.eventVolume - a.eventVolume);
+    const topEvents = eventsByVolume.slice(0, perCategory);
+
+    const categoryCount = topEvents.length;
+    const hotCount = Math.min(hotPerCategory, categoryCount);
+    console.log(
+      `[discover] ${category.padEnd(13)}: ${categoryCount} event${categoryCount !== 1 ? 's' : ''}` +
+        (categoryCount > 0 ? ` (${hotCount} hot)` : '  ← no qualifying events'),
+    );
+
+    topEvents.forEach((e, idx) => {
       result.push({
-        ticker: m.ticker,
+        ticker: e.representativeMarket,
         cadenceMs: idx < hotPerCategory ? 500 : 2000,
       });
     });
   }
 
+  console.log(`[discover] wrote ${result.length} tickers`);
   return result;
 }
 
 // ---------------------------------------------------------------------------
-// writeTickerFile
+// writeTickerFile / readTickerFile
 // ---------------------------------------------------------------------------
 
 export function writeTickerFile(tickers: TickerEntry[], filePath: string): void {
@@ -160,6 +169,7 @@ export function writeTickerFile(tickers: TickerEntry[], filePath: string): void 
   };
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(content, null, 2) + '\n', 'utf8');
+  console.log(`[discover] wrote ${tickers.length} tickers → ${filePath}`);
 }
 
 export function readTickerFile(filePath: string): TickerFileContent {
