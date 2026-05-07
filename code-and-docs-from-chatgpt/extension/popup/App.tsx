@@ -2,19 +2,18 @@ import { useState } from 'react';
 import { StrategyView, type ExecutionSummary } from './StrategyView';
 import { ProfileSelector } from './ProfileSelector';
 import { SafetyView } from './SafetyView';
+import { SummaryCard } from './SummaryCard';
 
 type Tab = 'strategies' | 'safety';
 
 /**
  * Popup shell — 3-zone layout.
  *
- *   ProfileSlot     header  — SP1.7 fills (account/profile switcher)
+ *   ProfileSlot     header  — SP1.7 (account/profile switcher)
  *   TabBar          tabs    — Strategies | Safety
  *     StrategyView          — Strategies tab
- *     SafetySlot            — SP1.8 fills (safety panel + forbidden tickers)
- *   SummarySlot     footer  — SP1.5 fills (post-completion summary card)
- *
- * Slot placeholders return null until their owning Phase B PR fills them in.
+ *     SafetySlot            — SP1.8 (safety panel + forbidden tickers)
+ *   SummarySlot     footer  — SP1.5 (post-completion summary card)
  */
 export function App() {
   const [tab, setTab] = useState<Tab>('strategies');
@@ -74,6 +73,9 @@ function SafetySlot() {
 }
 
 function SummarySlot({ summary }: { summary: ExecutionSummary | null }) {
-  // SP1.5 replaces this with <SummaryCard summary={summary} />.
-  return <div data-testid="summary-slot" data-has-summary={summary != null} />;
+  return (
+    <div data-testid="summary-slot" data-has-summary={summary != null}>
+      <SummaryCard summary={summary} />
+    </div>
+  );
 }
