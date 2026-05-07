@@ -71,6 +71,9 @@ import {
 } from './edge/aggregate.js';
 import { validateWorkflow } from './workflows/validate.js';
 import type { Policy } from './workflows/policies.js';
+import { createMultiTickerRecorder } from './backtest/multiTickerRecorder.js';
+import { discoverTickers, writeTickerFile, readTickerFile } from './backtest/discover.js';
+import { syncRecordings } from './backtest/sync.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
 function parseFlags(argv: string[]): Record<string, string> {
@@ -639,6 +642,14 @@ Read-only commands (no money moves):
                                      (default: 30-day summary; --strategy drills into one strategy;
                                       --trigger shows fire-quality histogram; --market segments by
                                       category; --param shows parameter sensitivity table)
+
+Scanner / recording commands:
+  record discover [--out <path>] [--per-category <n>] [--hot-per-category <n>]
+                                     Sample open markets by category, assign cadences, write ticker file
+  record start --tickers-file <path> [--recordings-dir <path>]
+                                     Start multi-ticker NDJSON recorder (runs until SIGINT/SIGTERM)
+  record sync --from <host:path> [--to <local-path>]
+                                     rsync recordings from remote scanner host to local disk
 
 Alert commands:
   alerts register --ticker <T> --kind <kind> --side yes|no --size <N> --params <JSON>
@@ -1588,6 +1599,84 @@ function cmdEdge(flags: Record<string, string>): void {
   out('\n');
 }
 
+// ── record commands ───────────────────────────────────────────────────────────
+
+async function cmdRecord(
+  subcommand: string | undefined,
+  rest: string[],
+  flags: Record<string, string>,
+): Promise<void> {
+  switch (subcommand) {
+    case 'discover': {
+      const perCategory = flags['per-category'] !== undefined ? Number(flags['per-category']) : 8;
+      const hotPerCategory = flags['hot-per-category'] !== undefined ? Number(flags['hot-per-category']) : 2;
+      const client = new KalshiClient(makeMinimalConfig('KX_PLACEHOLDER'));
+      // KalshiClient doesn't expose listMarkets — cast to satisfy DiscoverClient interface
+      const tickers = await discoverTickers({
+        client: client as unknown as Parameters<typeof discoverTickers>[0]['client'],
+        perCategory,
+        hotPerCategory,
+      });
+      if (flags.out) {
+        writeTickerFile(tickers, flags.out);
+        process.stdout.write(`[scanner] wrote ${tickers.length} tickers → ${flags.out}\n`);
+      } else {
+        process.stdout.write(JSON.stringify({ tickers, discoveredAt: new Date().toISOString() }, null, 2) + '\n');
+      }
+      return;
+    }
+
+    case 'start': {
+      if (!flags['tickers-file']) die('record start requires --tickers-file <path>');
+      const recordingsDir = flags['recordings-dir'] ?? path.join(os.homedir(), '.kea', 'recordings');
+      const tickerFile = readTickerFile(flags['tickers-file']);
+      const { tickers } = tickerFile;
+      const hotCount = tickers.filter((t) => t.cadenceMs < 1000).length;
+      const stdCount = tickers.length - hotCount;
+      process.stderr.write(`[scanner] tracking ${tickers.length} tickers (${hotCount} hot, ${stdCount} standard)\n`);
+
+      const client = new KalshiClient(makeMinimalConfig('KX_PLACEHOLDER'));
+      const recorder = createMultiTickerRecorder({ tickers, dir: recordingsDir, client });
+      recorder.start();
+
+      // Log stats every 60 s
+      const statsInterval = setInterval(() => {
+        const stats = recorder.getStats();
+        for (const s of stats) {
+          process.stderr.write(
+            `[scanner] ${s.ticker}: ${s.snapshotsWritten} snaps, last=${s.lastPollAt ?? 'never'}${s.lastError ? `, err=${s.lastError}` : ''}\n`,
+          );
+        }
+      }, 60_000);
+
+      // Stay alive until signal — signal handlers attached inside recorder.start()
+      await new Promise<void>((resolve) => {
+        const cleanup = () => { clearInterval(statsInterval); resolve(); };
+        process.once('SIGINT', cleanup);
+        process.once('SIGTERM', cleanup);
+      });
+      return;
+    }
+
+    case 'sync': {
+      if (!flags.from) die('record sync requires --from <host:path>');
+      const colonIdx = flags.from.indexOf(':');
+      if (colonIdx === -1) die('record sync --from must be <host>:<path>');
+      const remoteHost = flags.from.slice(0, colonIdx);
+      const remotePath = flags.from.slice(colonIdx + 1);
+      const localDir = flags.to ?? path.join(os.homedir(), '.kea', 'recordings');
+      process.stderr.write(`[scanner] syncing ${remoteHost}:${remotePath} → ${localDir}\n`);
+      const result = await syncRecordings({ remoteHost, remotePath, localDir });
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      if (result.errored.length > 0) process.exit(1);
+      return;
+    }
+
+    default:
+      die(`unknown record subcommand: ${subcommand ?? '(none)'}. Valid: discover, start, sync`);
+  }
+}
+
 // ── dispatch ──────────────────────────────────────────────────────────────────
 export async function runCli(argv: string[]): Promise<void> {
   const command = argv[0] ?? 'help';
@@ -1652,6 +1741,10 @@ export async function runCli(argv: string[]): Promise<void> {
       return cmdPolicy(sub, rest, flags);
     }
     case 'edge': return cmdEdge(flags);
+    case 'record': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      return cmdRecord(sub, rest, flags);
+    }
     case 'help':
     case '--help':
     case '-h': return cmdHelp();
