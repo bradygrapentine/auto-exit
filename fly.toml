@@ -1,15 +1,23 @@
-app = "auto-exit-scanner"
-primary_region = "iad"
+# fly.toml app configuration file generated for auto-exit-scanner on 2026-05-07T07:30:15-05:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'auto-exit-scanner'
+primary_region = 'iad'
 
 [build]
 
 [[mounts]]
-source = "scanner_data"
-destination = "/data"
+  source = 'data'
+  destination = '/data'
 
-[[vm]]
-size = "shared-cpu-1x"
-memory = "256mb"
+# No [http_service] — scanner is a continuous worker, not an HTTP server.
+# Autostop must be off so the machine stays running 24/7.
 
 [[restart]]
-policy = "always"
+  policy = 'always'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'
