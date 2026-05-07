@@ -1,4 +1,6 @@
 import type { Synthetic, ExitConfig, StopLimitParams, Side, SelfTradePrevention } from '../types.js';
+import { dispatch as alertsDispatch, type AlertContext } from '../alerts/index.js';
+import type { Journal } from '../journal.js';
 
 export interface FireDeps {
   runExit: (cfg: ExitConfig) => Promise<unknown>;
@@ -39,14 +41,34 @@ export function buildExitConfig(s: Synthetic, template: Partial<ExitConfig>): Ex
   };
 }
 
-export async function invokeFire(s: Synthetic, deps: FireDeps): Promise<void> {
+export interface NotifyDeps {
+  alertCtx: AlertContext;
+  journal: Journal;
+}
+
+export interface InvokeFireResult {
+  kind: 'fired' | 'notified' | 'deduped' | 'no_channels';
+}
+
+export async function invokeFire(
+  s: Synthetic,
+  deps: FireDeps,
+  notifyDeps?: NotifyDeps,
+): Promise<InvokeFireResult> {
+  // notify-only path: dispatch to alert channels, skip order placement
+  if (s.action === 'notify') {
+    if (!notifyDeps) throw new Error('invokeFire: notifyDeps required when action="notify"');
+    const result = await alertsDispatch(s, notifyDeps.alertCtx, notifyDeps.journal);
+    return { kind: result.kind };
+  }
+
   switch (s.kind) {
     case 'stop_loss':
     case 'trailing_stop':
     case 'take_profit': {
       const cfg = deps.buildExitConfig(s);
       await deps.runExit(cfg);
-      return;
+      return { kind: 'fired' };
     }
     case 'stop_limit': {
       const p = s.params as StopLimitParams;
@@ -58,10 +80,12 @@ export async function invokeFire(s: Synthetic, deps: FireDeps): Promise<void> {
         count: p.size,
         selfTradePrevention: s.selfTradePrevention,
       });
-      return;
+      return { kind: 'fired' };
     }
     case 'oco':
     case 'bracket':
-      return;
+      return { kind: 'fired' };
+    default:
+      return { kind: 'fired' };
   }
 }
