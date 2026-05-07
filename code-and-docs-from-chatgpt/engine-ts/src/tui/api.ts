@@ -320,6 +320,53 @@ export async function fetchPortfolioPlan(
   return (j?.ranked ?? []) as PortfolioPlanEntry[];
 }
 
+// ── Edge helpers ─────────────────────────────────────────────────────────────
+
+export interface EdgeStrategySummary {
+  strategy: string;
+  category: string;
+  fires: number;
+  realizedDollars: number;
+  vsPassiveHoldDollars: number;
+  vsImmediateExitDollars: number;
+  avgEdgePerFire: number;
+}
+
+export interface EdgeFireRow {
+  fireId: string;
+  entryEdgeDollars: number;
+  exitEdgeDollars: number;
+  timingEdgeDollars: number;
+  triggerEdgeDollars: number;
+  feesDollars: number;
+  residualDollars: number;
+}
+
+/** GET /edge/summary — per-strategy edge table sorted by edge-per-fire desc. */
+export async function fetchEdgeSummary(
+  _fetch: typeof fetch = fetch,
+): Promise<EdgeStrategySummary[]> {
+  const r = await _fetch('/edge/summary');
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const j = await r.json() as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (j?.strategies ?? []) as EdgeStrategySummary[];
+}
+
+/** GET /edge/per-strategy?strategy=<name> — per-fire decomposition rows. */
+export async function fetchEdgePerStrategy(
+  strategy: string,
+  _fetch: typeof fetch = fetch,
+): Promise<EdgeFireRow[]> {
+  const r = await _fetch(`/edge/per-strategy?strategy=${encodeURIComponent(strategy)}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const j = await r.json() as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (j?.fires ?? []) as EdgeFireRow[];
+}
+
 export async function fetchRestingOrders(): Promise<RestingOrderRow[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const j = await getJson<{ orders?: any[] }>('/portfolio/orders');

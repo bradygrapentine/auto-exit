@@ -10,8 +10,9 @@ import { SafetyTab } from './SafetyTab.js';
 import { SyntheticsTab } from './SyntheticsTab.js';
 import { StrategiesTab } from './StrategiesTab.js';
 import { ReportsTab } from './ReportsTab.js';
+import { EdgeTab } from './EdgeTab.js';
 
-type Tab = 'dashboard' | 'preview' | 'book' | 'journal' | 'account' | 'synthetics' | 'safety' | 'strategies' | 'reports';
+type Tab = 'dashboard' | 'preview' | 'book' | 'journal' | 'account' | 'synthetics' | 'safety' | 'strategies' | 'reports' | 'edge';
 
 interface DashboardState {
   balance?: BalanceData;
@@ -67,6 +68,7 @@ export function App() {
       else if (input === '5') setTab('safety');
       else if (input === '7') setTab('strategies');
       else if (input === '8') setTab('reports');
+      else if (input === '9' || input === 'e' || input === 'E') setTab('edge');
       else if (input === 'r' || input === 'R') refreshDashboard();
       else if (tab === 'dashboard') {
         if (key.upArrow) setDash((s) => ({ ...s, cursor: Math.max(0, s.cursor - 1) }));
@@ -96,6 +98,7 @@ export function App() {
       {tab === 'safety' && <SafetyTab />}
       {tab === 'strategies' && <StrategiesTab />}
       {tab === 'reports' && <ReportsTab positions={dash.positions.map((p) => ({ ticker: p.ticker, side: p.side === 'YES' ? 'yes' : 'no', size: Math.floor(p.quantity) }))} />}
+      {tab === 'edge' && <EdgeTab />}
       <Footer tab={tab} />
     </Box>
   );
@@ -137,7 +140,7 @@ function TabBar({ tab }: { tab: Tab }) {
     </Text>
   );
   return (
-    <Box marginTop={1}>
+    <Box marginTop={1} flexWrap="wrap">
       {item('1', 'dashboard', 'dashboard')}<Text> </Text>
       {item('2', 'preview', 'preview')}<Text> </Text>
       {item('3', 'book', 'book')}<Text> </Text>
@@ -146,7 +149,8 @@ function TabBar({ tab }: { tab: Tab }) {
       {item('6', 'synthetics', 'synthetics')}<Text> </Text>
       {item('5', 'safety', 'safety')}<Text> </Text>
       {item('7', 'strategies', 'strategies')}<Text> </Text>
-      {item('8', 'reports', 'reports')}
+      {item('8', 'reports', 'reports')}<Text> </Text>
+      {item('9', 'edge', 'edge')}
     </Box>
   );
 }
@@ -163,8 +167,10 @@ function Footer({ tab }: { tab: Tab }) {
     : tab === 'strategies'
     ? '[↑↓] select   [enter] open   [1-4/a/5-8] tabs   [q] quit'
     : tab === 'reports'
-    ? '[t] TCA   [p] portfolio   [1-4/a/5-8] tabs   [q] quit'
-    : '[1-4/a/5-8] tabs   [r] refresh   [q] quit';
+    ? '[t] TCA   [p] portfolio   [1-4/a/5-9] tabs   [q] quit'
+    : tab === 'edge'
+    ? '[↑↓] select   [enter] drill-down   [m] cycle market   [b] back   [1-4/a/5-9] tabs   [q] quit'
+    : '[1-4/a/5-9] tabs   [r] refresh   [q] quit';
   return (
     <Box marginTop={1}><Text color="gray">{hint}</Text></Box>
   );
