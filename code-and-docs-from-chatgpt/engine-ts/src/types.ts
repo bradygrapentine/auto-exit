@@ -464,6 +464,14 @@ export type SyntheticState =
   | TrailingStopState | TakeProfitState | OcoState | BracketState
   | StepTrailState;
 
+export type SyntheticAction = 'fire' | 'notify';
+
+export interface NotifyChannelConfig {
+  kind: 'webhook' | 'desktop';
+  webhookUrl?: string;                 // required when kind='webhook'
+  desktopTitle?: string;               // optional override; default "Kalshi alert"
+}
+
 export interface Synthetic {
   id: string;                          // 'syn-<uuid>'
   kind: SyntheticKind;
@@ -481,6 +489,8 @@ export interface Synthetic {
   selfTradePrevention: SelfTradePrevention;
   autoCancelOnZeroPosition: boolean;
   parentId?: string;                   // set on OCO/bracket children
+  action?: SyntheticAction;            // defaults to 'fire' when undefined
+  notifyChannels?: NotifyChannelConfig[];  // required when action='notify'
 }
 
 export interface WatcherConfig {
