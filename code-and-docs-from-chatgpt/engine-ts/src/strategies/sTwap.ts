@@ -17,6 +17,7 @@
 import { Journal, generateJobId } from '../journal.js';
 import type { PassiveConfig, PassiveResult } from '../passive.js';
 import type { JournalKind } from '../types.js';
+import { computePaceDelayMs } from '../participationRate.js';
 
 /** Direction for TWAP — matches PassiveConfig.side. */
 type TwapSide = 'buy' | 'sell';
@@ -68,6 +69,12 @@ export interface STwapConfig {
   keaHome?: string;
   /** Unique job ID for journaling. Auto-generated when omitted. */
   jobId?: string;
+  /**
+   * W3.1 POV pacing: maximum participation rate as a fraction of recent
+   * minute volume (e.g. 0.1 = 10%). When set, the inter-interval delay is
+   * inflated if recent fills exceed the allowed rate. Default undefined = off.
+   */
+  maxParticipationRate?: number;
 }
 
 export interface STwapResult {
@@ -247,6 +254,19 @@ export class STwapRunner {
     let totalFilled = 0;
     let intervalsFired = 0;
 
+    // W3.1 POV pacing: rolling 60s fill window { ts, size }[]
+    const povRate = this.config.maxParticipationRate;
+    const fillWindow: Array<{ ts: number; size: number }> = [];
+
+    /** Sum fills in the last 60s, pruning stale entries. */
+    const recentMinuteFills = (): number => {
+      const cutoff = now().getTime() - 60_000;
+      let i = 0;
+      while (i < fillWindow.length && fillWindow[i].ts < cutoff) i++;
+      fillWindow.splice(0, i);
+      return fillWindow.reduce((s, e) => s + e.size, 0);
+    };
+
     // Capture the absolute start time. Each interval fires at
     // startMs + i * intervalMs (drift-free scheduling).
     const startMs = now().getTime();
@@ -294,6 +314,11 @@ export class STwapRunner {
       totalFilled += result.filled;
       intervalsFired += 1;
 
+      // W3.1 POV pacing: record fills in rolling window
+      if (povRate !== undefined && result.filled > 0) {
+        fillWindow.push({ ts: now().getTime(), size: result.filled });
+      }
+
       this.journal.append(jk('twap_interval_fired'), {
         intervalIndex: i,
         sliceSize,
@@ -312,7 +337,15 @@ export class STwapRunner {
         const nextFireAt = startMs + (i + 1) * intervalMs;
         const waitUntilNext = nextFireAt - now().getTime();
         if (waitUntilNext > 0) {
-          await sleepMs(waitUntilNext);
+          // W3.1 POV pacing: inflate delay if exceeding participation rate
+          const effectiveWait = (povRate !== undefined)
+            ? computePaceDelayMs(
+                recentMinuteFills(),
+                { maxParticipationRate: povRate, recentMinuteVolume: sliceSize },
+                waitUntilNext,
+              )
+            : waitUntilNext;
+          await sleepMs(effectiveWait);
         }
         // If negative (we're late), proceed immediately — no drift accumulation.
       }
@@ -343,6 +376,7 @@ export interface BuildSTwapArgs {
   s1Template?: Partial<PassiveConfig>;
   keaHome?: string;
   jobId?: string;
+  maxParticipationRate?: number;
 }
 
 /**
