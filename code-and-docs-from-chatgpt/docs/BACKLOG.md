@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-07 (engine internals cluster shipped — W4.2 + S12)
+Last `/backlog-sync`: 2026-05-07 (SP4 reports cluster shipped — TCA + portfolio surfaces)
 
 | Status | Count |
 |--------|-------|
@@ -9,9 +9,9 @@ Last `/backlog-sync`: 2026-05-07 (engine internals cluster shipped — W4.2 + S1
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
 | 🧊 Tooling ecosystem (SH) | 3 |
-| 🧊 Surface parity (SP1–SP4) | 6 |
+| 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 50 |
+| ✅ Shipped (this log) | 54 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -490,48 +490,11 @@ the current market ticker. Lists triggers with active/paused state.
 
 ## SP4 — Reports + portfolio (W1.2 / W4.3)
 
-### 🧊 SP4.1 — MCP: TCA + portfolio tools
-**Tags:** tui-mcp [shared]
+_SP4.1 MCP TCA + portfolio tools shipped — see §7._
 
-**Trigger:** TCA (W1.2) and portfolio plan (W4.3) emit data the agent
-benefits from reading. Without MCP coverage, the agent can't reason
-about post-trade quality or portfolio risk.
+_SP4.2 TUI reports tab shipped 2026-05-07 — see §7._
 
-**Proposed:** `kea_tca_summary { jobId }` returns the per-fill slippage
-breakdown. `kea_portfolio_plan { targetCash? }` returns the recommended
-liquidation sequence. Both read-only.
-
-**Cost:** ~6 hours each.
-
-**Dependency:** W1.2 for TCA, W4.3 for portfolio.
-
-### 🧊 SP4.2 — TUI: reports tab
-**Tags:** tui-mcp
-
-**Trigger:** post-job review and portfolio overview are natural keyboard-
-first workflows.
-
-**Proposed:** "Reports" tab with sub-views: per-job TCA summary
-(arrival-mid slippage, fees, projection vs. actual) and portfolio plan.
-Reuses the journal-list selector for picking jobs.
-
-**Cost:** ~1 day.
-
-**Dependency:** SP4.1, W1.2.
-
-### 🧊 SP4.3 — Extension: reports panel
-**Tags:** ext [tui-mcp]
-
-**Trigger:** the SP1.5 execution summary is the simplest version of
-this. After W1.2 lands, the summary becomes a richer TCA card. The
-portfolio plan also belongs in the extension for at-a-glance context.
-
-**Proposed:** "Reports" tab in the panel. Per-job TCA card on completion.
-Portfolio plan card showing liquidation sequence + cash-target slider.
-
-**Cost:** ~1.5 days.
-
-**Dependency:** SP1.5 (subsumed by this story when W1.2 lands), SP4.1.
+_SP4.3 Extension reports panel shipped 2026-05-07 — see §7._
 
 ---
 
@@ -665,6 +628,24 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-07 — SP4.3 extension reports panel (TCA card + portfolio plan card).** PR #89.
+  New `extension/popup/ReportsView.tsx` with two cards: Last-Job TCA (fetches
+  `/journal/list` + `/journal/read`, renders chunks table + avg slippage,
+  empty state) and Portfolio Exit Plan (POST `/portfolio/plan`, renders ranked
+  table). 24 logic-only tests. Cash-target slider deferred.
+
+- **2026-05-07 — SP4.2 TUI reports tab (TCA summary + portfolio plan views).** PR #90.
+  New `src/tui/ReportsTab.tsx` with `t`/`p` toggle between TcaView and
+  PortfolioView. Reuses journal-list selector for jobId picking. Added api
+  helpers `listTcaJobs`/`readTcaEntries`/`fetchPortfolioPlan`. 21 tests.
+
+- **Pre-2026-05-07 — SP4.1 MCP TCA + portfolio tools (shipped retroactively).**
+  `kea_tca_summary { jobId }` (mcp.ts:393) returns per-chunk slippage breakdown;
+  `kea_portfolio_plan { positions, bids, mids, strategy? }` (mcp.ts:1464) returns
+  ranked liquidation sequence. CLI: `kea reports tca` + `kea portfolio plan`.
+  HTTP: `POST /portfolio/plan`. Promoted from §SP4 during 2026-05-07 backlog
+  sync after audit confirmed all surfaces present.
 
 - **2026-05-07 — Engine internals surface wiring (S12 + strategy registry).** PR #87.
   Added `s-market-make` to `STRATEGY_REGISTRY` (14 entries; dangerLevel='medium'),
