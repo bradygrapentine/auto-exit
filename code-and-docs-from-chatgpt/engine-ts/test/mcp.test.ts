@@ -78,7 +78,9 @@ describe('MCP server — tool registration', () => {
       'kea_forbidden_add', 'kea_forbidden_list', 'kea_forbidden_remove',
       'kea_harvest_planner',
       'kea_journal_list', 'kea_journal_read',
-      'kea_orderbook', 'kea_portfolio_plan', 'kea_positions', 'kea_preview',
+      'kea_orderbook',
+      'kea_policy_add', 'kea_policy_list', 'kea_policy_remove',
+      'kea_portfolio_plan', 'kea_positions', 'kea_preview',
       'kea_recommend',
       'kea_replay', 'kea_resting_orders',
       'kea_safety_get', 'kea_safety_set',
@@ -90,8 +92,10 @@ describe('MCP server — tool registration', () => {
       'kea_synthetic_cancel', 'kea_synthetic_get', 'kea_synthetic_history',
       'kea_synthetic_list', 'kea_synthetic_preview', 'kea_synthetic_register',
       'kea_tca_summary',
+      'kea_template_list', 'kea_template_register',
       'kea_trailing_status',
       'kea_whoami',
+      'kea_workflow_cancel', 'kea_workflow_get', 'kea_workflow_list', 'kea_workflow_register',
     ]);
     // No raw order-mutating tool (create/exit/sell/buy) is exposed.
     // kea_synthetic_cancel is intentionally present — it cancels a synthetic, not a market order.
