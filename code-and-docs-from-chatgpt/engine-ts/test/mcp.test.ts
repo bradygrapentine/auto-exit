@@ -71,14 +71,18 @@ describe('MCP server — tool registration', () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      'kea_alert_register',
       'kea_balance',
       'kea_bracket_arm',
+      'kea_ev',
       'kea_forbidden_add', 'kea_forbidden_list', 'kea_forbidden_remove',
       'kea_harvest_planner',
       'kea_journal_list', 'kea_journal_read',
-      'kea_orderbook', 'kea_positions', 'kea_preview',
+      'kea_orderbook', 'kea_portfolio_plan', 'kea_positions', 'kea_preview',
+      'kea_recommend',
       'kea_replay', 'kea_resting_orders',
       'kea_safety_get', 'kea_safety_set',
+      'kea_size',
       'kea_strategy_aggressive', 'kea_strategy_limit_ladder', 'kea_strategy_prepend_then_sweep',
       'kea_strategy_roll', 'kea_strategy_run', 'kea_strategy_s_basis_arb', 'kea_strategy_s_cash_raise', 'kea_strategy_s_iceberg',
       'kea_strategy_s_pair', 'kea_strategy_s_pre_resolution_arb', 'kea_strategy_s_time_emergency', 'kea_strategy_s_twap',

@@ -49,6 +49,11 @@ import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
 import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
 import { buildSPairArgs, SPairRunner } from './strategies/sPair.js';
 import { buildSBasisArbArgs, SBasisArbRunner } from './strategies/sBasisArb.js';
+import { buildPortfolioPlan } from './portfolio.js';
+import { dispatch as dispatchAlert } from './alerts/index.js';
+import { computeDecisionEV } from './decisionEv.js';
+import { computeKellySize } from './kellySizer.js';
+import { recommendStrategies } from './strategyRecommender.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
 function parseFlags(argv: string[]): Record<string, string> {
@@ -600,6 +605,23 @@ Read-only commands (no money moves):
   plan <ticker> --position <n> --cost-basis-cents <n> --market-p <f> --private-p <f>
        --catalyst-type soft|hard [--catalyst-date <ISO>] [--payout-cents <n>]
                                      EV harvest vs hold analysis: EV table, risk-reduction, Greeks
+  ev --ticker <T> --bid-cents <N> --ask-cents <N> --mid-prob <f> --action <action>
+       [--position-size <N>] [--side yes|no] [--cost-basis-cents <N>] [--fees-cents <N>]
+                                     Compute EV for a discrete decision action
+  size --edge-p <f> --market-p <f> --bankroll <f>
+       [--kelly <f>] [--max-position <f>]
+                                     Kelly-optimal position size
+  recommend --market-p <f> --edge-p <f> --bankroll <f> --strategies <s1,s2,...>
+       [--ticker <T>] [--bid-cents <N>] [--ask-cents <N>] [--position-size <N>]
+                                     Rank strategies by EV × sqrt(Kelly size)
+  portfolio plan --positions <JSON> --bids <JSON> --mids <JSON> [--strategy aggressive|passive]
+                                     Sequence a portfolio exit by overvalued-to-hold priority
+
+Alert commands:
+  alerts register --ticker <T> --kind <kind> --side yes|no --size <N> --params <JSON>
+       [--channels <JSON>]           Register a notify synthetic (default: desktop channel)
+  alerts list                        List active notify synthetics
+  alerts cancel --id <syntheticId>   Cancel a notify synthetic
 
 Mutating commands (live):
   start --config <path>              Run an exit
@@ -1026,6 +1048,164 @@ async function cmdStrategySBasisArb(flags: Record<string, string>): Promise<void
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }
 
+// ── portfolio command ─────────────────────────────────────────────────────────
+
+async function cmdPortfolio(subcommand: string | undefined, flags: Record<string, string>): Promise<void> {
+  if (!subcommand || subcommand === 'plan') {
+    if (!flags['positions']) die('portfolio plan requires --positions <JSON array of {ticker,side,size}>');
+    if (!flags['bids']) die('portfolio plan requires --bids <JSON of {ticker:bidCents}>');
+    if (!flags['mids']) die('portfolio plan requires --mids <JSON of {ticker:midProbability}>');
+    let positions: Array<{ ticker: string; side: 'yes' | 'no'; size: number }>;
+    let bidByTicker: Record<string, number>;
+    let midProbabilities: Record<string, number>;
+    try { positions = JSON.parse(flags['positions']); } catch { die('--positions must be valid JSON array'); return; }
+    try { bidByTicker = JSON.parse(flags['bids']); } catch { die('--bids must be valid JSON object'); return; }
+    try { midProbabilities = JSON.parse(flags['mids']); } catch { die('--mids must be valid JSON object'); return; }
+    const plan = buildPortfolioPlan({
+      positions,
+      bidByTicker,
+      midProbabilities,
+      defaultStrategy: flags['strategy'] as 'aggressive' | 'passive' | undefined,
+    });
+    process.stdout.write(JSON.stringify(plan, null, 2) + '\n');
+    return;
+  }
+  die(`unknown portfolio subcommand: ${subcommand}. Valid: plan`);
+}
+
+// ── alerts command ────────────────────────────────────────────────────────────
+
+async function cmdAlerts(subcommand: string | undefined, flags: Record<string, string>): Promise<void> {
+  if (!subcommand || subcommand === 'list') {
+    const synthetics = isWatcherInitialized() ? getWatcher().list() : [];
+    const notifySynthetics = synthetics.filter((s) => s.action === 'notify');
+    if (notifySynthetics.length === 0) {
+      process.stdout.write('(no alert synthetics registered)\n');
+      return;
+    }
+    for (const s of notifySynthetics) {
+      const channels = (s.notifyChannels ?? []).map((c) => c.kind).join(', ') || '(none)';
+      process.stdout.write(`${s.id}  ${s.ticker}  ${s.status}  channels: ${channels}\n`);
+    }
+    return;
+  }
+  if (subcommand === 'register') {
+    if (!flags.ticker) die('alerts register requires --ticker <T>');
+    if (!flags.kind) die('alerts register requires --kind <synthetic-kind>');
+    if (!flags.side) die('alerts register requires --side yes|no');
+    if (!flags.size) die('alerts register requires --size <N>');
+    if (!flags.params) die('alerts register requires --params <JSON>');
+    if (!isWatcherInitialized()) die('Watcher not initialized — run `kea watch start` first');
+    let params: Record<string, unknown>;
+    try { params = JSON.parse(flags.params); } catch { die('--params must be valid JSON'); return; }
+    let notifyChannels: Array<{ kind: 'webhook' | 'desktop'; webhookUrl?: string }> = [{ kind: 'desktop' }];
+    if (flags.channels) {
+      try { notifyChannels = JSON.parse(flags.channels); } catch { die('--channels must be valid JSON array'); return; }
+    }
+    const id = getWatcher().register({
+      kind: flags.kind as any,
+      ticker: flags.ticker,
+      side: flags.side as 'yes' | 'no',
+      positionSize: Number(flags.size),
+      params: params as any,
+    });
+    const syn = getWatcher().get(id);
+    if (syn) {
+      syn.action = 'notify';
+      syn.notifyChannels = notifyChannels;
+    }
+    process.stdout.write(`${id}\n`);
+    return;
+  }
+  if (subcommand === 'cancel') {
+    const id = flags.id;
+    if (!id) die('alerts cancel requires --id <syntheticId>');
+    if (!isWatcherInitialized()) die('Watcher not initialized');
+    const canceled = getWatcher().cancel(id);
+    if (canceled) {
+      process.stdout.write(`canceled ${id}\n`);
+    } else {
+      process.stdout.write(`not found or already terminal: ${id}\n`);
+    }
+    return;
+  }
+  die(`unknown alerts subcommand: ${subcommand}. Valid: register, list, cancel`);
+}
+
+// ── recommend command ─────────────────────────────────────────────────────────
+
+function cmdRecommend(flags: Record<string, string>): void {
+  if (!flags['market-p']) die('recommend requires --market-p <f>');
+  if (!flags['edge-p']) die('recommend requires --edge-p <f>');
+  if (!flags['bankroll']) die('recommend requires --bankroll <f>');
+  if (!flags.strategies) die('recommend requires --strategies <comma-separated list>');
+  const ctx = {
+    ticker: flags.ticker ?? 'UNKNOWN',
+    bidCents: Number(flags['bid-cents'] ?? 50),
+    askCents: Number(flags['ask-cents'] ?? 52),
+    midProbability: Number(flags['market-p']),
+    marketProbability: Number(flags['market-p']),
+    edgeProbability: Number(flags['edge-p']),
+    bankrollDollars: Number(flags['bankroll']),
+    fractionalKelly: flags['kelly'] !== undefined ? Number(flags['kelly']) : undefined,
+    maxPositionDollars: flags['max-position'] !== undefined ? Number(flags['max-position']) : undefined,
+    availableStrategies: flags.strategies.split(',').map((s) => s.trim()),
+    position: flags['position-size']
+      ? {
+          side: (flags.side ?? 'yes') as 'yes' | 'no',
+          size: Number(flags['position-size']),
+          costBasisCents: Number(flags['cost-basis-cents'] ?? 50),
+        }
+      : undefined,
+  };
+  const result = recommendStrategies(ctx);
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+// ── ev command ────────────────────────────────────────────────────────────────
+
+function cmdEv(flags: Record<string, string>): void {
+  if (!flags.ticker) die('ev requires --ticker <T>');
+  if (!flags['bid-cents']) die('ev requires --bid-cents <N>');
+  if (!flags['ask-cents']) die('ev requires --ask-cents <N>');
+  if (!flags['mid-prob']) die('ev requires --mid-prob <f>');
+  if (!flags.action) die('ev requires --action <action>');
+  const ctx = {
+    ticker: flags.ticker,
+    bidCents: Number(flags['bid-cents']),
+    askCents: Number(flags['ask-cents']),
+    midProbability: Number(flags['mid-prob']),
+    feesEstimateCents: flags['fees-cents'] !== undefined ? Number(flags['fees-cents']) : undefined,
+    timeToCloseHours: flags['time-hours'] !== undefined ? Number(flags['time-hours']) : undefined,
+    position: flags['position-size']
+      ? {
+          side: (flags.side ?? 'yes') as 'yes' | 'no',
+          size: Number(flags['position-size']),
+          costBasisCents: Number(flags['cost-basis-cents'] ?? 50),
+        }
+      : undefined,
+  };
+  const result = computeDecisionEV(ctx, flags.action as any);
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
+// ── size command ──────────────────────────────────────────────────────────────
+
+function cmdSize(flags: Record<string, string>): void {
+  if (!flags['edge-p']) die('size requires --edge-p <f>');
+  if (!flags['market-p']) die('size requires --market-p <f>');
+  if (!flags['bankroll']) die('size requires --bankroll <f>');
+  const ctx = {
+    edgeProbability: Number(flags['edge-p']),
+    marketProbability: Number(flags['market-p']),
+    bankrollDollars: Number(flags['bankroll']),
+    fractionalKelly: flags['kelly'] !== undefined ? Number(flags['kelly']) : undefined,
+    maxPositionDollars: flags['max-position'] !== undefined ? Number(flags['max-position']) : undefined,
+  };
+  const result = computeKellySize(ctx);
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
 async function cmdStrategy(subcommand: string | undefined, rest: string[], flags: Record<string, string>): Promise<void> {
   switch (subcommand) {
     case 'aggressive': return cmdStrategyAggressive(flags);
@@ -1090,6 +1270,17 @@ export async function runCli(argv: string[]): Promise<void> {
       const sub = rest.find((x) => !x.startsWith('--'));
       return cmdStrategy(sub, rest, flags);
     }
+    case 'portfolio': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      return cmdPortfolio(sub, flags);
+    }
+    case 'alerts': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      return cmdAlerts(sub, flags);
+    }
+    case 'recommend': return cmdRecommend(flags);
+    case 'ev': return cmdEv(flags);
+    case 'size': return cmdSize(flags);
     case 'help':
     case '--help':
     case '-h': return cmdHelp();
