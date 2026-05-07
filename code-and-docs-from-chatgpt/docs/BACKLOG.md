@@ -1,17 +1,17 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-07 (SH-COMPOSE workflow composition shipped)
+Last `/backlog-sync`: 2026-05-07 (engine internals cluster shipped — W4.2 + S12)
 
 | Status | Count |
 |--------|-------|
 | 🧊 Foundation (W1) | 0 |
-| 🧊 Strategy library (S) | 1 |
+| 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
-| 🧊 Decision + optimization (W4) | 3 |
+| 🧊 Decision + optimization (W4) | 2 |
 | 🧊 Tooling ecosystem (SH) | 3 |
 | 🧊 Surface parity (SP1–SP4) | 6 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 48 |
+| ✅ Shipped (this log) | 50 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -88,28 +88,7 @@ _S10 cash-raise sequencer shipped 2026-05-06 — see §7._
 
 _S11 roll shipped 2026-05-06 — see §7._
 
-### 🧊 S12 — Liquidity-providing (two-sided market making)
-**Tags:** engine
-
-**Trigger:** agent wants to make markets on a stable, wide-spread market —
-post both sides inside the spread, harvest fills, manage inventory toward
-a target. Was EW2.7.
-
-**Proposed:** mode `market-make`. Inputs: ticker, `targetInventory`,
-`maxInventory`, `quoteOffsetCents`. Engine maintains two resting GTCs,
-cancels and reposts on book moves (uses W3.3 peg-to-mid when
-available). Cuts off when inventory hits `maxInventory` on either side;
-reposts the *opposite* side aggressively to flatten back toward
-`targetInventory`.
-
-**Cost:** ~3 days. Significant new state machine; needs careful
-inventory accounting and fill-reconciliation.
-
-**Dependency:** W1.5 buy primitive, W3.3 peg-to-mid (preferred).
-
-**Why scope-risk-flagged:** Codex C pre-mortem candidate — complex state
-machine that may grow if real users want richer inventory rules. Watch
-for scope creep during implementation.
+_S12 market-making shipped 2026-05-07 — see §7._
 
 _S13 iceberg shipped 2026-05-06 — see §7._
 
@@ -179,25 +158,7 @@ preserved as the long-term north star (see
 to revisit once SH-WATCH has produced empirical fire data justifying
 which analysis modules are worth building.
 
-### 🧊 W4.2 — Implementation Shortfall optimizer (Almgren-Chriss)
-**Tags:** engine
-
-**Trigger:** binaries have a *known terminal date and known terminal value*
-($0 or $1). That collapses the optimal-execution problem to a closed-form
-schedule that minimizes `E[slippage] + λ × Var[remaining-value-at-expiry]`.
-Tractable in a way equity execution isn't. Real edge.
-
-**Proposed:** new `src/optimalSchedule.ts`. Inputs: position size, time to
-expiry, current probability, book-impact estimate (from TCA history).
-Output: chunk schedule (size + interval) for any loop-based strategy to
-follow. Integrates as an alternative to `chooseChunkSize` when
-`useOptimalSchedule: true` on a strategy.
-
-**Cost:** ~3-4 days. Math + simulation harness + unit tests against known
-analytic solutions.
-
-**Dependency:** W1.2 TCA (impact estimates), W4.1 (probability snapshots
-from triggers).
+_W4.2 Almgren-Chriss optimal execution schedule shipped 2026-05-07 — see §7._
 
 _W4.3 portfolio liquidation sequencer shipped 2026-05-06 — see §7._
 
@@ -704,6 +665,23 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-07 — Engine internals surface wiring (S12 + strategy registry).** PR #87.
+  Added `s-market-make` to `STRATEGY_REGISTRY` (14 entries; dangerLevel='medium'),
+  `kea_strategy_s_market_make` MCP tool + extended `kea_strategy_run` discriminated
+  union, CLI subcommand, HTTP route. Updated 5 test files for 14-entry counts.
+
+- **2026-05-07 — S12 market-making runner (two-sided GTC + inventory-capped flatten).** PR #86.
+  `src/marketMaking.ts` + `src/strategies/sMarketMake.ts`. Maintains bid + ask GTCs
+  inside spread; reposts on book moves; tracks inventory; flips to aggressive
+  flatten when inventory hits `maxInventory`. Hard non-goals enforced (no skew,
+  no Avellaneda-Stoikov, no PnL tracking). 27 tests.
+
+- **2026-05-07 — W4.2 Almgren-Chriss optimal execution schedule.** PR #85.
+  `src/optimalSchedule.ts`. Pure-math closed-form schedule for binaries'
+  known-terminal-value setting. `riskAversion=0` → uniform (TWAP-equivalent);
+  high → front-loaded. Dimensionless interval-index time avoids `sinh` overflow.
+  28 tests. Plan: `engine-ts/docs/superpowers/plans/2026-05-07-engine-internals-cluster.md`.
 
 - **2026-05-07 — SH-COMPOSE workflow state machines + default policy engine.**
   PRs #80 (Phase A types/validator/predicate), #81 (B.2 default policy engine),
