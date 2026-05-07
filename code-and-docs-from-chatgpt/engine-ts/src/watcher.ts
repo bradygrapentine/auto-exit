@@ -8,6 +8,7 @@ import type {
 import { evaluate, isComposite } from './synthetics/index.js';
 import type { RegisterArgs } from './synthetics/types.js';
 import type { WatcherJournal } from './watcherJournal.js';
+import type { Recorder } from './backtest/types.js';
 
 export interface FireDeps {
   runExit: (cfg: ExitConfig) => Promise<unknown>;
@@ -39,6 +40,7 @@ export class Watcher {
     private readonly client: KalshiClientLike,
     private readonly config: WatcherConfig,
     private readonly journal?: WatcherJournal,
+    private readonly recorder?: Recorder,
   ) {}
 
   setFireHook(hook: FireHook): void {
@@ -166,6 +168,8 @@ export class Watcher {
         positions.set(t, (pos as any)?.quantity ?? 0);
       }
     }));
+
+    for (const [t, book] of books) { this.recorder?.appendSnapshot(book); }
 
     const firedThisTick = new Set<string>();
     const parentFiredThisTick = new Set<string>();
