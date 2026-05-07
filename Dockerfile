@@ -23,4 +23,18 @@ RUN npm prune --production
 VOLUME /data
 ENV KEA_HOME=/data
 
-CMD ["node", "dist/cli.js", "record", "start", "--tickers-file", "/data/tickers.json", "--recordings-dir", "/data/recordings"]
+# Bootstrap script: translate Fly secret env-var names to what loadActive() expects,
+# write the inline PEM secret to a file, then exec the scanner.
+RUN printf '%s\n' \
+  '#!/bin/sh' \
+  'set -e' \
+  'mkdir -p /etc/kalshi' \
+  'printf "%s" "$KALSHI_API_PRIVATE_KEY" > /etc/kalshi/key.pem' \
+  'chmod 600 /etc/kalshi/key.pem' \
+  'export KALSHI_ACCESS_KEY="$KALSHI_API_KEY_ID"' \
+  'export KALSHI_PRIVATE_KEY_PATH=/etc/kalshi/key.pem' \
+  'exec node dist/cli.js record start --tickers-file /data/tickers.json --recordings-dir /data/recordings' \
+  > /usr/local/bin/scanner-entrypoint.sh \
+  && chmod +x /usr/local/bin/scanner-entrypoint.sh
+
+CMD ["/usr/local/bin/scanner-entrypoint.sh"]
