@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-06 (strategy launchers cluster shipped — SP2.2 + SP2.3 + registry)
+Last `/backlog-sync`: 2026-05-07 (extension polish cluster shipped — SP1.5 + SP1.7 + SP1.8)
 
 | Status | Count |
 |--------|-------|
@@ -9,9 +9,9 @@ Last `/backlog-sync`: 2026-05-06 (strategy launchers cluster shipped — SP2.2 +
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 3 |
 | 🧊 Tooling ecosystem (SH) | 4 |
-| 🧊 Surface parity (SP1–SP4) | 9 |
+| 🧊 Surface parity (SP1–SP4) | 6 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 44 |
+| ✅ Shipped (this log) | 47 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -484,53 +484,13 @@ Independent of new engine work. Can start any time.
 
 _SP1.1, SP1.2, SP1.3, SP1.4 shipped — see §7._
 
-### 🧊 SP1.5 — Extension: execution summary report
-**Tags:** ext
-
-**Trigger:** when an exit finishes the panel just shows "done." For
-post-trade review, users want a summary: actual gross/fees/net, vs.
-projection, slippage, time-to-finish.
-
-**Proposed:** on job completion, panel renders a summary card. Reads
-`/status` (final) + journal-summary endpoint. After W1.2 lands, includes
-TCA fields (arrival-mid slippage). Copy-to-clipboard for quick paste into
-notes.
-
-**Cost:** ~6 hours. Some overlap with SP4.3 (extension TCA viewer).
+_SP1.5 extension execution summary card shipped 2026-05-07 — see §7._
 
 _SP1.6 saved presets shipped — see §7._
 
-### 🧊 SP1.7 — Extension: account/profile switcher
-**Tags:** ext
+_SP1.7 extension account/profile switcher shipped 2026-05-07 — see §7._
 
-**Trigger:** the in-flight account-connect work adds named profiles to
-CLI/TUI/MCP. Extension is the only surface still tied to whatever is in
-env vars at server start.
-
-**Proposed:** extension reads `GET /whoami` (new server endpoint that
-mirrors `kea_whoami`). Dropdown to switch active profile via `POST
-/whoami { profile }`. Visible "demo" / "prod" badge in the panel header
-at all times.
-
-**Cost:** ~4 hours after account-connect lands.
-
-**Dependency:** account-connect plan (in flight).
-
-### 🧊 SP1.8 — Extension: safety panel + forbidden tickers UI
-**Tags:** ext [shared]
-
-**Trigger:** W1.1 adds safety persistence with MCP/TUI editors. Extension
-has no equivalent. Adding a forbidden ticker should be possible from the
-same UI you'd use to launch an exit.
-
-**Proposed:** extension panel "Safety" tab. Lists current safety values
-(read-only — typed input is risky in a browser context). Lists forbidden
-tickers with add/remove (add requires reason). Posts to a new
-`/safety/*` server endpoint (server-side calls into `safety.ts`).
-
-**Cost:** ~1 day after W1.1 lands.
-
-**Dependency:** W1.1 safety persistence.
+_SP1.8 extension safety panel + forbidden tickers UI shipped 2026-05-07 — see §7._
 
 ---
 
@@ -775,6 +735,26 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-07 — SP1.7 extension account/profile switcher + SP1.8 safety panel + forbidden tickers UI.** PR #78.
+  New `extension/popup/ProfileSelector.tsx` reads `GET /whoami` and renders
+  a dropdown with demo/prod badge in the panel header. New `SafetyView.tsx`
+  in the Safety tab lists read-only safety values and forbidden tickers
+  with add (ticker + reason) / remove (with `ConfirmModal` gate). Server-
+  side: 5 new HTTP routes (`GET/POST /whoami`, `GET /safety`,
+  `POST /safety/forbidden/add`, `DELETE /safety/forbidden/:ticker`). Profile
+  system is currently a stub (single 'default' profile + 501 on POST) until
+  account-connect lands. 48 tests.
+
+- **2026-05-07 — SP1.5 extension execution summary card.** PR #77.
+  New `extension/popup/SummaryCard.tsx` rendered post-completion of any
+  strategy run. Shows strategy displayName, jobId, filled/initial/orders,
+  human-friendly duration; copy-to-clipboard markdown helper; local
+  dismiss. Wired via `StrategyView.onComplete` → App-level summary state →
+  `<SummarySlot />`. Includes Phase A's App.tsx 3-zone refactor
+  (ProfileSlot / Strategies+Safety tabs / SummarySlot) and
+  `StatusView.onTerminal` callback (firedRef-guarded single-fire). 30 tests.
+  Plan: `engine-ts/docs/superpowers/plans/2026-05-07-extension-polish-cluster.md`.
 
 - **2026-05-06 — SP2.2 TUI strategy picker tab.** PR #74.
   New "Strategies" tab in the Ink TUI: lists 13 strategies from the shared
