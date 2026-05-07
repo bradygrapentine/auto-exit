@@ -573,3 +573,91 @@ describe('buildSStealthArgs', () => {
     })).toThrow(/jitterChunkSizePct/);
   });
 });
+
+// ── W3.1 POV pacing ───────────────────────────────────────────────────────────
+
+describe('StealthRunner — W3.1 POV pacing', () => {
+  it('maxParticipationRate undefined: behavior matches baseline (no inflation)', async () => {
+    // No maxParticipationRate → delay = base jittered delay unchanged
+    const capturedDelays: number[] = [];
+    const runner = new StealthRunner(
+      makeMockClient(50),
+      {
+        ...BASE_CONFIG,
+        size: 200,
+        baseChunkSize: 50,
+        baseDelayMs: 1000,
+        jitterChunkSizePct: 0.01,
+        jitterDelayPct: 0.01,
+        rng: FIXED_RNG,
+        sleepMs: (ms) => { capturedDelays.push(ms); return Promise.resolve(); },
+        // maxParticipationRate not set
+      },
+    );
+    await runner.run();
+    // All delays should be near baseDelayMs (jitter is 1% with fixed rng → exact 1000)
+    expect(capturedDelays.length).toBeGreaterThan(0);
+    for (const d of capturedDelays) {
+      expect(d).toBe(1000); // FIXED_RNG=0.5 → signed=0 → factor=1 → exact base
+    }
+  });
+
+  it('maxParticipationRate=0.1: fills exceeding allowed inflate the delay', async () => {
+    // baseChunkSize=100, maxParticipationRate=0.1 → allowed=floor(0.1*100)=10
+    // fill=100 per chunk → after first chunk, recentMinuteFills()=100 > 10
+    // overshoot=100/10=10 → delay = min(1000*10, 10*1000) = 10_000
+    const capturedDelays: number[] = [];
+    const runner = new StealthRunner(
+      makeMockClient(100), // fill 100 per chunk
+      {
+        ...BASE_CONFIG,
+        size: 200,
+        baseChunkSize: 100,
+        baseDelayMs: 1000,
+        jitterChunkSizePct: 0.01,
+        jitterDelayPct: 0.01,
+        rng: FIXED_RNG,
+        maxParticipationRate: 0.1,
+        sleepMs: (ms) => { capturedDelays.push(ms); return Promise.resolve(); },
+      },
+    );
+    await runner.run();
+
+    // At least one delay should be inflated above base 1000ms
+    expect(capturedDelays.length).toBeGreaterThan(0);
+    // After first fill of 100 with allowed=10, delay should inflate significantly
+    for (const d of capturedDelays) {
+      expect(d).toBeGreaterThan(1000);
+    }
+  });
+
+  it('maxParticipationRate=0.1 with zero fills: delay equals base (no inflation)', async () => {
+    // fill=0 per chunk → no entries in fillWindow → recentMinuteFills()=0 ≤ allowed → base delay
+    const capturedDelays: number[] = [];
+    const runner = new StealthRunner(
+      makeMockClient(0), // fill=0 → safety cap hits eventually
+      {
+        ...BASE_CONFIG,
+        size: 100,
+        baseChunkSize: 100,
+        baseDelayMs: 1000,
+        jitterChunkSizePct: 0.01,
+        jitterDelayPct: 0.01,
+        rng: FIXED_RNG,
+        maxParticipationRate: 0.1,
+        safetySubmittedMultiple: 1.5, // safetyCap=150; after 1 chunk of 100, no second chunk
+        sleepMs: (ms) => { capturedDelays.push(ms); return Promise.resolve(); },
+      },
+    );
+    await runner.run();
+
+    // fills=0 → no POV inflation; but safety cap hits before sleep is needed
+    // (size=100, safetySubmittedMultiple=1.5 → safetyCap=150; submittedTotal=100 after 1 chunk < 150,
+    //  but remaining still 100 since fill=0, so second chunk would submit 50 more → hits cap)
+    // Delay may or may not be called depending on whether safety cap hits before sleep.
+    // Either way: any captured delays should equal base 1000 (no inflation since fill=0)
+    for (const d of capturedDelays) {
+      expect(d).toBe(1000);
+    }
+  });
+});

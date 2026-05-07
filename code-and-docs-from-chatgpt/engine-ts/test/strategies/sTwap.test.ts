@@ -400,3 +400,92 @@ describe('STwapRunner — constructor validation', () => {
     expect(() => new STwapRunner({ ...BASE_CONFIG, size: 0 })).toThrow('size must be > 0');
   });
 });
+
+// ── 14. W3.1 POV pacing ───────────────────────────────────────────────────────
+
+describe('STwapRunner — W3.1 POV pacing', () => {
+  it('maxParticipationRate undefined: sleep matches base drift-free wait (no pacing)', async () => {
+    // No maxParticipationRate → behavior identical to baseline
+    const sleepCalls: number[] = [];
+    const passiveInvoke: PassiveInvokeFn = vi.fn().mockResolvedValue(makePassiveResult(25));
+
+    // Fixed clock; sleep spy
+    const runner = new STwapRunner({
+      ...BASE_CONFIG,
+      passiveInvoke,
+      sleepMs: (ms) => { sleepCalls.push(ms); return Promise.resolve(); },
+    });
+    await runner.run();
+    // No crash; sleep called 3 times (between 4 intervals) with positive values
+    expect(sleepCalls).toHaveLength(3);
+    for (const ms of sleepCalls) {
+      expect(ms).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('maxParticipationRate=0.1 with fills exceeding allowed: sleep is inflated', async () => {
+    // sliceSize=25, maxParticipationRate=0.1 → allowed=floor(0.1*25)=2
+    // fill=25 per interval → overshoot=25/2=12.5 → delay scaled up (capped at 10× base)
+    // With intervalMs=60_000ms and fixed clock, waitUntilNext needs to be >0.
+    // Use a clock that stays fixed so waitUntilNext = intervalMs = 60_000.
+    const sleepCalls: number[] = [];
+    const passiveInvoke: PassiveInvokeFn = vi.fn().mockResolvedValue(makePassiveResult(25));
+
+    // Fixed clock at a specific time
+    const fixedTime = new Date('2025-01-15T12:00:00Z');
+    const runner = new STwapRunner({
+      ...BASE_CONFIG,
+      intervalMinutes: 1,
+      numIntervals: 4,
+      size: 100,
+      maxParticipationRate: 0.1,
+      passiveInvoke,
+      now: () => fixedTime,
+      sleepMs: (ms) => { sleepCalls.push(ms); return Promise.resolve(); },
+    });
+    await runner.run();
+
+    // All sleeps should be > base intervalMs due to overshoot inflation
+    // base waitUntilNext = 60_000ms (fixed clock → nextFireAt - startMs = intervalMs)
+    // actually with fixed clock, startMs = fixedTime.getTime(), nextFireAt = startMs + intervalMs
+    // waitUntilNext = nextFireAt - fixedTime.getTime() = intervalMs = 60_000 > 0
+    // overshoot = 25/2 = 12.5 → inflated = min(60_000 * 12.5, 10 * 60_000) = 600_000
+    expect(sleepCalls).toHaveLength(3);
+    for (const ms of sleepCalls) {
+      expect(ms).toBeGreaterThan(60_000); // inflated above base
+    }
+  });
+
+  it('maxParticipationRate=0.1 with zero fills: sleep matches baseline (no inflation)', async () => {
+    // fill=0 → no entries in fillWindow → recentMinuteFills()=0 ≤ allowed → delay unchanged
+    // Collect sleeps with POV enabled vs baseline (no POV) — they must match.
+    const withPovSleeps: number[] = [];
+    const baselineSleeps: number[] = [];
+    const passiveInvoke: PassiveInvokeFn = vi.fn().mockResolvedValue(makePassiveResult(0));
+
+    const fixedTime = new Date('2025-01-15T12:00:00Z');
+    const sharedCfg = {
+      ...BASE_CONFIG,
+      intervalMinutes: 1,
+      numIntervals: 4,
+      size: 100,
+      passiveInvoke,
+      now: () => fixedTime,
+    };
+
+    await new STwapRunner({
+      ...sharedCfg,
+      maxParticipationRate: 0.1,
+      sleepMs: (ms) => { withPovSleeps.push(ms); return Promise.resolve(); },
+    }).run();
+
+    await new STwapRunner({
+      ...sharedCfg,
+      sleepMs: (ms) => { baselineSleeps.push(ms); return Promise.resolve(); },
+    }).run();
+
+    // fills=0 → POV pacing does not inflate; both paths produce identical sleeps
+    expect(withPovSleeps).toHaveLength(3);
+    expect(withPovSleeps).toEqual(baselineSleeps);
+  });
+});

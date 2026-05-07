@@ -20,6 +20,7 @@
 import { Journal, generateJobId } from '../journal.js';
 import { jitterChunkSize, jitterDelay, buildS4OrderPayload } from '../stealth.js';
 import type { JournalKind, KalshiClientLike, Side } from '../types.js';
+import { computePaceDelayMs } from '../participationRate.js';
 
 // Cast unknown string → JournalKind without touching types.ts.
 function jk(s: string): JournalKind {
@@ -54,6 +55,12 @@ export interface S4Config {
   keaHome?: string;
   /** Unique job ID for journaling. Auto-generated when omitted. */
   jobId?: string;
+  /**
+   * W3.1 POV pacing: maximum participation rate as a fraction of recent
+   * minute volume (e.g. 0.1 = 10%). When set, the inter-chunk delay is
+   * inflated if recent fills exceed the allowed rate. Default undefined = off.
+   */
+  maxParticipationRate?: number;
 }
 
 export interface S4Result {
@@ -137,6 +144,20 @@ export class StealthRunner {
     const jitterDelayPct = this.config.jitterDelayPct ?? DEFAULT_JITTER_DELAY_PCT;
     const safetyMultiple = this.config.safetySubmittedMultiple ?? DEFAULT_SAFETY_SUBMITTED_MULTIPLE;
     const safetyCap = size * safetyMultiple;
+    const povRate = this.config.maxParticipationRate;
+
+    // W3.1 POV pacing: rolling 60s fill window { ts, size }[]
+    const fillWindow: Array<{ ts: number; size: number }> = [];
+    const nowMs = (): number => Date.now();
+
+    /** Sum fills in the last 60s, pruning stale entries. */
+    const recentMinuteFills = (): number => {
+      const cutoff = nowMs() - 60_000;
+      let i = 0;
+      while (i < fillWindow.length && fillWindow[i].ts < cutoff) i++;
+      fillWindow.splice(0, i);
+      return fillWindow.reduce((s, e) => s + e.size, 0);
+    };
 
     let remaining = size;
     let totalFilled = 0;
@@ -222,6 +243,11 @@ export class StealthRunner {
       remaining -= filled;
       iterations += 1;
 
+      // W3.1 POV pacing: record fills in rolling window
+      if (povRate !== undefined && filled > 0) {
+        fillWindow.push({ ts: nowMs(), size: filled });
+      }
+
       // Journal reconciliation
       this.journal.append(jk('stealth_chunk_reconciled'), {
         iteration: iterations - 1,
@@ -239,11 +265,19 @@ export class StealthRunner {
       if (this.stopped) break;
 
       // Compute jittered delay
-      const delay = jitterDelay(
+      const baseDelay = jitterDelay(
         baseDelayMs,
         { chunkSizePct: 0, loopDelayPct: jitterDelayPct },
         rng,
       );
+      // W3.1 POV pacing: inflate delay if exceeding participation rate
+      const delay = (povRate !== undefined)
+        ? computePaceDelayMs(
+            recentMinuteFills(),
+            { maxParticipationRate: povRate, recentMinuteVolume: baseChunkSize },
+            baseDelay,
+          )
+        : baseDelay;
       await sleepMs(delay);
     }
 
@@ -283,6 +317,7 @@ export interface BuildS4StealthArgs {
   safetySubmittedMultiple?: number;
   keaHome?: string;
   jobId?: string;
+  maxParticipationRate?: number;
 }
 
 /**
