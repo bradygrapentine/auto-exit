@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-07 (SH-EDGE shipped — pnl attribution + 3 surfaces)
+Last `/backlog-sync`: 2026-05-07 (SH-BACKTEST Phase A/B1/B2 + scanner deploy shipped)
 
 | Status | Count |
 |--------|-------|
@@ -8,10 +8,10 @@ Last `/backlog-sync`: 2026-05-07 (SH-EDGE shipped — pnl attribution + 3 surfac
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 2 |
+| 🧊 Tooling ecosystem (SH) | 1 |
 | 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 58 |
+| ✅ Shipped (this log) | 63 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -339,33 +339,9 @@ W4.1 trigger layer — supersedes its first slice.
 
 _SH-ALERTS notify-only synthetics shipped 2026-05-06 — see §7._
 
-### 🧊 SH-BACKTEST — Record-and-replay harness for empirical strategy validation
-**Tags:** shared [engine, tui-mcp]
+### ~~SH-BACKTEST — Record-and-replay harness for empirical strategy validation~~
 
-**Trigger:** today every claim about a strategy's edge is a guess.
-Operators can't tune trail distances, rung sizes, trigger thresholds
-empirically — no historical data, no replay infra. The strategy library
-remains faith-based. Without this, SH-EDGE has nothing to validate
-against and SH-RECOMMENDER's calibration is generic textbook math.
-
-**Proposed:** record layer atop SH-WATCH polling — flag enables
-continuous orderbook + position + fill journal to NDJSON. Replay-mode
-`KalshiClient` synthetic serves snapshots from disk; runs `ExitRunner` /
-`BuyRunner` / synthetics in shadow mode. Counterfactual reports: per-
-strategy P&L, slippage, fill rate, decision log. Parameter-sweep mode
-runs grid of param values, outputs comparison table. Honest fidelity
-caveats called out (sub-cadence blind spots, no market-impact modeling,
-relative-not-absolute signal framing).
-
-**Spec:** `engine-ts/docs/superpowers/specs/2026-05-05-backtest-harness.md`.
-
-**Cost:** ~7–10 days. Recorder + replay client + harness orchestrator +
-report generator + scenario library scaffolding.
-
-**Dependency:** SH-WATCH (record layer attaches to the watcher poll). First
-meaningful backtest ~T+30 days from SH-WATCH ship — needs accumulated
-data. Soft synergy with SH-EDGE (parallel pipelines validating each
-other).
+_SH-BACKTEST Phase A/B1/B2 shipped 2026-05-07 — see §7. Phase C (CLI/MCP surfaces beyond `kea record`) deferred; ExitRunner/BuyRunner DI-seam wiring carries `// TODO(SH-BACKTEST Phase C)` markers in `src/backtest/harness.ts`. Skip to following section._
 
 ### ~~SH-EDGE — Operator-specific PnL attribution + per-strategy edge measurement~~
 
@@ -635,6 +611,41 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-07 — Multi-ticker scanner + Fly.io deploy scaffolding.** PRs #100 (ops), #101 (engine).
+  `kea record start/discover/sync` CLI + `multiTickerRecorder` (N concurrent
+  recorders, tiered cadence: 500ms hot / 2s standard) + auto-discover sampling
+  diverse tickers across 6 categories (sports/political/weather/entertainment/
+  economics/crypto). Fly.io ops: Dockerfile (Node 20-alpine), `fly.toml` (256MB
+  shared-cpu-1x, iad, 5GB volume @ /data), `.dockerignore`, `deploy/README.md`
+  runbook. ~$2-4/mo. WS investigation TODO documented for follow-up. 16 new tests.
+  Plan: `engine-ts/docs/superpowers/plans/2026-05-07-scanner-deploy-cluster.md`.
+
+- **2026-05-07 — SH-BACKTEST Phase B2 — harness + sweep + report.** PR #99.
+  `runBacktest` orchestrates ReplayKalshiClient + StrategyAdapter seam
+  tick-by-tick; emits CounterfactualReport (P&L, fill rate, slippage, MAE/MFE,
+  trace, mark_curve, all 5 §8 fidelity caveats). `formatReport` (json+markdown),
+  `writeReport` to disk. `runSweep` cartesian grid → ranked SweepResult. Strategies
+  wired v1: `stop_loss`, `stub`. ExitRunner/BuyRunner DI seams via
+  `TODO(SH-BACKTEST Phase C)` markers in harness.ts. +1 test (1829 total).
+
+- **2026-05-07 — SH-BACKTEST Phase B1 — replay client + fill simulator.** PR #98.
+  `loadRecording` (NDJSON + .ndjson.gz, ts-window filter), `simulateFill`
+  (naive limit/market/IOC/FOK/partial + queue_aware stub, Kalshi fee math),
+  `createReplayClient` (KalshiClientLike interface, cursor advance, GTC
+  resting-order queue fills on next tick, fill log via `getFillLog()`).
+  49 new tests.
+
+- **2026-05-07 — SH-BACKTEST Phase A — recorder + retention.** PR #97.
+  `src/backtest/`: `types.ts` (RecordingEntry discriminated union per spec §6.1),
+  `recorder.ts` (append-only NDJSON, daily UTC-midnight rotation, depth clamp
+  [1,50] via `KEA_RECORDING_DEPTH_LEVELS` env, `appendSnapshot/Position/Fill`),
+  `retention.ts` (`gzipOldRecordings` >7d, `archiveOldRecordings` >90d,
+  `pruneRecordings` operator-explicit), `list.ts` (reads .ndjson + .ndjson.gz,
+  date-desc sorted). Watcher integration: optional `recorder?: Recorder`
+  ctor param + single-line `appendSnapshot` call after successful poll.
+  Plan: `engine-ts/docs/superpowers/plans/2026-05-07-sh-backtest-cluster.md`.
+  Spec: `engine-ts/docs/superpowers/specs/2026-05-05-backtest-harness.md`.
 
 - **2026-05-07 — SH-EDGE Phase B surfaces (CLI + MCP/HTTP + TUI).** PRs #93, #94, #95.
   CLI: `kea edge` subcommand with 6 modes (summary, `--strategy`, `--trigger`,
