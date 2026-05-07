@@ -36,7 +36,7 @@ import { loadJournalReplay, replayAll } from './replay.js';
 import { loadActive } from './credentials.js';
 import { getSafety, setSafety, listForbidden, addForbiddenTicker, removeForbiddenTicker } from './safety.js';
 import { computeHarvestPlan } from './harvestPlanner.js';
-import { Journal } from './journal.js';
+import { Journal, generateJobId } from './journal.js';
 import type { ExitConfig, Side, TcaEntry, PriceLevel } from './types.js';
 import { getWatcher, isWatcherInitialized } from './watcherSingleton.js';
 import { evaluate } from './synthetics/index.js';
@@ -55,6 +55,8 @@ import { buildSPreResolutionArbArgs, SPreResolutionArbRunner } from './strategie
 import { buildSCashRaiseArgs, SCashRaiseRunner } from './strategies/sCashRaise.js';
 import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
 import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
+import { buildSPairArgs, SPairRunner } from './strategies/sPair.js';
+import { buildSBasisArbArgs, SBasisArbRunner } from './strategies/sBasisArb.js';
 
 // ── Synthetic kind validation ─────────────────────────────────────────────────
 const SYNTHETIC_KINDS = ['stop_loss', 'stop_limit', 'trailing_stop', 'take_profit', 'oco', 'bracket', 'time_stop', 'step_trail'] as const;
@@ -987,6 +989,334 @@ export function buildMcpServer(): McpServer {
         const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
         const result = await new STimeEmergencyRunner(client, { ...config, jobId }).run();
         return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_s_pair',
+    {
+      description:
+        'S5: Multi-leg pair exit. Executes 2+ legs in parallel with legSkewPct throttle to keep legs in lockstep. ' +
+        'Each leg specifies ticker, side, size, and executionMode (aggressive or passive). ' +
+        'Useful for spread trades, correlated exits, or simultaneous multi-market orders.',
+      inputSchema: {
+        legs: z.array(z.object({
+          ticker: z.string().min(1).describe('Kalshi market ticker for this leg'),
+          side: z.enum(['yes', 'no']).describe('Side of the position (yes/no)'),
+          size: z.number().int().positive().describe('Number of contracts for this leg'),
+          executionMode: z.enum(['aggressive', 'passive']).describe('Execution strategy for this leg'),
+        })).min(2).describe('Array of 2+ legs to execute in parallel'),
+        legSkewPct: z.number().min(0).max(1).optional().describe('Max fill-rate skew allowed between legs before throttling (default 0.10)'),
+        jobId: z.string().optional().describe('Optional job ID for journaling'),
+      },
+    },
+    async ({ legs, legSkewPct, jobId }) => {
+      try {
+        const journal = new Journal(jobId ?? generateJobId());
+        const ticker = legs[0]?.ticker ?? 'PLACEHOLDER';
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const args = buildSPairArgs({
+          legs,
+          legSkewPct,
+          journal,
+          client,
+          aggressiveInvoke: async (cfg) => {
+            const { AggressiveRunner: AR } = await import('./aggressive.js');
+            return new AR(client, cfg).run();
+          },
+          passiveInvoke: async (cfg) => {
+            const { run } = await import('./passive.js');
+            return run(client, cfg);
+          },
+          fetchOrderbook: async (t) => client.getOrderbook(t, 5),
+        });
+        const result = await new SPairRunner(args).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_strategy_s_basis_arb',
+    {
+      description:
+        'S14: Cross-resolution basis arbitrage. Buys YES + NO of the same ticker simultaneously when ' +
+        'their combined ask is below $1 (100¢), locking a $1 terminal payoff per pair. ' +
+        'Use when the basis gap is open and you want to lock risk-free profit.',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        totalDollarBudget: z.number().positive().describe('Total dollar budget to deploy across pairs'),
+        perPairSlippageCents: z.number().min(0).max(99).optional().describe('Acceptable slippage per pair in cents above 100¢ threshold (default 0 = strict arb)'),
+        jobId: z.string().optional().describe('Optional job ID for journaling'),
+      },
+    },
+    async ({ ticker, totalDollarBudget, perPairSlippageCents, jobId }) => {
+      try {
+        const journal = new Journal(jobId ?? generateJobId());
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const args = buildSBasisArbArgs({
+          ticker,
+          totalDollarBudget,
+          perPairSlippageCents,
+          journal,
+          client,
+          aggressiveInvoke: async (cfg) => {
+            const { AggressiveRunner: AR } = await import('./aggressive.js');
+            return new AR(client, cfg).run();
+          },
+          passiveInvoke: async (cfg) => {
+            const { run } = await import('./passive.js');
+            return run(client, cfg);
+          },
+          fetchOrderbookInvoke: async (t) => client.getOrderbook(t, 5),
+        });
+        const result = await new SBasisArbRunner(args).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  // ── SP2.1 — Unified strategy launcher ────────────────────────────────────────
+
+  server.registerTool(
+    'kea_strategy_run',
+    {
+      description:
+        'SP2.1: Unified strategy launcher. Dispatches to any registered strategy by name via the `strategy` field. ' +
+        'Strategies: s-aggressive (S2), s-stealth (S4), s-pair (S5), s-pre-resolution-arb (S6), ' +
+        's-limit-ladder (S8), s-stop-and-reverse (S9), s-cash-raise (S10), s-roll (S11), ' +
+        's-iceberg (S13), s-basis-arb (S14), s-prepend-then-sweep (S15), s-time-emergency (S16), s-twap (S3). ' +
+        'Each strategy branch requires its own specific fields — see individual kea_strategy_* tools for field docs.',
+      inputSchema: {
+        strategy: z.enum([
+          's-aggressive',
+          's-stealth',
+          's-pair',
+          's-pre-resolution-arb',
+          's-limit-ladder',
+          's-stop-and-reverse',
+          's-cash-raise',
+          's-roll',
+          's-iceberg',
+          's-basis-arb',
+          's-prepend-then-sweep',
+          's-time-emergency',
+          's-twap',
+        ]).describe('Strategy identifier'),
+        // ── S2 aggressive ──
+        ticker: z.string().min(1).optional().describe('Kalshi market ticker (most strategies)'),
+        side: z.string().optional().describe('Side: yes|no or buy|sell depending on strategy'),
+        action: z.enum(['buy', 'sell']).optional().describe('Order direction (S2/S4/S8/S15)'),
+        size: z.number().int().positive().optional().describe('Contract count (most strategies)'),
+        oneTickIn: z.boolean().optional().describe('Cross one tick beyond best price (S2/S11/S15)'),
+        // ── S4 stealth ──
+        priceCents: z.number().int().min(1).max(99).optional().describe('Price in integer cents (S4/S13)'),
+        baseChunkSize: z.number().int().positive().optional().describe('S4 base chunk size'),
+        baseDelayMs: z.number().int().min(0).optional().describe('S4 base inter-chunk delay ms'),
+        jitterChunkSizePct: z.number().positive().max(1).optional().describe('S4 chunk size jitter fraction'),
+        jitterDelayPct: z.number().positive().max(1).optional().describe('S4 delay jitter fraction'),
+        safetySubmittedMultiple: z.number().positive().optional().describe('S4 safety halt multiplier'),
+        // ── S5 pair ──
+        legs: z.array(z.object({
+          ticker: z.string().min(1),
+          side: z.enum(['yes', 'no']),
+          size: z.number().int().positive(),
+          executionMode: z.enum(['aggressive', 'passive']),
+        })).optional().describe('S5: 2+ legs for parallel execution'),
+        legSkewPct: z.number().min(0).max(1).optional().describe('S5/S14 leg skew throttle'),
+        // ── S6 pre-resolution-arb ──
+        arbTimeboxMs: z.number().int().positive().optional().describe('S6 arb timebox in ms'),
+        floorPriceCents: z.number().int().min(1).max(99).optional().describe('S6 floor price in cents'),
+        // ── S8 limit-ladder ──
+        totalSize: z.number().int().positive().optional().describe('S8 total contracts across rungs'),
+        rungs: z.array(z.object({
+          priceCents: z.number().int().min(1).max(99),
+          sizePct: z.number().positive().max(100),
+        })).optional().describe('S8 rung definitions'),
+        // ── S9 stop-and-reverse (single ticker, close one side then open opposite) ──
+        closeSide: z.enum(['yes', 'no']).optional().describe('S9 side currently held (to close)'),
+        closeSize: z.number().int().positive().optional().describe('S9 size to close'),
+        openSide: z.enum(['yes', 'no']).optional().describe('S9 side to open on reverse'),
+        openSize: z.number().int().positive().optional().describe('S9 size to open'),
+        // ── S10 cash-raise ──
+        positions: z.array(z.object({
+          ticker: z.string().min(1),
+          side: z.literal('sell'),
+          size: z.number().int().positive(),
+          strategyName: z.enum(['aggressive', 'passive']),
+        })).optional().describe('S10 ordered list of positions to liquidate'),
+        targetCashDollars: z.number().positive().optional().describe('S10 target cash to raise in dollars'),
+        deadlineEpochMs: z.number().int().positive().optional().describe('S10/S16 unix epoch ms deadline'),
+        // ── S11 roll ──
+        currentTicker: z.string().optional().describe('S11 ticker of position to close'),
+        currentSide: z.enum(['yes', 'no']).optional().describe('S11 side held in current position'),
+        currentSize: z.number().int().positive().optional().describe('S11 size of current position'),
+        targetTicker: z.string().optional().describe('S11 ticker to open on'),
+        targetSide: z.enum(['yes', 'no']).optional().describe('S11 side to open'),
+        targetSize: z.number().int().positive().optional().describe('S11 target size to open'),
+        // ── S13 iceberg ──
+        visibleSize: z.number().int().positive().optional().describe('S13 visible slice size'),
+        // ── S14 basis-arb ──
+        totalDollarBudget: z.number().positive().optional().describe('S14 dollar budget'),
+        perPairSlippageCents: z.number().min(0).max(99).optional().describe('S14 slippage tolerance cents'),
+        // ── S15 prepend-then-sweep ──
+        prependWindowMs: z.number().int().positive().optional().describe('S15 GTC rest window before sweep'),
+        // ── S16 time-emergency ──
+        contractCloseEpochMs: z.number().int().positive().optional().describe('S16 unix epoch ms contract close'),
+        // ── S3 TWAP ──
+        intervalMinutes: z.number().positive().optional().describe('S3 minutes between TWAP slices'),
+        numIntervals: z.number().int().min(2).optional().describe('S3 number of time slices'),
+        // ── shared ──
+        jobId: z.string().optional().describe('Optional job ID for journaling'),
+      },
+    },
+    async (args) => {
+      try {
+        const { strategy, jobId } = args;
+
+        switch (strategy) {
+          case 's-aggressive': {
+            const { ticker, side, action, size, oneTickIn } = args;
+            if (!ticker || !side || !action || size == null) throw new Error('s-aggressive requires: ticker, side, action, size');
+            const config = buildSAggressiveOpts({ ticker, side: side as 'yes' | 'no', action, size, confirmedAggressive: true, oneTickIn });
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            return jsonContent(await new AggressiveRunner(client, config).run());
+          }
+
+          case 's-stealth': {
+            const { ticker, side, action, size, priceCents, baseChunkSize, baseDelayMs, jitterChunkSizePct, jitterDelayPct, safetySubmittedMultiple } = args;
+            if (!ticker || !side || !action || size == null || priceCents == null) throw new Error('s-stealth requires: ticker, side, action, size, priceCents');
+            const s4config = buildSStealthArgs({ ticker, side: side as 'yes' | 'no', action, size, priceCents, baseChunkSize, baseDelayMs, jitterChunkSizePct, jitterDelayPct, safetySubmittedMultiple, jobId });
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            return jsonContent(await new StealthRunner(client, s4config).run());
+          }
+
+          case 's-pair': {
+            const { legs, legSkewPct } = args;
+            if (!legs || legs.length < 2) throw new Error('s-pair requires: legs (2+)');
+            const journal = new Journal(jobId ?? generateJobId());
+            const ticker = legs[0]!.ticker;
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            const pairArgs = buildSPairArgs({
+              legs, legSkewPct, journal, client,
+              aggressiveInvoke: async (cfg) => { const { AggressiveRunner: AR } = await import('./aggressive.js'); return new AR(client, cfg).run(); },
+              passiveInvoke: async (cfg) => { const { run } = await import('./passive.js'); return run(client, cfg); },
+              fetchOrderbook: async (t) => client.getOrderbook(t, 5),
+            });
+            return jsonContent(await new SPairRunner(pairArgs).run());
+          }
+
+          case 's-pre-resolution-arb': {
+            const { ticker, side, size, arbTimeboxMs, floorPriceCents } = args;
+            if (!ticker || !side || size == null || arbTimeboxMs == null || floorPriceCents == null) throw new Error('s-pre-resolution-arb requires: ticker, side, size, arbTimeboxMs, floorPriceCents');
+            const config = buildSPreResolutionArbArgs({ ticker, side: side as 'yes' | 'no', size, arbTimeboxMs, floorPriceCents });
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            return jsonContent(await new SPreResolutionArbRunner(client, config).run());
+          }
+
+          case 's-limit-ladder': {
+            const { ticker, side, action, totalSize, rungs } = args;
+            if (!ticker || !side || !action || totalSize == null || !rungs) throw new Error('s-limit-ladder requires: ticker, side, action, totalSize, rungs');
+            const s8config = buildSLimitLadderArgs({ ticker, side: side as 'yes' | 'no', action, totalSize, rungs, jobId });
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            return jsonContent(await new LimitLadderRunner(client, s8config).run());
+          }
+
+          case 's-stop-and-reverse': {
+            const { ticker, closeSide, closeSize, openSide, openSize } = args;
+            if (!ticker || !closeSide || closeSize == null || !openSide || openSize == null) {
+              throw new Error('s-stop-and-reverse requires: ticker, closeSide, closeSize, openSide, openSize');
+            }
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            return jsonContent(await new SStopAndReverseRunner(client, { ticker, closeSide, closeSize, openSide, openSize, confirmedReverse: true }).run());
+          }
+
+          case 's-cash-raise': {
+            const { positions, targetCashDollars, deadlineEpochMs } = args;
+            if (!positions || targetCashDollars == null || deadlineEpochMs == null) throw new Error('s-cash-raise requires: positions, targetCashDollars, deadlineEpochMs');
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: 'PLACEHOLDER' });
+            const config = buildSCashRaiseArgs({
+              positions,
+              targetCashDollars,
+              deadlineEpochMs,
+              aggressiveInvoke: async (cfg) => { const { AggressiveRunner: AR } = await import('./aggressive.js'); return new AR(client, cfg).run(); },
+              passiveInvoke: async (cfg) => { const { run } = await import('./passive.js'); return run(client, cfg); },
+              getCurrentBidCents: async (t) => { const book = await client.getOrderbook(t, 1); return book.yes[0]?.priceCents ?? 0; },
+            });
+            return jsonContent(await new SCashRaiseRunner(config).run());
+          }
+
+          case 's-roll': {
+            const { currentTicker, currentSide, currentSize, targetTicker, targetSide, targetSize, oneTickIn } = args;
+            if (!currentTicker || !currentSide || currentSize == null || !targetTicker || !targetSide || targetSize == null) {
+              throw new Error('s-roll requires: currentTicker, currentSide, currentSize, targetTicker, targetSide, targetSize');
+            }
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: currentTicker });
+            return jsonContent(await new SRollRunner(client, { currentTicker, currentSide, currentSize, targetTicker, targetSide, targetSize, confirmedRoll: true, oneTickIn }).run());
+          }
+
+          case 's-iceberg': {
+            const { ticker, side, size, visibleSize, priceCents } = args;
+            if (!ticker || !side || size == null || visibleSize == null || priceCents == null) throw new Error('s-iceberg requires: ticker, side, size, visibleSize, priceCents');
+            const validatedArgs = buildSIcebergArgs({ ticker, side: side as 'yes' | 'no', size, visibleSize, priceCents });
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            return jsonContent(await new IcebergRunner({
+              ...validatedArgs,
+              postOrderInvoke: async (qty, orderSide, price) => {
+                const r = await client.createOrder({ ticker, side: orderSide, action: 'sell', type: 'limit', count: qty, yes_price: price, time_in_force: 'good_till_canceled', reduce_only: false, client_order_id: `kea-iceberg-${Date.now()}-${Math.random().toString(36).slice(2)}` });
+                return r.orderId;
+              },
+              getOrderStatusInvoke: async (orderId) => { const r = await client.getOrder(orderId); return { filled: r.filledCount, remaining: r.remainingCount }; },
+              cancelOrderInvoke: async (orderId) => { await client.cancelOrder(orderId); },
+              jobId,
+            }).run());
+          }
+
+          case 's-basis-arb': {
+            const { ticker, totalDollarBudget, perPairSlippageCents } = args;
+            if (!ticker || totalDollarBudget == null) throw new Error('s-basis-arb requires: ticker, totalDollarBudget');
+            const journal = new Journal(jobId ?? generateJobId());
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            const basisArgs = buildSBasisArbArgs({
+              ticker, totalDollarBudget, perPairSlippageCents, journal, client,
+              aggressiveInvoke: async (cfg) => { const { AggressiveRunner: AR } = await import('./aggressive.js'); return new AR(client, cfg).run(); },
+              passiveInvoke: async (cfg) => { const { run } = await import('./passive.js'); return run(client, cfg); },
+              fetchOrderbookInvoke: async (t) => client.getOrderbook(t, 5),
+            });
+            return jsonContent(await new SBasisArbRunner(basisArgs).run());
+          }
+
+          case 's-prepend-then-sweep': {
+            const { ticker, side, action, size, prependWindowMs, oneTickIn } = args;
+            if (!ticker || !side || !action || size == null || prependWindowMs == null) throw new Error('s-prepend-then-sweep requires: ticker, side, action, size, prependWindowMs');
+            const s15config = buildSPrependThenSweepArgs({ ticker, side: side as 'yes' | 'no', action, size, prependWindowMs, confirmedPrepend: true, oneTickIn });
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            return jsonContent(await new SPrependThenSweepRunner(client, s15config).run());
+          }
+
+          case 's-time-emergency': {
+            const { ticker, size, contractCloseEpochMs } = args;
+            if (!ticker || size == null || contractCloseEpochMs == null) throw new Error('s-time-emergency requires: ticker, size, contractCloseEpochMs');
+            const config = buildSTimeEmergencyArgs({ ticker, side: 'sell', size, contractCloseEpochMs });
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            return jsonContent(await new STimeEmergencyRunner(client, { ...config, jobId }).run());
+          }
+
+          case 's-twap': {
+            const { ticker, side, size, intervalMinutes, numIntervals } = args;
+            if (!ticker || !side || size == null || intervalMinutes == null || numIntervals == null) throw new Error('s-twap requires: ticker, side, size, intervalMinutes, numIntervals');
+            const config = buildSTwapArgs({ ticker, side: side as 'buy' | 'sell', size, intervalMinutes, numIntervals, jobId });
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            return jsonContent(await new STwapRunner({
+              ...config,
+              passiveInvoke: async (cfg) => { const { run } = await import('./passive.js'); return run(client, cfg); },
+            }).run());
+          }
+
+          default:
+            throw new Error(`unknown strategy: ${strategy as string}`);
+        }
       } catch (err) { return errorContent(err); }
     },
   );
