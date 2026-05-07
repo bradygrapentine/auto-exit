@@ -63,10 +63,12 @@ describe('discoverTickers — happy path', () => {
     const seriesByCategory: Record<string, SeriesRow[]> = {
       Sports:        [{ ticker: 'KXSPORTS', volume_fp: 5000 }],
       Politics:      [{ ticker: 'KXPOL', volume_fp: 4000 }],
-      Climate:       [{ ticker: 'KXCLIM', volume_fp: 3000 }],
+      'Climate and Weather': [{ ticker: 'KXCLIM', volume_fp: 3000 }],
       Economics:     [{ ticker: 'KXECON', volume_fp: 2000 }],
       Crypto:        [{ ticker: 'KXCRYPTO', volume_fp: 1000 }],
       Entertainment: [{ ticker: 'KXENT', volume_fp: 500 }],
+      Companies:     [{ ticker: 'KXCOMP', volume_fp: 400 }],
+      Financials:    [{ ticker: 'KXFIN', volume_fp: 300 }],
     };
     const eventsBySeries: Record<string, EventRow[]> = {
       KXSPORTS:  [
@@ -93,10 +95,18 @@ describe('discoverTickers — happy path', () => {
         { event_ticker: 'KXENT-EV1', markets: [openMarket('KXENT-EV1-A', 100)] },
         { event_ticker: 'KXENT-EV2', markets: [openMarket('KXENT-EV2-A', 200)] },
       ],
+      KXCOMP:    [
+        { event_ticker: 'KXCOMP-EV1', markets: [openMarket('KXCOMP-EV1-A', 100)] },
+        { event_ticker: 'KXCOMP-EV2', markets: [openMarket('KXCOMP-EV2-A', 200)] },
+      ],
+      KXFIN:     [
+        { event_ticker: 'KXFIN-EV1', markets: [openMarket('KXFIN-EV1-A', 100)] },
+        { event_ticker: 'KXFIN-EV2', markets: [openMarket('KXFIN-EV2-A', 200)] },
+      ],
     };
     const client = mockClient({ seriesByCategory, eventsBySeries });
     const tickers = await discoverTickers({ client, perCategory: 8, hotPerCategory: 2 });
-    expect(tickers.length).toBe(12); // 6 categories × 2 events each
+    expect(tickers.length).toBe(16); // 8 categories × 2 events each
   });
 });
 
@@ -110,7 +120,7 @@ describe('discoverTickers — empty category', () => {
       seriesByCategory: {
         Sports:        [], // empty
         Politics:      [],
-        Climate:       [],
+        'Climate and Weather': [],
         Economics:     [],
         Crypto:        [{ ticker: 'KXBTC', volume_fp: 50000 }],
         Entertainment: [],
@@ -137,7 +147,7 @@ describe('discoverTickers — empty events', () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 10000 }],
-        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+        Sports: [], Politics: [], 'Climate and Weather': [], Economics: [], Entertainment: [],
       },
       eventsBySeries: { KXBTC: [] },
     });
@@ -149,7 +159,7 @@ describe('discoverTickers — empty events', () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
-        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+        Sports: [], Politics: [], 'Climate and Weather': [], Economics: [], Entertainment: [],
       },
       eventsBySeries: {
         KXBTC: [
@@ -176,7 +186,7 @@ describe('discoverTickers — representative market selection', () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
-        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+        Sports: [], Politics: [], 'Climate and Weather': [], Economics: [], Entertainment: [],
       },
       eventsBySeries: {
         KXBTC: [
@@ -200,7 +210,7 @@ describe('discoverTickers — representative market selection', () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
-        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+        Sports: [], Politics: [], 'Climate and Weather': [], Economics: [], Entertainment: [],
       },
       eventsBySeries: {
         KXBTC: [
@@ -228,7 +238,7 @@ describe('discoverTickers — event family dedup', () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
-        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+        Sports: [], Politics: [], 'Climate and Weather': [], Economics: [], Entertainment: [],
       },
       eventsBySeries: {
         KXBTC: [
@@ -262,7 +272,7 @@ describe('discoverTickers — cadence assignment', () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 10000 }],
-        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+        Sports: [], Politics: [], 'Climate and Weather': [], Economics: [], Entertainment: [],
       },
       eventsBySeries: { KXBTC: events },
     });
@@ -279,7 +289,7 @@ describe('discoverTickers — cadence assignment', () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
-        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+        Sports: [], Politics: [], 'Climate and Weather': [], Economics: [], Entertainment: [],
       },
       eventsBySeries: {
         KXBTC: [
@@ -302,7 +312,7 @@ describe('discoverTickers — cadence assignment', () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 10000 }],
-        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+        Sports: [], Politics: [], 'Climate and Weather': [], Economics: [], Entertainment: [],
       },
       eventsBySeries: { KXBTC: events },
     });
@@ -320,7 +330,7 @@ describe('discoverTickers — event ordering by volume', () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
-        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+        Sports: [], Politics: [], 'Climate and Weather': [], Economics: [], Entertainment: [],
       },
       eventsBySeries: {
         KXBTC: [
@@ -340,7 +350,7 @@ describe('discoverTickers — event ordering by volume', () => {
     const client = mockClient({
       seriesByCategory: {
         Crypto: [{ ticker: 'KXBTC', volume_fp: 5000 }],
-        Sports: [], Politics: [], Climate: [], Economics: [], Entertainment: [],
+        Sports: [], Politics: [], 'Climate and Weather': [], Economics: [], Entertainment: [],
       },
       eventsBySeries: {
         KXBTC: [

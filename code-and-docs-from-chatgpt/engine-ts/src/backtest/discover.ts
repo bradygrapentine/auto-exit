@@ -69,7 +69,7 @@ export interface TickerFileContent {
 // Constants
 // ---------------------------------------------------------------------------
 
-const CATEGORIES = ['Sports', 'Politics', 'Climate', 'Economics', 'Crypto', 'Entertainment'] as const;
+const CATEGORIES = ['Sports', 'Politics', 'Climate and Weather', 'Economics', 'Crypto', 'Entertainment', 'Companies', 'Financials'] as const;
 type Category = (typeof CATEGORIES)[number];
 
 /** Markets must close at least 24h from now to be eligible. */
@@ -84,8 +84,11 @@ export async function discoverTickers(opts: DiscoverOptions): Promise<TickerEntr
   const perCategory = opts.perCategory ?? 8;
   const hotPerCategory = opts.hotPerCategory ?? 2;
 
+  // min_close_ts filter is OFF by default — event-family dedup already prevents
+  // any single event from dominating. Set KEA_DISCOVER_MIN_CLOSE_HOURS=24 to opt in.
+  const lookaheadHours = Number(process.env.KEA_DISCOVER_MIN_CLOSE_HOURS ?? '0');
   const nowSec = Math.floor(Date.now() / 1000);
-  const minCloseTs = nowSec + MIN_CLOSE_LOOKAHEAD_SEC;
+  const minCloseTs = lookaheadHours > 0 ? nowSec + lookaheadHours * 3600 : undefined;
 
   const result: TickerEntry[] = [];
 
@@ -97,7 +100,7 @@ export async function discoverTickers(opts: DiscoverOptions): Promise<TickerEntr
       .sort((a, b) => (b.volume_fp ?? 0) - (a.volume_fp ?? 0))
       .slice(0, perCategory * 3); // 3× buffer in case some series have no qualifying events
 
-    // Step 2: collect events across these series, filtered to >24h close
+    // Step 2: collect events across these series
     const eventsByVolume: Array<{
       event_ticker: string;
       representativeMarket: string;
@@ -109,7 +112,7 @@ export async function discoverTickers(opts: DiscoverOptions): Promise<TickerEntr
         series_ticker: series.ticker,
         status: 'open',
         with_nested_markets: true,
-        min_close_ts: minCloseTs,
+        ...(minCloseTs !== undefined ? { min_close_ts: minCloseTs } : {}),
         limit: 50,
       });
 
