@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { StrategyView, type ExecutionSummary } from './StrategyView';
+import { ProfileSelector } from './ProfileSelector';
+import { SafetyView } from './SafetyView';
 import { SummaryCard } from './SummaryCard';
 
 type Tab = 'strategies' | 'safety';
@@ -7,13 +9,11 @@ type Tab = 'strategies' | 'safety';
 /**
  * Popup shell — 3-zone layout.
  *
- *   ProfileSlot     header  — SP1.7 fills (account/profile switcher)
+ *   ProfileSlot     header  — SP1.7 (account/profile switcher)
  *   TabBar          tabs    — Strategies | Safety
  *     StrategyView          — Strategies tab
- *     SafetySlot            — SP1.8 fills (safety panel + forbidden tickers)
- *   SummarySlot     footer  — SP1.5 fills (post-completion summary card)
- *
- * Slot placeholders return null until their owning Phase B PR fills them in.
+ *     SafetySlot            — SP1.8 (safety panel + forbidden tickers)
+ *   SummarySlot     footer  — SP1.5 (post-completion summary card)
  */
 export function App() {
   const [tab, setTab] = useState<Tab>('strategies');
@@ -65,13 +65,11 @@ function TabBar({ tab, onTabChange }: { tab: Tab; onTabChange: (t: Tab) => void 
 }
 
 function ProfileSlot() {
-  // SP1.7 replaces this with <ProfileSelector />.
-  return <div data-testid="profile-slot" />;
+  return <ProfileSelector />;
 }
 
 function SafetySlot() {
-  // SP1.8 replaces this with <SafetyView />.
-  return <div data-testid="safety-slot" />;
+  return <SafetyView />;
 }
 
 function SummarySlot({ summary }: { summary: ExecutionSummary | null }) {
