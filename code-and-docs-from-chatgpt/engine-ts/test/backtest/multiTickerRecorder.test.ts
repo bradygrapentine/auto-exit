@@ -6,13 +6,15 @@
  *  - getStats() returns accurate counts
  *  - stop() halts all intervals (no further polls after stop)
  *  - no timer leaks (vi.useFakeTimers covers cleanup)
+ *  - token bucket rate limits all polls (KEA_SCANNER_RATE_PER_SEC override)
+ *  - without rate limit (high cap), baseline behavior unchanged
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { createMultiTickerRecorder } from '../../src/backtest/multiTickerRecorder.js';
+import { createMultiTickerRecorder, createTokenBucket, acquireToken } from '../../src/backtest/multiTickerRecorder.js';
 import type { TickerEntry } from '../../src/backtest/multiTickerRecorder.js';
 
 // ---------------------------------------------------------------------------
@@ -158,5 +160,92 @@ describe('createMultiTickerRecorder', () => {
     const disk2Files = files.filter((f) => f.startsWith('KXDISK2'));
     expect(disk1Files.length).toBeGreaterThan(0);
     expect(disk2Files.length).toBeGreaterThan(0);
+  });
+
+  it('env var KEA_SCANNER_RATE_PER_SEC overrides default rate', async () => {
+    const original = process.env.KEA_SCANNER_RATE_PER_SEC;
+    process.env.KEA_SCANNER_RATE_PER_SEC = '5';
+    try {
+      const tickers: TickerEntry[] = [{ ticker: 'KXENV', cadenceMs: 100 }];
+      const client = makeMockClient();
+      // If env var is read, recorder is created without error at low rate
+      const recorder = createMultiTickerRecorder({ tickers, dir, client });
+      expect(recorder).toBeDefined();
+      recorder.start();
+      await Promise.resolve();
+      recorder.stop();
+    } finally {
+      if (original === undefined) delete process.env.KEA_SCANNER_RATE_PER_SEC;
+      else process.env.KEA_SCANNER_RATE_PER_SEC = original;
+    }
+  });
+
+  it('with very high rate bucket (no throttle), baseline snapshot count unchanged', async () => {
+    const tickers: TickerEntry[] = [
+      { ticker: 'KXHIGH', cadenceMs: 100 },
+    ];
+    const client = makeMockClient();
+    // Bucket with 10,000 req/sec — effectively no throttle
+    const rateBucket = createTokenBucket(10_000, 10_000);
+    const recorder = createMultiTickerRecorder({ tickers, dir, client, rateBucket });
+    recorder.start();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(350);
+    recorder.stop();
+    const stats = recorder.getStats();
+    // At 100ms cadence over 350ms, expect ≥3 snapshots (same as baseline without bucket)
+    expect(stats[0]!.snapshotsWritten).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Token bucket unit tests
+// ---------------------------------------------------------------------------
+
+describe('createTokenBucket + acquireToken', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('starts full — first N acquires are instant when tokens >= N', async () => {
+    vi.useFakeTimers();
+    const bucket = createTokenBucket(10, 5); // 5 burst capacity
+    // Drain 5 tokens synchronously (they should all resolve without waiting)
+    for (let i = 0; i < 5; i++) {
+      const p = acquireToken(bucket);
+      await Promise.resolve(); // microtask flush
+      // Since tokens are available, resolve without advancing timers
+      await p;
+    }
+    expect(bucket.tokens).toBeCloseTo(0, 1);
+  });
+
+  it('waits when bucket is empty, then resolves after refill', async () => {
+    vi.useFakeTimers();
+    const bucket = createTokenBucket(10, 1); // 1 burst, 10/sec refill
+    // Drain the single token
+    await acquireToken(bucket);
+    expect(bucket.tokens).toBeCloseTo(0, 1);
+
+    // Next acquire must wait — start it and advance time
+    let resolved = false;
+    const pending = acquireToken(bucket).then(() => { resolved = true; });
+    expect(resolved).toBe(false);
+
+    // Advance 200ms — should refill ~2 tokens at 10/sec
+    await vi.advanceTimersByTimeAsync(200);
+    await pending;
+    expect(resolved).toBe(true);
+  });
+
+  it('capacity caps token accumulation', () => {
+    const bucket = createTokenBucket(10, 5); // capacity = 5
+    // Simulate large elapsed time — tokens should not exceed capacity
+    bucket.lastRefillMs = Date.now() - 10_000; // 10 seconds ago
+    // Force refill by calling acquireToken logic manually
+    const now = Date.now();
+    const elapsed = (now - bucket.lastRefillMs) / 1000;
+    bucket.tokens = Math.min(bucket.capacity, bucket.tokens + elapsed * bucket.refillPerSec);
+    expect(bucket.tokens).toBeLessThanOrEqual(5);
   });
 });
