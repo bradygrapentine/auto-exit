@@ -62,6 +62,8 @@ import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
 import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
 import { buildSPairArgs, SPairRunner } from './strategies/sPair.js';
 import { buildSBasisArbArgs, SBasisArbRunner } from './strategies/sBasisArb.js';
+import { MarketMakingRunner } from './strategies/sMarketMake.js';
+import type { S12Config } from './marketMaking.js';
 import { buildPortfolioPlan } from './portfolio.js';
 import { computeDecisionEV } from './decisionEv.js';
 import { computeKellySize } from './kellySizer.js';
@@ -1096,6 +1098,70 @@ export function buildMcpServer(): McpServer {
     },
   );
 
+  server.registerTool(
+    'kea_strategy_s_market_make',
+    {
+      description:
+        'S12: Market making (two-sided GTC). Maintains a resting bid and ask inside the spread at ' +
+        'topBid+quoteOffsetCents and topAsk−quoteOffsetCents. Cancels and reposts quotes when price drifts. ' +
+        'Flattens inventory aggressively when it hits maxInventory. Halts on empty book. ' +
+        'Runs until the caller stops it (long-running strategy with inventory risk).',
+      inputSchema: {
+        ticker: z.string().min(1).describe('Kalshi market ticker'),
+        targetInventory: z.number().int().min(0).describe('Desired resting inventory (≥ 0)'),
+        maxInventory: z.number().int().positive().describe('Hard inventory cap — must be > targetInventory'),
+        quoteOffsetCents: z.number().int().min(0).describe('How far inside the spread to post each quote (cents)'),
+        jobId: z.string().optional().describe('Optional job ID for journaling'),
+      },
+    },
+    async ({ ticker, targetInventory, maxInventory, quoteOffsetCents, jobId }) => {
+      try {
+        const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+        const config: S12Config = {
+          ticker,
+          targetInventory,
+          maxInventory,
+          quoteOffsetCents,
+          jobId,
+          postOrderInvoke: async (qty, side, priceCents) => {
+            const r = await client.createOrder({
+              ticker,
+              side,
+              action: side === 'yes' ? 'buy' : 'sell',
+              type: 'limit',
+              count: qty,
+              yes_price: priceCents,
+              time_in_force: 'good_till_canceled',
+              reduce_only: false,
+              client_order_id: `kea-mm-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            });
+            return r.orderId;
+          },
+          cancelOrderInvoke: async (orderId) => { await client.cancelOrder(orderId); },
+          getOrderStatusInvoke: async (orderId) => {
+            const r = await client.getOrder(orderId);
+            return { filled: r.filledCount, remaining: r.remainingCount };
+          },
+          getTopOfBookInvoke: async (t) => {
+            const book = await client.getOrderbook(t, 1);
+            return {
+              bidCents: book.yes[0]?.priceCents ?? null,
+              askCents: book.no[0] ? 100 - book.no[0].priceCents : null,
+            };
+          },
+          aggressiveFlattenInvoke: async (t, side, qty) => {
+            const { buildSAggressiveOpts: b } = await import('./strategies/sAggressive.js');
+            const cfg = b({ ticker: t, side, action: side === 'yes' ? 'sell' : 'buy', size: qty, confirmedAggressive: true });
+            const result = await new AggressiveRunner(client, cfg).run();
+            return { filled: result.filled };
+          },
+        };
+        const result = await new MarketMakingRunner(config).run();
+        return jsonContent(result);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
   // ── SP2.1 — Unified strategy launcher ────────────────────────────────────────
 
   server.registerTool(
@@ -1105,7 +1171,7 @@ export function buildMcpServer(): McpServer {
         'SP2.1: Unified strategy launcher. Dispatches to any registered strategy by name via the `strategy` field. ' +
         'Strategies: s-aggressive (S2), s-stealth (S4), s-pair (S5), s-pre-resolution-arb (S6), ' +
         's-limit-ladder (S8), s-stop-and-reverse (S9), s-cash-raise (S10), s-roll (S11), ' +
-        's-iceberg (S13), s-basis-arb (S14), s-prepend-then-sweep (S15), s-time-emergency (S16), s-twap (S3). ' +
+        's-market-make (S12), s-iceberg (S13), s-basis-arb (S14), s-prepend-then-sweep (S15), s-time-emergency (S16), s-twap (S3). ' +
         'Each strategy branch requires its own specific fields — see individual kea_strategy_* tools for field docs.',
       inputSchema: {
         strategy: z.enum([
@@ -1122,6 +1188,7 @@ export function buildMcpServer(): McpServer {
           's-prepend-then-sweep',
           's-time-emergency',
           's-twap',
+          's-market-make',
         ]).describe('Strategy identifier'),
         // ── S2 aggressive ──
         ticker: z.string().min(1).optional().describe('Kalshi market ticker (most strategies)'),
@@ -1186,6 +1253,10 @@ export function buildMcpServer(): McpServer {
         // ── S3 TWAP ──
         intervalMinutes: z.number().positive().optional().describe('S3 minutes between TWAP slices'),
         numIntervals: z.number().int().min(2).optional().describe('S3 number of time slices'),
+        // ── S12 market-make ──
+        targetInventory: z.number().int().min(0).optional().describe('S12 desired resting inventory (≥ 0)'),
+        maxInventory: z.number().int().positive().optional().describe('S12 hard inventory cap (> targetInventory)'),
+        quoteOffsetCents: z.number().int().min(0).optional().describe('S12 cents inside spread for each quote'),
         // ── shared ──
         jobId: z.string().optional().describe('Optional job ID for journaling'),
       },
@@ -1331,6 +1402,53 @@ export function buildMcpServer(): McpServer {
               ...config,
               passiveInvoke: async (cfg) => { const { run } = await import('./passive.js'); return run(client, cfg); },
             }).run());
+          }
+
+          case 's-market-make': {
+            const { ticker, targetInventory, maxInventory, quoteOffsetCents } = args;
+            if (!ticker || targetInventory == null || maxInventory == null || quoteOffsetCents == null) {
+              throw new Error('s-market-make requires: ticker, targetInventory, maxInventory, quoteOffsetCents');
+            }
+            const client = new KalshiClient({ ...defaultEngineConfig(), marketTicker: ticker });
+            const mmConfig: S12Config = {
+              ticker,
+              targetInventory,
+              maxInventory,
+              quoteOffsetCents,
+              jobId,
+              postOrderInvoke: async (qty, side, priceCents) => {
+                const r = await client.createOrder({
+                  ticker,
+                  side,
+                  action: side === 'yes' ? 'buy' : 'sell',
+                  type: 'limit',
+                  count: qty,
+                  yes_price: priceCents,
+                  time_in_force: 'good_till_canceled',
+                  reduce_only: false,
+                  client_order_id: `kea-mm-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                });
+                return r.orderId;
+              },
+              cancelOrderInvoke: async (orderId) => { await client.cancelOrder(orderId); },
+              getOrderStatusInvoke: async (orderId) => {
+                const r = await client.getOrder(orderId);
+                return { filled: r.filledCount, remaining: r.remainingCount };
+              },
+              getTopOfBookInvoke: async (t) => {
+                const book = await client.getOrderbook(t, 1);
+                return {
+                  bidCents: book.yes[0]?.priceCents ?? null,
+                  askCents: book.no[0] ? 100 - book.no[0].priceCents : null,
+                };
+              },
+              aggressiveFlattenInvoke: async (t, side, qty) => {
+                const { buildSAggressiveOpts: b } = await import('./strategies/sAggressive.js');
+                const cfg = b({ ticker: t, side, action: side === 'yes' ? 'sell' : 'buy', size: qty, confirmedAggressive: true });
+                return { filled: (await new AggressiveRunner(client, cfg).run()).filled };
+              },
+            };
+            return jsonContent(await new MarketMakingRunner(mmConfig).run());
           }
 
           default:

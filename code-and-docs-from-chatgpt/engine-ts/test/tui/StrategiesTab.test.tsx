@@ -52,7 +52,7 @@ describe('StrategiesTab — list rendering', () => {
     await flush();
     const frame = lastFrame(inst);
     expect(frame).toContain('Strategies (');
-    expect(frame).toContain('13');
+    expect(frame).toContain('14');
     inst.unmount();
   });
 

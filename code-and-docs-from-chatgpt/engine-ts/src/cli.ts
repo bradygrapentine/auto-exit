@@ -49,6 +49,8 @@ import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
 import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
 import { buildSPairArgs, SPairRunner } from './strategies/sPair.js';
 import { buildSBasisArbArgs, SBasisArbRunner } from './strategies/sBasisArb.js';
+import { MarketMakingRunner } from './strategies/sMarketMake.js';
+import type { S12Config } from './marketMaking.js';
 import { buildPortfolioPlan } from './portfolio.js';
 import { dispatch as dispatchAlert } from './alerts/index.js';
 import { computeDecisionEV } from './decisionEv.js';
@@ -1056,6 +1058,60 @@ async function cmdStrategySBasisArb(flags: Record<string, string>): Promise<void
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }
 
+async function cmdStrategySMarketMake(flags: Record<string, string>): Promise<void> {
+  if (!flags.ticker) die('strategy s-market-make requires --ticker <T>');
+  if (flags['target-inventory'] === undefined) die('strategy s-market-make requires --target-inventory <N>');
+  if (flags['max-inventory'] === undefined) die('strategy s-market-make requires --max-inventory <N>');
+  if (flags['quote-offset-cents'] === undefined) die('strategy s-market-make requires --quote-offset-cents <N>');
+  const ticker = flags.ticker;
+  const targetInventory = Number(flags['target-inventory']);
+  const maxInventory = Number(flags['max-inventory']);
+  const quoteOffsetCents = Number(flags['quote-offset-cents']);
+  const client = new KalshiClient(makeMinimalConfig(ticker));
+  const config: S12Config = {
+    ticker,
+    targetInventory,
+    maxInventory,
+    quoteOffsetCents,
+    postOrderInvoke: async (qty, side, priceCents) => {
+      const r = await client.createOrder({
+        ticker,
+        side,
+        action: side === 'yes' ? 'buy' : 'sell',
+        type: 'limit',
+        count: qty,
+        yes_price: priceCents,
+        time_in_force: 'good_till_canceled',
+        reduce_only: false,
+        client_order_id: `kea-mm-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      });
+      return r.orderId;
+    },
+    cancelOrderInvoke: async (orderId) => { await client.cancelOrder(orderId); },
+    getOrderStatusInvoke: async (orderId) => {
+      const r = await client.getOrder(orderId);
+      return { filled: r.filledCount, remaining: r.remainingCount };
+    },
+    getTopOfBookInvoke: async (t) => {
+      const book = await client.getOrderbook(t, 1);
+      return {
+        bidCents: book.yes[0]?.priceCents ?? null,
+        askCents: book.no[0] ? 100 - book.no[0].priceCents : null,
+      };
+    },
+    aggressiveFlattenInvoke: async (t, side, qty) => {
+      const { AggressiveRunner: AR } = await import('./aggressive.js');
+      const { buildSAggressiveOpts } = await import('./strategies/sAggressive.js');
+      const config = buildSAggressiveOpts({ ticker: t, side, action: side === 'yes' ? 'sell' : 'buy', size: qty, confirmedAggressive: true });
+      const result = await new AR(client, config).run();
+      return { filled: result.filled ?? 0 };
+    },
+    jobId: flags['job-id'],
+  };
+  const result = await new MarketMakingRunner(config).run();
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+}
+
 // ── portfolio command ─────────────────────────────────────────────────────────
 
 async function cmdPortfolio(subcommand: string | undefined, flags: Record<string, string>): Promise<void> {
@@ -1229,8 +1285,9 @@ async function cmdStrategy(subcommand: string | undefined, rest: string[], flags
     case 's-time-emergency': return cmdStrategySTimeEmergency(flags);
     case 's-pair': return cmdStrategySPair(flags);
     case 's-basis-arb': return cmdStrategySBasisArb(flags);
+    case 's-market-make': return cmdStrategySMarketMake(flags);
     default:
-      die(`unknown strategy subcommand: ${subcommand ?? '(none)'}. Valid: aggressive, stealth, limit-ladder, stop-and-reverse, roll, prepend-then-sweep, s-twap, s-pre-resolution-arb, s-cash-raise, s-iceberg, s-time-emergency, s-pair, s-basis-arb`);
+      die(`unknown strategy subcommand: ${subcommand ?? '(none)'}. Valid: aggressive, stealth, limit-ladder, stop-and-reverse, roll, prepend-then-sweep, s-twap, s-pre-resolution-arb, s-cash-raise, s-iceberg, s-time-emergency, s-pair, s-basis-arb, s-market-make`);
   }
 }
 

@@ -8,8 +8,8 @@ import {
 } from '../../src/strategies/registry.js';
 
 describe('STRATEGY_REGISTRY', () => {
-  it('has exactly 13 entries', () => {
-    expect(Object.keys(STRATEGY_REGISTRY)).toHaveLength(13);
+  it('has exactly 14 entries', () => {
+    expect(Object.keys(STRATEGY_REGISTRY)).toHaveLength(14);
   });
 
   it('every entry has id matching its key', () => {
@@ -87,8 +87,8 @@ describe('getStrategyMeta', () => {
 });
 
 describe('listStrategyIds', () => {
-  it('returns 13 ids', () => {
-    expect(listStrategyIds()).toHaveLength(13);
+  it('returns 14 ids', () => {
+    expect(listStrategyIds()).toHaveLength(14);
   });
 
   it('returns ids deterministically (matches Object.keys order)', () => {

@@ -50,13 +50,13 @@ describe('dangerLabel', () => {
 // ── Registry shape via re-export ──────────────────────────────────────────────
 
 describe('STRATEGY_REGISTRY re-export', () => {
-  it('has exactly 13 entries', () => {
+  it('has exactly 14 entries', () => {
     const ids = listStrategyIds();
-    expect(ids).toHaveLength(13);
+    expect(ids).toHaveLength(14);
   });
 
-  it('dropdown would render 13 option elements (ids array length)', () => {
-    expect(listStrategyIds().length).toBe(13);
+  it('dropdown would render 14 option elements (ids array length)', () => {
+    expect(listStrategyIds().length).toBe(14);
   });
 
   it('all strategies have a displayName', () => {
@@ -65,13 +65,13 @@ describe('STRATEGY_REGISTRY re-export', () => {
     }
   });
 
-  it('danger badges: 3 high, 4 medium, 6 low', () => {
+  it('danger badges: 3 high, 5 medium, 6 low', () => {
     const counts: Record<DangerLevel, number> = { high: 0, medium: 0, low: 0 };
     for (const id of listStrategyIds()) {
       counts[STRATEGY_REGISTRY[id].dangerLevel]++;
     }
     expect(counts.high).toBe(3);
-    expect(counts.medium).toBe(4);
+    expect(counts.medium).toBe(5);
     expect(counts.low).toBe(6);
   });
 

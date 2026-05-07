@@ -20,6 +20,8 @@ import { buildSIcebergArgs, IcebergRunner } from './strategies/sIceberg.js';
 import { buildSTimeEmergencyArgs, STimeEmergencyRunner } from './strategies/sTimeEmergency.js';
 import { buildSPairArgs, SPairRunner } from './strategies/sPair.js';
 import { buildSBasisArbArgs, SBasisArbRunner } from './strategies/sBasisArb.js';
+import { MarketMakingRunner } from './strategies/sMarketMake.js';
+import type { S12Config } from './marketMaking.js';
 import { Journal, generateJobId } from './journal.js';
 import { buildPortfolioPlan } from './portfolio.js';
 import { computeDecisionEV } from './decisionEv.js';
@@ -485,6 +487,60 @@ export function createServer(baseConfig: ExitConfig): http.Server {
         } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
       }
 
+      if (req.method === 'POST' && url.pathname === '/strategies/s-market-make') {
+        let body: any;
+        try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
+        const { ticker, targetInventory, maxInventory, quoteOffsetCents, jobId } = body ?? {};
+        if (!ticker || targetInventory == null || maxInventory == null || quoteOffsetCents == null) {
+          return json(res, 400, { ok: false, error: 'Missing required fields: ticker, targetInventory, maxInventory, quoteOffsetCents' });
+        }
+        try {
+          const client = new KalshiClient(baseConfig);
+          const config: S12Config = {
+            ticker,
+            targetInventory,
+            maxInventory,
+            quoteOffsetCents,
+            jobId,
+            postOrderInvoke: async (qty, side, priceCents) => {
+              const r = await client.createOrder({
+                ticker,
+                side,
+                action: side === 'yes' ? 'buy' : 'sell',
+                type: 'limit',
+                count: qty,
+                yes_price: priceCents,
+                time_in_force: 'good_till_canceled',
+                reduce_only: false,
+                client_order_id: `kea-mm-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+              });
+              return r.orderId;
+            },
+            cancelOrderInvoke: async (orderId) => { await client.cancelOrder(orderId); },
+            getOrderStatusInvoke: async (orderId) => {
+              const r = await client.getOrder(orderId);
+              return { filled: r.filledCount, remaining: r.remainingCount };
+            },
+            getTopOfBookInvoke: async (t) => {
+              const book = await client.getOrderbook(t, 1);
+              return {
+                bidCents: book.yes[0]?.priceCents ?? null,
+                askCents: book.no[0] ? 100 - book.no[0].priceCents : null,
+              };
+            },
+            aggressiveFlattenInvoke: async (t, side, qty) => {
+              const { buildSAggressiveOpts: b } = await import('./strategies/sAggressive.js');
+              const { AggressiveRunner: AR } = await import('./aggressive.js');
+              const cfg = b({ ticker: t, side, action: side === 'yes' ? 'sell' : 'buy', size: qty, confirmedAggressive: true });
+              const result = await new AR(client, cfg).run();
+              return { filled: result.filled };
+            },
+          };
+          const result = await new MarketMakingRunner(config).run();
+          return json(res, 200, { ok: true, result });
+        } catch (err) { return json(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) }); }
+      }
+
       if (req.method === 'POST' && url.pathname === '/strategies/run') {
         let body: any;
         try { body = await readJson(req); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON body' }); }
@@ -527,6 +583,33 @@ export function createServer(baseConfig: ExitConfig): http.Server {
                 fetchOrderbookInvoke: async (t) => client.getOrderbook(t, 5),
               });
               return json(res, 200, { ok: true, result: await new SBasisArbRunner(args).run() });
+            }
+            case 's-market-make': {
+              const { ticker, targetInventory, maxInventory, quoteOffsetCents } = body;
+              if (!ticker || targetInventory == null || maxInventory == null || quoteOffsetCents == null) {
+                throw new Error('s-market-make requires: ticker, targetInventory, maxInventory, quoteOffsetCents');
+              }
+              const mmConfig: S12Config = {
+                ticker, targetInventory, maxInventory, quoteOffsetCents, jobId,
+                postOrderInvoke: async (qty, side, priceCents) => {
+                  const r = await client.createOrder({ ticker, side, action: side === 'yes' ? 'buy' : 'sell', type: 'limit', count: qty, yes_price: priceCents, time_in_force: 'good_till_canceled', reduce_only: false, client_order_id: `kea-mm-${Date.now()}-${Math.random().toString(36).slice(2)}` });
+                  return r.orderId;
+                },
+                cancelOrderInvoke: async (orderId) => { await client.cancelOrder(orderId); },
+                getOrderStatusInvoke: async (orderId) => { const r = await client.getOrder(orderId); return { filled: r.filledCount, remaining: r.remainingCount }; },
+                getTopOfBookInvoke: async (t) => {
+                  const book = await client.getOrderbook(t, 1);
+                  return { bidCents: book.yes[0]?.priceCents ?? null, askCents: book.no[0] ? 100 - book.no[0].priceCents : null };
+                },
+                aggressiveFlattenInvoke: async (t, side, qty) => {
+                  const { buildSAggressiveOpts: b } = await import('./strategies/sAggressive.js');
+                  const { AggressiveRunner: AR } = await import('./aggressive.js');
+                  const cfg = b({ ticker: t, side, action: side === 'yes' ? 'sell' : 'buy', size: qty, confirmedAggressive: true });
+                  const r = await new AR(client, cfg).run();
+                  return { filled: r.filled };
+                },
+              };
+              return json(res, 200, { ok: true, result: await new MarketMakingRunner(mmConfig).run() });
             }
             default:
               return json(res, 400, { ok: false, error: `unknown strategy: ${strategy}` });
