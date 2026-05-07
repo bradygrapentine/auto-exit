@@ -26,6 +26,7 @@ export const evalStopLimit: Evaluator = (s, book) => {
       fire: true,
       reason: `stop_limit_triggered:limit=${limitPriceCents},size=${size}`,
       distanceCentsToTrigger,
+      triggerKind: 'stop_limit',
     };
   }
 

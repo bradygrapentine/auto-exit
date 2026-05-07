@@ -626,4 +626,15 @@ export interface SyntheticEvalResult {
   cancelSiblings?: string[];           // for child fires that should cancel parent siblings
   /** Float distance from current top-of-side price to trigger; used for adaptive cadence. */
   distanceCentsToTrigger?: number;
+  /**
+   * Peak bid (float cents) recorded by trailing-style evaluators at the moment of fire.
+   * Populated by trailing_stop and step_trail; undefined for non-trailing evaluators.
+   * Written into the `synthetic_fired` journal entry for SH-EDGE trigger-quality attribution.
+   */
+  peakBidCents?: number;
+  /**
+   * The SyntheticKind string of the evaluator that produced this result.
+   * Written into the `synthetic_fired` journal entry so SH-EDGE can bucket fires by type.
+   */
+  triggerKind?: string;
 }
