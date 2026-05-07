@@ -8,7 +8,7 @@ Last `/backlog-sync`: 2026-05-07 (SH-BACKTEST Phase A/B1/B2 + scanner deploy shi
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 1 |
+| 🧊 Tooling ecosystem (SH) | 2 |
 | 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
 | ✅ Shipped (this log) | 63 |
@@ -379,6 +379,54 @@ prior.
 -->
 
 _SH-RECOMMENDER EV/Kelly/strategy recommender shipped 2026-05-06 — see §7._
+
+### 🧊 SH-SCANNER-WS — WebSocket transport for the multi-ticker scanner
+**Tags:** shared [engine, ops]
+
+**Trigger:** REST polling at 500ms hot / 2s standard cadence captures
+most order-book moves but not sub-cadence ones. Kalshi exposes a WS
+endpoint (`wss://api.elections.kalshi.com/trade-api/ws/v2`) with an
+`orderbook_delta` channel that pushes every book change. Switching the
+scanner to WS would deliver tick-level data density at lower API load.
+
+**⚠️ Viability investigation required before scoping.** Need a 30-min
+spike to verify:
+- Does the research-account keypair authenticate against the WS endpoint,
+  or does WS require a paid tier / different permission?
+- What's the actual auth handshake (HMAC-on-connect vs per-message)?
+- Multi-ticker subscription mechanics — one socket all tickers, or one
+  socket per ticker? What's the message-rate ceiling?
+- Reconnection semantics — replay missed updates on disconnect, or fresh
+  snapshot only?
+- What does an `orderbook_delta` payload actually look like? Enough info
+  to reconstruct full book state locally?
+
+**Proposed (pending viability):** drop-in transport swap for
+`multiTickerRecorder.ts`. Keep the recorder's NDJSON output shape
+identical (snapshot rows) so SH-BACKTEST `replayClient.ts` and
+`fillSimulator.ts` don't need changes. New `wsBookTracker.ts` maintains
+in-memory book state per ticker from delta stream; emits synthesized
+`snapshot` rows every N ms (250ms default; configurable) for the
+recorder. Reconnect logic: on disconnect, fetch a fresh REST snapshot
+to seed the book then resume WS subscription.
+
+**Why deferred from initial deploy:** REST scanner is empirically
+sufficient for v1 (most strategies in S library don't have sub-second
+fire timing). Decision to upgrade should be data-driven — pull
+recordings via `kea record sync` after a day of REST data; if visible
+gaps in book evolution suggest important moves are being missed
+(especially on KXBTC15M and other intraday markets), prioritize WS.
+
+**Cost:** ~1 day if Kalshi's WS auth + delta shape match assumptions.
+~2-3 days if reconstruction logic gets gnarly or auth has unexpected
+gates.
+
+**Dependency:** SH-BACKTEST infrastructure (shipped). Does NOT depend on
+finishing SH-BACKTEST Phase C surfaces.
+
+**Sequencing recommendation:** revisit after ~24h of REST data has been
+synced and reviewed. If REST cadence is fine, reclassify as v1.5
+optimization rather than v1 must-have.
 
 _SH-COMPOSE workflow composition shipped 2026-05-07 — see §7._
 
