@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-06 (decision-layer cluster shipped — W4.3 + SH-ALERTS + SH-RECOMMENDER)
+Last `/backlog-sync`: 2026-05-06 (strategy launchers cluster shipped — SP2.2 + SP2.3 + registry)
 
 | Status | Count |
 |--------|-------|
@@ -9,9 +9,9 @@ Last `/backlog-sync`: 2026-05-06 (decision-layer cluster shipped — W4.3 + SH-A
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 3 |
 | 🧊 Tooling ecosystem (SH) | 4 |
-| 🧊 Surface parity (SP1–SP4) | 11 |
+| 🧊 Surface parity (SP1–SP4) | 9 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 42 |
+| ✅ Shipped (this log) | 44 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -541,38 +541,9 @@ named strategy with the right inputs.
 
 _SP2.1 unified `kea_strategy_run` MCP launcher shipped 2026-05-06 — see §7._
 
-### 🧊 SP2.2 — TUI: strategy picker tab
-**Tags:** tui-mcp
+_SP2.2 TUI strategy picker tab shipped 2026-05-06 — see §7._
 
-**Trigger:** the TUI today is mostly an account/safety/journal viewer.
-Once strategies exist, the most natural place to launch one is from a
-keyboard-first tab next to the existing ones.
-
-**Proposed:** new "Run" tab. List of named strategies; select one,
-ink form prompts for the strategy's required inputs, dry-run preview
-panel renders inline, confirm to start. Streams `/status` updates from
-the running job.
-
-**Cost:** ~1.5 days. Shares the form-component pattern with the planned
-Account / Safety tabs.
-
-**Dependency:** at least S1 landed.
-
-### 🧊 SP2.3 — Extension: strategy picker
-**Tags:** ext [tui-mcp]
-
-**Trigger:** the extension today only knows about losing-exit. Same
-launcher pattern as SP2.2 but adapted for the panel's narrower vertical
-and Kalshi-page context.
-
-**Proposed:** dropdown in panel header replaces today's implicit
-losing-exit. Strategy selection drives which form fields render.
-Live-mode confirm modal (SP1.3) gates the run. Auto-detected ticker
-(SP1.1) and size (SP1.2) prefill where applicable.
-
-**Cost:** ~2 days. Most expensive UI work in SP2.
-
-**Dependency:** SP1.1, SP1.2, SP1.3, SP2.1 (uses the same server endpoint).
+_SP2.3 Extension strategy picker shipped 2026-05-06 — see §7._
 
 ---
 
@@ -804,6 +775,28 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-06 — SP2.2 TUI strategy picker tab.** PR #74.
+  New "Strategies" tab in the Ink TUI: lists 13 strategies from the shared
+  registry with displayName + dangerLevel badges; up/down keyboard nav;
+  per-strategy form rendered from `fields[]` descriptors; danger-level
+  confirm prompt for high-danger strategies; dry-run preview button →
+  POST /preview; run button → POST /strategies/run; live status streaming.
+  32 tests. Plan: `engine-ts/docs/superpowers/plans/2026-05-06-strategy-launchers-cluster.md`.
+
+- **2026-05-06 — SP2.3 Extension strategy picker.** PR #73.
+  New `extension/popup/StrategyDropdown.tsx` + `StrategyView.tsx` — replaces
+  the implicit losing-exit dispatch with a full 13-strategy launcher.
+  Consumes the same shared registry as SP2.2; ticker/size auto-prefill
+  from existing TickerField/SizeField; ConfirmModal gates dangerLevel='high';
+  StatusView streaming reused. 36 tests.
+
+- **2026-05-06 — Strategy registry — shared metadata for TUI + extension launchers.** PR #72.
+  `src/strategies/registry.ts` — 13 strategy entries (displayName,
+  shortDescription, fields[] descriptors, dangerLevel). Single source of
+  truth consumed by both SP2.2 (TUI) and SP2.3 (extension) so they stay
+  in sync as the S library grows. SH-WATCH presets intentionally absent
+  (those are watcher arms, not one-shot launchers). 15 tests.
 
 - **2026-05-06 — Decision-layer surface wiring (CLI + MCP + HTTP).** PR #70.
   5 new MCP tools wired: `kea_portfolio_plan`, `kea_alert_register`,
