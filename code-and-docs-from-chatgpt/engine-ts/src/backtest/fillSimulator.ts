@@ -29,6 +29,15 @@ export interface SnapshotOrderbook {
 /** Minimal order descriptor passed by the replay client. */
 export interface SimOrder {
   side: 'yes' | 'no';
+  /**
+   * 'buy' takes liquidity at price ≤ limit (walk ascending — best ask first).
+   * 'sell' takes liquidity at price ≥ limit (walk descending — best bid first).
+   *
+   * Defaulting to 'buy' preserves pre-SH-FILL-SIM-DIRECTIONAL behavior for any
+   * caller that hasn't been updated yet, but every caller in this repo now sets
+   * `action` explicitly via the replay client.
+   */
+  action?: 'buy' | 'sell';
   /** 'limit' | 'market' — market orders walk the full book. */
   type: 'limit' | 'market';
   size: number;
@@ -82,11 +91,16 @@ function computeFeeCents(shares: number, priceCents: number): number {
 function getLiquidityLevels(
   orderbook: SnapshotOrderbook,
   side: 'yes' | 'no',
+  action: 'buy' | 'sell' = 'buy',
 ): BookLevel[] {
-  // Return levels for the same side as the order, sorted ascending by price
-  // (lowest ask first — the cheapest available liquidity).
+  // Same-side levels: for BUY walk ascending (lowest ask first — cheapest);
+  // for SELL walk descending (highest bid first — best price for the operator).
+  // SH-FILL-SIM-DIRECTIONAL: prior behavior always sorted ascending, which gave
+  // sellers the WORST available level. Sells now walk descending so a yes-sell
+  // at limit 11 against [12, 13, ..., 39] fills at 39 first (the top bid).
   const levels = side === 'yes' ? orderbook.yes : orderbook.no;
-  return [...levels].sort(([a], [b]) => a - b);
+  const sorted = [...levels].sort(([a], [b]) => a - b);
+  return action === 'sell' ? sorted.reverse() : sorted;
 }
 
 /**
@@ -118,6 +132,7 @@ function sweepBook(
   levels: BookLevel[],
   wantSize: number,
   maxPriceCents: number,
+  action: 'buy' | 'sell' = 'buy',
 ): SweepResult {
   let filled = 0;
   let weightedPriceSum = 0;
@@ -126,7 +141,11 @@ function sweepBook(
 
   for (const [priceCents, qty] of levels) {
     if (filled >= wantSize) break;
-    if (priceCents > maxPriceCents) break; // limit price exceeded
+    // Buy: limit is a ceiling — break when level price exceeds it.
+    // Sell: limit is a floor — break when level price falls below it.
+    // (Levels are pre-sorted by getLiquidityLevels in the right direction
+    // so the first level outside the limit means all remaining are too.)
+    if (action === 'buy' ? priceCents > maxPriceCents : priceCents < maxPriceCents) break;
     if (qty <= 0) continue;
 
     const take = Math.min(qty, wantSize - filled);
@@ -183,16 +202,22 @@ export function simulateFill(
     'naive: fill rates may over-estimate live; no market-impact modeled (spec §8.1, §8.2)',
   );
 
-  const levels = getLiquidityLevels(snapshot, order.side);
+  const action = order.action ?? 'buy';
+  const levels = getLiquidityLevels(snapshot, order.side, action);
+  // For market orders, the limit is unbounded in the order's preferred direction:
+  // buyer pays anything → MAX_SAFE_INTEGER; seller accepts anything → 0.
   const maxPrice =
     order.type === 'market'
-      ? Number.MAX_SAFE_INTEGER
+      ? (action === 'buy' ? Number.MAX_SAFE_INTEGER : 0)
       : (order.limitPriceCents ?? 0);
+
+  // Helper: does a level at this price pass the limit filter?
+  const within = (p: number) => action === 'buy' ? p <= maxPrice : p >= maxPrice;
 
   // ── FOK: fill entire size atomically, else cancel ───────────────────────
   if (order.timeInForce === 'fill_or_kill') {
     const available = levels
-      .filter(([p]) => p <= maxPrice)
+      .filter(([p]) => within(p))
       .reduce((s, [, q]) => s + q, 0);
 
     if (available < order.size) {
@@ -207,7 +232,7 @@ export function simulateFill(
     }
 
     // Sufficient depth — fill fully
-    const result = sweepBook(levels, order.size, maxPrice);
+    const result = sweepBook(levels, order.size, maxPrice, action);
     return {
       filled: result.filled,
       remaining: order.size - result.filled,
@@ -219,7 +244,7 @@ export function simulateFill(
   }
 
   // ── IOC / GTC (naive treats GTC same as IOC at current snapshot) ────────
-  const result = sweepBook(levels, order.size, maxPrice);
+  const result = sweepBook(levels, order.size, maxPrice, action);
 
   // IOC: any unfilled remainder is cancelled (not queued)
   // GTC: unfilled remainder becomes a resting order — caller (replayClient) handles queuing

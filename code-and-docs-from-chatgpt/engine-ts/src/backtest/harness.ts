@@ -96,17 +96,16 @@ function makeStopLossAdapter(params: Record<string, unknown>): StrategyAdapter {
       const bestBid = book.yes[0]?.priceCents ?? 0;
       if (bestBid <= stopCents) {
         triggered = true;
-        // Aggressive sell — set limit price at 99¢ to sweep any resting bid.
-        // The fill simulator uses limitPriceCents as maxPrice (fills levels ≤ limit).
-        // Setting limit=99 on a yes sell sweeps all yes levels up to 99¢.
+        // Aggressive sell — set limit at 1¢ floor so fill simulator's directional
+        // sweep (sell walks descending, accepts levels ≥ limit) takes any bid.
         await client.createOrder({
           ticker,
           side,
           action: 'sell',
           type: 'limit',
           count: remainingQty,
-          yes_price: side === 'yes' ? 99 : undefined,
-          no_price: side === 'no' ? 99 : undefined,
+          yes_price: side === 'yes' ? 1 : undefined,
+          no_price: side === 'no' ? 1 : undefined,
           time_in_force: 'immediate_or_cancel',
           reduce_only: true,
           client_order_id: `stop-loss-${Date.now()}`,
