@@ -9,6 +9,15 @@ function makeClient(book: Orderbook, positionQty = 100): KalshiClientLike {
   } as any;
 }
 
+function makeMutableClient(initialBook: Orderbook, positionQty = 100) {
+  let book = initialBook;
+  return {
+    setBook(b: Orderbook) { book = b; },
+    getOrderbook: vi.fn(async (_t: string, _d: number) => book),
+    getPosition: vi.fn(async () => ({ ticker: 'KX', side: 'yes', quantity: positionQty })),
+  } as any;
+}
+
 const baseCfg = { apiKeyEnv: 'X', privateKeyPathEnv: 'Y', baseUrl: 'z' };
 
 describe('Bracket lifecycle integration', () => {
@@ -27,13 +36,17 @@ describe('Bracket lifecycle integration', () => {
   });
 
   it('take-profit fires → bracket parent fired, stop-loss canceled', async () => {
-    const book: Orderbook = { yes: [{ priceCents: 75, size: 1 }], no: [] };
-    const w = new Watcher(makeClient(book), baseCfg);
+    // Tick 1: bid=60 (below takeProfitCents=70) → arms TP
+    // Tick 2: bid=75 (above takeProfitCents=70) → TP fires
+    const client = makeMutableClient({ yes: [{ priceCents: 60, size: 1 }], no: [] });
+    const w = new Watcher(client, baseCfg);
     const brId = w.register({
       kind: 'bracket', ticker: 'KX', side: 'yes', positionSize: 100,
       params: { takeProfitCents: 70, stopLossCents: 30 } as any,
     });
-    await w.tick();
+    await w.tick(); // arms TP
+    client.setBook({ yes: [{ priceCents: 75, size: 1 }], no: [] });
+    await w.tick(); // TP fires
 
     const all = w.list();
     const parent = all.find(s => s.id === brId)!;

@@ -466,7 +466,7 @@ export type SyntheticParams =
 
 // State shapes — empty {} for stateless evaluators.
 export interface TrailingStopState { peakBidCentsExact: number; }
-export interface TakeProfitState { firedRungIndices: number[]; }
+export interface TakeProfitState { firedRungIndices: number[]; armed?: boolean; }
 export interface OcoState { childIds: [string, string] | string[]; firedChildId?: string; }
 export interface BracketState { childIds: [string, string]; firedChildId?: string; }
 
