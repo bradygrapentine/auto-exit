@@ -98,6 +98,289 @@ export interface PassiveResult {
   status: 'complete' | 'partial' | 'error' | 'spread_too_tight';
 }
 
+// ── Per-tick seam (callable by backtest adapters without sleep) ───────────────
+
+/**
+ * Discriminated outcome returned by `runOneTick`.
+ * `continue` → caller should loop again.
+ * `break_loop` → caller should exit the outer while loop (reason encodes why).
+ *
+ * Reasons map 1:1 to the original `break outer` / early-return conditions:
+ *   - 'spread_too_tight'      : spread < walkStepCents on first fetch of this tick
+ *   - 'floor_hit'             : sell price walked below effectiveFloorCents
+ *   - 'ceiling_hit'           : buy price walked above maxPriceCents
+ *   - 'safety_cap_breached'   : cumulative submitted shares would exceed cap
+ */
+export type PassiveTickOutcome =
+  | { kind: 'continue' }
+  | { kind: 'break_loop'; reason: string };
+
+/** Mutable per-run accumulators threaded through runOneTick. */
+export interface PassiveRunState {
+  filled: number;
+  remaining: number;
+  totalNotionalCents: number;
+  feesIncurredDollars: number;
+  totalSubmittedShares: number;
+  guardHit: boolean;
+  oneSidedWarned: boolean;
+}
+
+/** Everything runOneTick needs that isn't the mutable state. */
+export interface PassiveRunDeps {
+  client: KalshiClientLike;
+  config: PassiveConfig;
+  journal: Journal;
+  chunkSize: number;
+  passiveTimeboxMs: number;
+  walkStepCents: number;
+  submittedCap: number;
+  effectiveFloorCents: number;
+  kalshiSide: 'yes' | 'no';
+  roundCents: (c: number) => number;
+}
+
+/**
+ * Execute ONE outer-loop iteration of the passive strategy.
+ *
+ * Performs: fetch book → spread check → price decide → inner walk loop
+ * (post GTC, poll timebox, cancel-replace).
+ *
+ * The `await sleep(loopDelayMs)` between outer iterations stays in `run()`,
+ * not here, so backtest adapters can call this synchronously without sleeping.
+ */
+export async function runOneTick(
+  state: PassiveRunState,
+  deps: PassiveRunDeps,
+): Promise<PassiveTickOutcome> {
+  const { client, config, journal, chunkSize, passiveTimeboxMs, walkStepCents,
+          submittedCap, effectiveFloorCents, kalshiSide, roundCents } = deps;
+
+  // ── 1. Fetch orderbook ──────────────────────────────────────────────────────
+  const orderbook = await client.getOrderbook(config.ticker, 20);
+
+  const yesAsks = orderbook.yes
+    .filter((l) => l.size > 0)
+    .sort((a, b) => a.priceCents - b.priceCents);
+  const noAsks = orderbook.no
+    .filter((l) => l.size > 0)
+    .sort((a, b) => a.priceCents - b.priceCents);
+
+  const bestAskCents = yesAsks[0]?.priceCents ?? 99;
+  const bestBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : 1;
+
+  const counterpartyEmpty =
+    config.side === 'sell' ? noAsks.length === 0 : yesAsks.length === 0;
+  if (counterpartyEmpty && !state.oneSidedWarned) {
+    journal.append(jk('passive_no_opposite_liquidity'), {
+      side: config.side,
+      bestAskCents,
+      bestBidCents,
+    });
+    state.oneSidedWarned = true;
+  }
+
+  const spreadCents = bestAskCents - bestBidCents;
+
+  // ── 2. Spread check ─────────────────────────────────────────────────────────
+  if (spreadCents < walkStepCents) {
+    journal.append(jk('passive_spread_too_tight'), {
+      bestBidCents,
+      bestAskCents,
+      spreadCents,
+    });
+    // Note: loop_finished is written by run()'s finally block, not here.
+    return { kind: 'break_loop', reason: 'spread_too_tight' };
+  }
+
+  // ── 3. Posting price ────────────────────────────────────────────────────────
+  let iterPrice: number;
+  if (config.useMidpointPeg) {
+    const action = config.side === 'sell' ? 'sell' : 'buy';
+    const offset = config.pegOffsetCents ?? 1;
+    const pegged = computePeggedPrice(action, orderbook, offset, effectiveFloorCents);
+    iterPrice = pegged !== null
+      ? pegged
+      : roundCents(config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents);
+  } else {
+    iterPrice = roundCents(
+      config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents,
+    );
+  }
+
+  const chunk = Math.min(chunkSize, state.remaining);
+
+  // ── 4. Inner walk loop: post → wait timebox → cancel-replace ────────────────
+  while (true) {
+    // Guard: sell floor
+    if (config.side === 'sell' && iterPrice < effectiveFloorCents) {
+      journal.append(jk('passive_floor_hit'), { iterPrice, effectiveFloorCents });
+      state.guardHit = true;
+      return { kind: 'break_loop', reason: 'floor_hit' };
+    }
+
+    // Guard: buy ceiling
+    if (
+      config.side === 'buy' &&
+      config.maxPriceCents !== undefined &&
+      iterPrice > config.maxPriceCents
+    ) {
+      journal.append(jk('passive_ceiling_hit'), { iterPrice, maxPriceCents: config.maxPriceCents });
+      state.guardHit = true;
+      return { kind: 'break_loop', reason: 'ceiling_hit' };
+    }
+
+    // Safety cap on cumulative submitted shares
+    if (state.totalSubmittedShares + chunk > submittedCap) {
+      journal.append(jk('passive_safety_cap_breached'), {
+        totalSubmittedShares: state.totalSubmittedShares,
+        attemptedChunk: chunk,
+        cap: submittedCap,
+      });
+      state.guardHit = true;
+      return { kind: 'break_loop', reason: 'safety_cap_breached' };
+    }
+
+    if (config.dryRun) {
+      // ── Dry-run: simulate immediate fill ──────────────────────────────────
+      const clientOrderId = `kea-passive-dry-${Date.now()}-${crypto.randomUUID()}`;
+      journal.append('order_intent', {
+        clientOrderId,
+        payload: {
+          ticker: config.ticker,
+          action: config.side,
+          side: kalshiSide,
+          count: chunk,
+          priceCents: iterPrice,
+          client_order_id: clientOrderId,
+        },
+      });
+      const dryOrderId = `dry-${clientOrderId}`;
+      state.totalSubmittedShares += chunk;
+      journal.append('order_placed', {
+        orderId: dryOrderId,
+        dryRun: true,
+        decisionRequested: chunk,
+      });
+      state.filled += chunk;
+      state.remaining = Math.max(0, state.remaining - chunk);
+      state.totalNotionalCents += chunk * iterPrice;
+      state.feesIncurredDollars = Number(
+        (state.feesIncurredDollars + chunk * (iterPrice / 100) * KALSHI_FEE_RATE).toFixed(4),
+      );
+      journal.append('order_reconciled', {
+        orderId: dryOrderId,
+        status: 'filled',
+        filled: chunk,
+        requested: chunk,
+        remainingPosition: state.remaining,
+      });
+      break; // chunk done — continue outer loop
+
+    } else {
+      // ── Live path: post GTC ────────────────────────────────────────────────
+      const clientOrderId = `kea-passive-${Date.now()}-${crypto.randomUUID()}`;
+      const payload: OrderPayload = {
+        ticker: config.ticker,
+        action: config.side === 'sell' ? 'sell' : 'buy',
+        side: kalshiSide,
+        count: chunk,
+        type: 'limit',
+        reduce_only: false,
+        time_in_force: 'good_till_canceled',
+        client_order_id: clientOrderId,
+        yes_price_dollars:
+          kalshiSide === 'yes' ? centsToPrice(iterPrice) : undefined,
+        no_price_dollars:
+          kalshiSide === 'no' ? centsToPrice(iterPrice) : undefined,
+      };
+
+      journal.append('order_intent', { clientOrderId, payload });
+
+      const created = await client.createOrder(payload);
+      state.totalSubmittedShares += chunk;
+      journal.append('order_placed', {
+        orderId: created.orderId,
+        payload,
+        decisionRequested: chunk,
+      });
+
+      // ── Poll for fill within timebox ─────────────────────────────────────
+      const deadline = Date.now() + passiveTimeboxMs;
+      let current: OrderResult = created;
+      while (Date.now() < deadline && !isTerminal(current)) {
+        const waitMs = Math.min(500, Math.max(0, deadline - Date.now()));
+        if (waitMs > 0) await sleep(waitMs);
+        try {
+          current = await client.getOrder(created.orderId);
+        } catch {
+          break;
+        }
+      }
+
+      if (isTerminal(current) && current.status !== 'canceled') {
+        // Filled within timebox (fully or partially)
+        const actualFilled = Math.max(0, Math.min(chunk, current.filledCount));
+        state.filled += actualFilled;
+        state.remaining = Math.max(0, state.remaining - actualFilled);
+        state.totalNotionalCents += actualFilled * iterPrice;
+        state.feesIncurredDollars = Number(
+          (state.feesIncurredDollars + actualFilled * (iterPrice / 100) * KALSHI_FEE_RATE).toFixed(4),
+        );
+        journal.append('order_reconciled', {
+          orderId: current.orderId,
+          status: current.status,
+          filled: actualFilled,
+          requested: chunk,
+          remainingPosition: state.remaining,
+        });
+        break; // chunk done
+
+      } else {
+        // ── Timebox expired — cancel and walk one tick ─────────────────────
+        let cancelFilled = 0;
+        try {
+          const cancelled = await client.cancelOrder(created.orderId);
+          cancelFilled = Math.max(0, Math.min(chunk, cancelled.filledCount));
+          if (cancelFilled > 0) {
+            state.filled += cancelFilled;
+            state.remaining = Math.max(0, state.remaining - cancelFilled);
+            state.totalNotionalCents += cancelFilled * iterPrice;
+            state.feesIncurredDollars = Number(
+              (state.feesIncurredDollars + cancelFilled * (iterPrice / 100) * KALSHI_FEE_RATE).toFixed(4),
+            );
+          }
+          journal.append('order_reconciled', {
+            orderId: created.orderId,
+            status: 'canceled',
+            filled: cancelFilled,
+            requested: chunk,
+            remainingPosition: state.remaining,
+          });
+        } catch {
+          // Ignore cancel errors
+        }
+
+        if (cancelFilled >= chunk || state.remaining <= 0) {
+          break; // filled on cancel (or remaining exhausted), chunk done
+        }
+
+        // Shift one tick in passive direction and loop
+        iterPrice = roundCents(
+          config.side === 'sell' ? iterPrice - walkStepCents : iterPrice + walkStepCents,
+        );
+        journal.append(jk('passive_walk_tick'), {
+          newPriceCents: iterPrice,
+          side: config.side,
+          walkStepCents,
+        });
+      }
+    }
+  } // end inner walk loop
+
+  return { kind: 'continue' };
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 function checkForbiddenTickers(ticker: string, safety: SafetyConfig): void {
@@ -169,14 +452,30 @@ export async function run(
       ? Math.max(safety.floorPriceCents, config.minPriceCents ?? 0)
       : 0;
 
-  let filled = 0;
-  let remaining = config.size;
-  let totalNotionalCents = 0;
-  let feesIncurredDollars = 0;
-  let totalSubmittedShares = 0;
+  const state: PassiveRunState = {
+    filled: 0,
+    remaining: config.size,
+    totalNotionalCents: 0,
+    feesIncurredDollars: 0,
+    totalSubmittedShares: 0,
+    guardHit: false,
+    oneSidedWarned: false,
+  };
+
+  const deps: PassiveRunDeps = {
+    client,
+    config,
+    journal,
+    chunkSize,
+    passiveTimeboxMs,
+    walkStepCents,
+    submittedCap,
+    effectiveFloorCents,
+    kalshiSide,
+    roundCents,
+  };
+
   let resultStatus: PassiveResult['status'] = 'complete';
-  let guardHit = false; // floor/ceiling stop — not an error
-  let oneSidedWarned = false; // journal the no-opposite-liquidity event only once per run
 
   journal.append('loop_started', {
     ticker: config.ticker,
@@ -189,291 +488,44 @@ export async function run(
   });
 
   try {
-    outer: while (remaining > 0) {
-      // ── 1. Fetch orderbook ──────────────────────────────────────────────
-      const orderbook = await client.getOrderbook(config.ticker, 20);
-
-      // Derive best ask / best bid:
-      //   bestAsk = lowest priceCents in yes[] (YES sellers)
-      //   bestBid = 100 − lowest priceCents in no[] (NO sellers → implied YES bid)
-      const yesAsks = orderbook.yes
-        .filter((l) => l.size > 0)
-        .sort((a, b) => a.priceCents - b.priceCents);
-      const noAsks = orderbook.no
-        .filter((l) => l.size > 0)
-        .sort((a, b) => a.priceCents - b.priceCents);
-
-      const bestAskCents = yesAsks[0]?.priceCents ?? 99;
-      const bestBidCents =
-        noAsks[0] != null ? 100 - noAsks[0].priceCents : 1;
-
-      // One-sided book guard: detect missing liquidity on the side we depend on.
-      // SELL needs counterparty buyers (=> noAsks), BUY needs counterparty sellers (=> yesAsks).
-      const counterpartyEmpty =
-        config.side === 'sell' ? noAsks.length === 0 : yesAsks.length === 0;
-      if (counterpartyEmpty && !oneSidedWarned) {
-        journal.append(jk('passive_no_opposite_liquidity'), {
-          side: config.side,
-          bestAskCents,
-          bestBidCents,
-        });
-        oneSidedWarned = true;
-      }
-
-      const spreadCents = bestAskCents - bestBidCents;
-
-      // ── 2. Spread check ─────────────────────────────────────────────────
-      // Use the walk increment as the spread floor so a deci-cent walk on a
-      // 0.5¢ spread isn't rejected as too tight.
-      if (spreadCents < walkStepCents) {
-        journal.append(jk('passive_spread_too_tight'), {
-          bestBidCents,
-          bestAskCents,
-          spreadCents,
-        });
-        journal.append('loop_finished', {
-          remaining,
-          filled,
-          status: 'spread_too_tight',
-        });
-        return buildResult(
-          jobId,
-          filled,
-          totalNotionalCents,
-          feesIncurredDollars,
-          remaining,
-          'spread_too_tight',
-        );
-      }
-
-      // ── 3. Posting price for this chunk iteration ───────────────────────
-      // spec: sell → ask − walkStep, buy → bid + walkStep
-      // When `useMidpointPeg` is set (W3.3), prefer peg-to-mid; fall through
-      // to default behavior if the book is one-sided.
-      let iterPrice: number;
-      if (config.useMidpointPeg) {
-        const action = config.side === 'sell' ? 'sell' : 'buy';
-        const offset = config.pegOffsetCents ?? 1;
-        const pegged = computePeggedPrice(action, orderbook, offset, effectiveFloorCents);
-        iterPrice = pegged !== null
-          ? pegged
-          : roundCents(config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents);
-      } else {
-        iterPrice = roundCents(
-          config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents,
-        );
-      }
-
-      const chunk = Math.min(chunkSize, remaining);
-
-      // ── 4. Inner walk loop: post → wait timebox → cancel-replace ────────
-      while (true) {
-        // Guard: sell floor
-        if (config.side === 'sell' && iterPrice < effectiveFloorCents) {
-          journal.append(jk('passive_floor_hit'), {
-            iterPrice,
-            effectiveFloorCents,
-          });
-          guardHit = true;
-          resultStatus = 'partial';
-          break outer;
-        }
-
-        // Guard: buy ceiling
-        if (
-          config.side === 'buy' &&
-          config.maxPriceCents !== undefined &&
-          iterPrice > config.maxPriceCents
-        ) {
-          journal.append(jk('passive_ceiling_hit'), {
-            iterPrice,
-            maxPriceCents: config.maxPriceCents,
-          });
-          guardHit = true;
-          resultStatus = 'partial';
-          break outer;
-        }
-
-        // Safety cap on cumulative submitted shares across all reposts.
-        if (totalSubmittedShares + chunk > submittedCap) {
-          journal.append(jk('passive_safety_cap_breached'), {
-            totalSubmittedShares,
-            attemptedChunk: chunk,
-            cap: submittedCap,
-          });
-          guardHit = true;
-          resultStatus = 'partial';
-          break outer;
-        }
-
-        if (config.dryRun) {
-          // ── Dry-run: simulate immediate fill ──────────────────────────
-          const clientOrderId = `kea-passive-dry-${Date.now()}-${crypto.randomUUID()}`;
-          journal.append('order_intent', {
-            clientOrderId,
-            payload: {
-              ticker: config.ticker,
-              action: config.side,
-              side: kalshiSide,
-              count: chunk,
-              priceCents: iterPrice,
-              client_order_id: clientOrderId,
-            },
-          });
-          const dryOrderId = `dry-${clientOrderId}`;
-          totalSubmittedShares += chunk;
-          journal.append('order_placed', {
-            orderId: dryOrderId,
-            dryRun: true,
-            decisionRequested: chunk,
-          });
-          filled += chunk;
-          remaining = Math.max(0, remaining - chunk);
-          totalNotionalCents += chunk * iterPrice;
-          feesIncurredDollars = Number(
-            (
-              feesIncurredDollars +
-              chunk * (iterPrice / 100) * KALSHI_FEE_RATE
-            ).toFixed(4),
-          );
-          journal.append('order_reconciled', {
-            orderId: dryOrderId,
-            status: 'filled',
-            filled: chunk,
-            requested: chunk,
-            remainingPosition: remaining,
-          });
-          break; // chunk done — continue outer loop
-
+    while (state.remaining > 0) {
+      const outcome = await runOneTick(state, deps);
+      if (outcome.kind === 'break_loop') {
+        if (outcome.reason === 'spread_too_tight') {
+          resultStatus = 'spread_too_tight';
         } else {
-          // ── Live path: post GTC ────────────────────────────────────────
-          const clientOrderId = `kea-passive-${Date.now()}-${crypto.randomUUID()}`;
-          const payload: OrderPayload = {
-            ticker: config.ticker,
-            action: config.side === 'sell' ? 'sell' : 'buy',
-            side: kalshiSide,
-            count: chunk,
-            type: 'limit',
-            reduce_only: false,
-            time_in_force: 'good_till_canceled',
-            client_order_id: clientOrderId,
-            yes_price_dollars:
-              kalshiSide === 'yes' ? centsToPrice(iterPrice) : undefined,
-            no_price_dollars:
-              kalshiSide === 'no' ? centsToPrice(iterPrice) : undefined,
-          };
-
-          journal.append('order_intent', { clientOrderId, payload });
-
-          const created = await client.createOrder(payload);
-          totalSubmittedShares += chunk;
-          journal.append('order_placed', {
-            orderId: created.orderId,
-            payload,
-            decisionRequested: chunk,
-          });
-
-          // ── Poll for fill within timebox ───────────────────────────────
-          const deadline = Date.now() + passiveTimeboxMs;
-          let current: OrderResult = created;
-          while (Date.now() < deadline && !isTerminal(current)) {
-            const waitMs = Math.min(500, Math.max(0, deadline - Date.now()));
-            if (waitMs > 0) await sleep(waitMs);
-            try {
-              current = await client.getOrder(created.orderId);
-            } catch {
-              break;
-            }
-          }
-
-          if (isTerminal(current) && current.status !== 'canceled') {
-            // Filled within timebox (fully or partially)
-            const actualFilled = Math.max(0, Math.min(chunk, current.filledCount));
-            filled += actualFilled;
-            remaining = Math.max(0, remaining - actualFilled);
-            totalNotionalCents += actualFilled * iterPrice;
-            feesIncurredDollars = Number(
-              (
-                feesIncurredDollars +
-                actualFilled * (iterPrice / 100) * KALSHI_FEE_RATE
-              ).toFixed(4),
-            );
-            journal.append('order_reconciled', {
-              orderId: current.orderId,
-              status: current.status,
-              filled: actualFilled,
-              requested: chunk,
-              remainingPosition: remaining,
-            });
-            break; // chunk done (or partial fill — outer loop will re-chunk)
-
-          } else {
-            // ── Timebox expired — cancel and walk one tick ──────────────
-            let cancelFilled = 0;
-            try {
-              const cancelled = await client.cancelOrder(created.orderId);
-              cancelFilled = Math.max(0, Math.min(chunk, cancelled.filledCount));
-              if (cancelFilled > 0) {
-                filled += cancelFilled;
-                remaining = Math.max(0, remaining - cancelFilled);
-                totalNotionalCents += cancelFilled * iterPrice;
-                feesIncurredDollars = Number(
-                  (
-                    feesIncurredDollars +
-                    cancelFilled * (iterPrice / 100) * KALSHI_FEE_RATE
-                  ).toFixed(4),
-                );
-              }
-              journal.append('order_reconciled', {
-                orderId: created.orderId,
-                status: 'canceled',
-                filled: cancelFilled,
-                requested: chunk,
-                remainingPosition: remaining,
-              });
-            } catch {
-              // Ignore cancel errors
-            }
-
-            if (cancelFilled >= chunk || remaining <= 0) {
-              break; // filled on cancel (or remaining exhausted), chunk done
-            }
-
-            // Shift one tick in passive direction and loop
-            iterPrice = roundCents(
-              config.side === 'sell' ? iterPrice - walkStepCents : iterPrice + walkStepCents,
-            );
-            journal.append(jk('passive_walk_tick'), {
-              newPriceCents: iterPrice,
-              side: config.side,
-              walkStepCents,
-            });
-          }
+          // floor_hit / ceiling_hit / safety_cap_breached
+          resultStatus = 'partial';
         }
-
-        if (loopDelayMs > 0) await sleep(loopDelayMs);
-      } // end inner walk loop
-    } // end outer while
+        break;
+      }
+      if (loopDelayMs > 0) await sleep(loopDelayMs);
+    }
 
   } catch (err) {
-    if (!guardHit) {
+    if (!state.guardHit) {
       resultStatus = 'error';
       const msg = err instanceof Error ? err.message : String(err);
       journal.append('loop_error', { error: msg });
     }
   } finally {
-    if (resultStatus === 'complete' && remaining > 0) {
+    if (resultStatus === 'complete' && state.remaining > 0) {
       resultStatus = 'partial';
     }
-    journal.append('loop_finished', { remaining, filled, status: resultStatus });
+    // Don't overwrite a terminal status set by break_loop handling
+    journal.append('loop_finished', {
+      remaining: state.remaining,
+      filled: state.filled,
+      status: resultStatus,
+    });
   }
 
   return buildResult(
     jobId,
-    filled,
-    totalNotionalCents,
-    feesIncurredDollars,
-    remaining,
+    state.filled,
+    state.totalNotionalCents,
+    state.feesIncurredDollars,
+    state.remaining,
     resultStatus,
   );
 }
