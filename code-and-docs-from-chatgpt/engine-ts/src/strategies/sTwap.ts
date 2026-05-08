@@ -194,6 +194,31 @@ export function computeSliceSizes(size: number, numIntervals: number): number[] 
   return slices;
 }
 
+// ── Tick outcome type ─────────────────────────────────────────────────────────
+
+/**
+ * Outcome of a single runOneTick() call.
+ *
+ * `continue`   — tick executed normally; caller should advance to the next interval.
+ * `break_loop` — runner should stop; `reason` encodes why:
+ *   - "caller_stopped"     — stop() was called before or after the passive invoke
+ *   - "schedule_complete"  — all numIntervals have fired
+ */
+export type STwapTickOutcome =
+  | { kind: 'continue' }
+  | { kind: 'break_loop'; reason: 'caller_stopped' | 'schedule_complete' };
+
+// ── Mutable tick state (passed by reference through run / runOneTick) ─────────
+
+/** Internal mutable state threaded through runOneTick() calls. */
+export interface STwapTickState {
+  intervalIndex: number;
+  totalFilled: number;
+  intervalsFired: number;
+  fillWindow: Array<{ ts: number; size: number }>;
+  startMs: number;
+}
+
 // ── Runner class ──────────────────────────────────────────────────────────────
 
 export class STwapRunner {
@@ -214,6 +239,81 @@ export class STwapRunner {
   /** Signal the runner to stop after the current interval completes. */
   stop(): void {
     this.stopped = true;
+  }
+
+  /**
+   * Execute one TWAP tick for the interval at `state.intervalIndex`.
+   *
+   * Responsibilities:
+   * - Checks the kill-switch (stopped) before and after passive invoke.
+   * - Fires the S1 passive invocation for the current slice.
+   * - Updates state.totalFilled, state.intervalsFired, state.fillWindow in place.
+   * - Journals twap_interval_fired.
+   * - Does NOT sleep — callers own the inter-interval delay and session-window sleep.
+   *
+   * Returns `{ kind: 'break_loop', reason: 'caller_stopped' }` if stop() was called,
+   * `{ kind: 'break_loop', reason: 'schedule_complete' }` after the final interval fires,
+   * or `{ kind: 'continue' }` otherwise.
+   */
+  async runOneTick(
+    state: STwapTickState,
+    opts: {
+      slices: number[];
+      passiveInvoke: PassiveInvokeFn;
+      now: () => Date;
+    },
+  ): Promise<STwapTickOutcome> {
+    const { ticker, side, s1Template = {} } = this.config;
+    const numIntervals = this.config.numIntervals;
+    const povRate = this.config.maxParticipationRate;
+    const { slices, passiveInvoke, now } = opts;
+    const i = state.intervalIndex;
+
+    // ── Graceful stop (pre-invoke) ────────────────────────────────────────────
+    if (this.stopped) {
+      return { kind: 'break_loop', reason: 'caller_stopped' };
+    }
+
+    // ── Fire S1 passive for this slice ────────────────────────────────────────
+    const sliceSize = slices[i];
+    const passiveCfg: PassiveConfig = {
+      ...s1Template,
+      ticker,
+      side,
+      size: sliceSize,
+      keaHome: this.config.keaHome,
+    };
+
+    const result = await passiveInvoke(passiveCfg, this.journal);
+    state.totalFilled += result.filled;
+    state.intervalsFired += 1;
+
+    // W3.1 POV pacing: record fills in rolling window
+    if (povRate !== undefined && result.filled > 0) {
+      state.fillWindow.push({ ts: now().getTime(), size: result.filled });
+    }
+
+    this.journal.append(jk('twap_interval_fired'), {
+      intervalIndex: i,
+      sliceSize,
+      filled: result.filled,
+      totalFilled: state.totalFilled,
+      result,
+    });
+
+    // ── Graceful stop (post-invoke) ───────────────────────────────────────────
+    if (this.stopped) {
+      return { kind: 'break_loop', reason: 'caller_stopped' };
+    }
+
+    // ── Advance interval index ────────────────────────────────────────────────
+    state.intervalIndex += 1;
+
+    if (state.intervalIndex >= numIntervals) {
+      return { kind: 'break_loop', reason: 'schedule_complete' };
+    }
+
+    return { kind: 'continue' };
   }
 
   async run(): Promise<STwapResult> {
@@ -251,97 +351,73 @@ export class STwapRunner {
       jobId: this.jobId,
     });
 
-    let totalFilled = 0;
-    let intervalsFired = 0;
+    const state: STwapTickState = {
+      intervalIndex: 0,
+      totalFilled: 0,
+      intervalsFired: 0,
+      fillWindow: [],
+      startMs: now().getTime(),
+    };
 
-    // W3.1 POV pacing: rolling 60s fill window { ts, size }[]
+    // W3.1 POV pacing helper (used by run() for inter-interval delay only)
     const povRate = this.config.maxParticipationRate;
-    const fillWindow: Array<{ ts: number; size: number }> = [];
-
-    /** Sum fills in the last 60s, pruning stale entries. */
     const recentMinuteFills = (): number => {
       const cutoff = now().getTime() - 60_000;
       let i = 0;
-      while (i < fillWindow.length && fillWindow[i].ts < cutoff) i++;
-      fillWindow.splice(0, i);
-      return fillWindow.reduce((s, e) => s + e.size, 0);
+      while (i < state.fillWindow.length && state.fillWindow[i].ts < cutoff) i++;
+      state.fillWindow.splice(0, i);
+      return state.fillWindow.reduce((s, e) => s + e.size, 0);
     };
 
-    // Capture the absolute start time. Each interval fires at
-    // startMs + i * intervalMs (drift-free scheduling).
-    const startMs = now().getTime();
-
-    for (let i = 0; i < numIntervals; i++) {
-      // ── Graceful stop ─────────────────────────────────────────────────────
-      if (this.stopped) {
-        break;
-      }
-
-      // ── Session window check ──────────────────────────────────────────────
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      // ── Session window check (sleep stays in run, not runOneTick) ────────────
       if (sessionWindow) {
         const nowDate = now();
         if (!isInSessionWindow(nowDate, sessionWindow)) {
           const waitMs = msUntilNextSessionStart(nowDate, sessionWindow);
           this.journal.append(jk('twap_session_paused'), {
-            intervalIndex: i,
+            intervalIndex: state.intervalIndex,
             nowIso: nowDate.toISOString(),
             waitMs,
           });
           await sleepMs(waitMs);
           this.journal.append(jk('twap_session_resumed'), {
-            intervalIndex: i,
+            intervalIndex: state.intervalIndex,
             nowIso: now().toISOString(),
           });
         }
       }
 
-      // ── Check stop again after potential session sleep ────────────────────
-      if (this.stopped) {
-        break;
+      // ── Delegate tick body to runOneTick ──────────────────────────────────
+      const outcome = await this.runOneTick(state, { slices, passiveInvoke, now });
+
+      if (outcome.kind === 'break_loop') {
+        // Map internal reason to STwapResult reason
+        const reason: STwapResult['reason'] =
+          outcome.reason === 'caller_stopped' ? 'caller_stopped' : 'complete';
+
+        this.journal.append(jk('twap_finished'), {
+          reason,
+          totalFilled: state.totalFilled,
+          intervalsFired: state.intervalsFired,
+          numIntervals,
+        });
+
+        return { totalFilled: state.totalFilled, intervalsFired: state.intervalsFired, reason };
       }
 
-      // ── Fire S1 passive for this slice ────────────────────────────────────
-      const sliceSize = slices[i];
-      const passiveCfg: PassiveConfig = {
-        ...s1Template,
-        ticker,
-        side,
-        size: sliceSize,
-        keaHome: this.config.keaHome,
-      };
-
-      const result = await passiveInvoke(passiveCfg, this.journal);
-      totalFilled += result.filled;
-      intervalsFired += 1;
-
-      // W3.1 POV pacing: record fills in rolling window
-      if (povRate !== undefined && result.filled > 0) {
-        fillWindow.push({ ts: now().getTime(), size: result.filled });
-      }
-
-      this.journal.append(jk('twap_interval_fired'), {
-        intervalIndex: i,
-        sliceSize,
-        filled: result.filled,
-        totalFilled,
-        result,
-      });
-
-      // ── Check stop before sleeping ────────────────────────────────────────
-      if (this.stopped) {
-        break;
-      }
-
-      // ── Drift-free sleep until next absolute boundary ─────────────────────
+      // ── Drift-free sleep until next absolute boundary (stays in run) ──────
+      const i = state.intervalIndex - 1; // index just completed
       if (i < numIntervals - 1) {
-        const nextFireAt = startMs + (i + 1) * intervalMs;
+        const nextFireAt = state.startMs + state.intervalIndex * intervalMs;
         const waitUntilNext = nextFireAt - now().getTime();
         if (waitUntilNext > 0) {
           // W3.1 POV pacing: inflate delay if exceeding participation rate
           const effectiveWait = (povRate !== undefined)
             ? computePaceDelayMs(
                 recentMinuteFills(),
-                { maxParticipationRate: povRate, recentMinuteVolume: sliceSize },
+                { maxParticipationRate: povRate, recentMinuteVolume: slices[i] },
                 waitUntilNext,
               )
             : waitUntilNext;
@@ -350,17 +426,6 @@ export class STwapRunner {
         // If negative (we're late), proceed immediately — no drift accumulation.
       }
     }
-
-    const reason: STwapResult['reason'] = this.stopped ? 'caller_stopped' : 'complete';
-
-    this.journal.append(jk('twap_finished'), {
-      reason,
-      totalFilled,
-      intervalsFired,
-      numIntervals,
-    });
-
-    return { totalFilled, intervalsFired, reason };
   }
 }
 
