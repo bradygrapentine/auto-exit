@@ -130,7 +130,7 @@ describe('kea backtest run', () => {
     fs.writeFileSync(recPath, '', 'utf-8');
 
     const { stdout } = await captureOut(() =>
-      runCli(['backtest', 'run', '--recording', recPath, '--strategy', 'stub']),
+      runCli(['backtest', 'run', '--recording', recPath, '--strategy', 'stub', '--ticker', 'KX-TEST']),
     );
 
     expect(stdout).toContain('# Backtest Report');
@@ -147,7 +147,7 @@ describe('kea backtest run', () => {
     fs.writeFileSync(recPath, '', 'utf-8');
 
     const { stdout } = await captureOut(() =>
-      runCli(['backtest', 'run', '--recording', recPath, '--strategy', 'stub', '--mode', 'json']),
+      runCli(['backtest', 'run', '--recording', recPath, '--strategy', 'stub', '--ticker', 'KX-TEST', '--mode', 'json']),
     );
 
     const parsed = JSON.parse(stdout.trim());
@@ -167,6 +167,7 @@ describe('kea backtest run', () => {
         'backtest', 'run',
         '--recording', recPath,
         '--strategy', 'stub',
+        '--ticker', 'KX-TEST',
         '--report-path', reportPath,
       ]),
     );
@@ -191,6 +192,15 @@ describe('kea backtest run', () => {
       runCli(['backtest', 'run', '--recording', recPath]),
     );
     expect(msg).toContain('--strategy');
+  });
+
+  it('dies with helpful message when --ticker is missing', async () => {
+    const recPath = path.join(tmpDir, 'test.ndjson');
+    fs.writeFileSync(recPath, '', 'utf-8');
+    const msg = await expectDie(() =>
+      runCli(['backtest', 'run', '--recording', recPath, '--strategy', 'stub']),
+    );
+    expect(msg).toContain('--ticker');
   });
 });
 
@@ -227,6 +237,7 @@ describe('kea backtest sweep', () => {
         'backtest', 'sweep',
         '--recording', recPath,
         '--strategy', 'stub',
+        '--ticker', 'KX-TEST',
         '--grid', JSON.stringify({ trailCents: [3, 5], chunkSize: [10, 25] }),
       ]),
     );
@@ -254,6 +265,7 @@ describe('kea backtest sweep', () => {
         'backtest', 'sweep',
         '--recording', recPath,
         '--strategy', 'stub',
+        '--ticker', 'KX-TEST',
         '--grid', JSON.stringify({ trailCents: [3] }),
         '--out-dir', outDir,
       ]),
