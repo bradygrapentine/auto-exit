@@ -26,8 +26,11 @@ const TICKER = 'KXTEST-PASSIVE2';
 function makeMockClient(opts: {
   yesBid: number;
   yesAsk: number;
+  /** When false, createOrder returns 'resting' so orders carry across ticks. Default true. */
+  fillImmediately?: boolean;
 }) {
   const orders: Array<{ payload: OrderPayload; result: OrderResult }> = [];
+  const fillImm = opts.fillImmediately !== false; // default true for backward compat
 
   return {
     async getOrderbook(_ticker: string, _depth: number) {
@@ -40,9 +43,9 @@ function makeMockClient(opts: {
       const orderId = `mock-${orders.length + 1}`;
       const result: OrderResult = {
         orderId,
-        status: 'filled',
-        filledCount: payload.count,
-        remainingCount: 0,
+        status: fillImm ? 'filled' : 'resting',
+        filledCount: fillImm ? payload.count : 0,
+        remainingCount: fillImm ? 0 : payload.count,
       };
       orders.push({ payload, result });
       return result;
@@ -99,17 +102,18 @@ function writeTmpNdjson(dir: string, count = 6): string {
 // ---------------------------------------------------------------------------
 
 describe('makePassiveAdapter (runOneTick-driven)', () => {
-  it('returns continue result on first tick with normal spread', async () => {
+  it('returns continue result on first tick with normal spread (resting order)', async () => {
     const adapter = makePassiveAdapter({
       ticker: TICKER,
       side: 'sell',
       walkStepCents: 1,
     });
 
-    const client = makeMockClient({ yesBid: 59, yesAsk: 65 });
+    // fillImmediately=false: createOrder returns 'resting', so order carries across ticks.
+    // runOneTickBacktest posts GTC, sees resting result → sets pendingOrderId → continue.
+    const client = makeMockClient({ yesBid: 59, yesAsk: 65, fillImmediately: false });
     const decision = await adapter.tick(client as any, 10);
 
-    // dryRun path fills immediately — adapter reports continue
     expect(decision).toMatch(/passive: continue/);
   });
 
@@ -158,7 +162,7 @@ describe('makePassiveAdapter (runOneTick-driven)', () => {
     expect(decision2).toBe('');
   });
 
-  it('accumulates state across ticks (filled increases)', async () => {
+  it('accumulates state across ticks (resting order stays pending)', async () => {
     const adapter = makePassiveAdapter({
       ticker: TICKER,
       side: 'sell',
@@ -166,14 +170,15 @@ describe('makePassiveAdapter (runOneTick-driven)', () => {
       minPriceCents: 1,
     });
 
-    const client = makeMockClient({ yesBid: 59, yesAsk: 70 });
+    // fillImmediately=false: order rests across ticks, adapter returns continue each tick.
+    const client = makeMockClient({ yesBid: 59, yesAsk: 70, fillImmediately: false });
 
     const d1 = await adapter.tick(client as any, 10);
-    // dryRun fills chunk → filled increases, remaining decreases
+    // tick1: posts GTC, resting → continue
     expect(d1).toMatch(/passive: continue/);
 
-    // Second tick with smaller remaining
-    const d2 = await adapter.tick(client as any, 5);
+    // tick2: resting order still pending (getOrder returns resting) → continue
+    const d2 = await adapter.tick(client as any, 10);
     expect(d2).toMatch(/passive: continue/);
   });
 });
@@ -228,15 +233,22 @@ describe('runBacktest s-passive (Phase 2 adapter)', () => {
     expect(report.mark_curve).toHaveLength(6);
   });
 
-  it('summary mirrors top-level convenience aliases', async () => {
+  it('summary mirrors top-level convenience aliases and has >0 fills', async () => {
+    // Book: yes ask walks down from 69→64 across 6 ticks; no asks stay at 40 (bid=60).
+    // Sell iterPrice = yesAsk - 1. GTC rests tick N, fills on tick N+1 when ask drops to iterPrice.
+    // runOneTickBacktest carries resting order across ticks → real fills accumulate.
     const report = await runBacktest({
       recordingPath,
       strategyId: 's-passive',
-      params: { ticker: TICKER, side: 'sell' },
+      params: { ticker: TICKER, side: 'sell', walkStepCents: 1, minPriceCents: 1 },
+      initialPosition: { ticker: TICKER, side: 'yes', quantity: 10 },
+      fillModel: 'naive',
     });
 
     expect(report.pnl_cents).toBe(report.summary.pnl_cents);
     expect(report.fill_count).toBe(report.summary.fill_count);
     expect(report.fill_rate).toBe(report.summary.fill_rate);
+    // Regression: runOneTickBacktest must produce real fills (not 0 like the old timebox=0 path)
+    expect(report.fill_count).toBeGreaterThan(0);
   });
 });

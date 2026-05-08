@@ -1,22 +1,24 @@
 /**
- * SH-BACKTEST-RUNTICK Phase 2 — passive adapter backed by real runOneTick seam.
+ * SH-BACKTEST-RUNTICK Phase 2 / SH-BACKTEST-PHASE-D — passive adapter backed by
+ * passive.runOneTickBacktest().
  *
  * Replaces the hand-rolled clone in exitRunnerAdapter.ts with a thin wrapper
- * that delegates each harness tick to passive.runOneTick().
+ * that delegates each harness tick to passive.runOneTickBacktest().
  *
  * Design choices:
  *   - dryRun: false — the adapter calls client.createOrder() so fills are
  *     tracked in the replay client's fill log and visible to the harness.
- *   - passiveTimeboxMs: 0 — deadline = Date.now() + 0, which expires before
- *     the first poll attempt. No sleep occurs. The inner walk loop's "timebox
- *     expired" path cancels the resting order and walks the price down by one
- *     step. This continues until a guard (floor/ceiling/safety_cap) fires.
+ *   - passiveTimeboxMs is NOT the operative mechanism here. runOneTickBacktest
+ *     posts ONE GTC per harness tick and carries the resting order across ticks
+ *     via state.pendingOrderId / state.pendingPriceCents. The replay client's
+ *     naive fill model fills at createOrder time when the limit price crosses
+ *     the book; otherwise the order rests and is checked/replaced next tick.
  *
- * Fill behavior note: with passiveTimeboxMs=0 the inner loop immediately cancels
- * each GTC order before next-tick fills can occur. Direct fills only happen if
- * the replay client's naive fill model fills the order at createOrder time (i.e.
- * the limit price sweeps available book levels). This is correct for counterfactual
- * analysis: the adapter exercises real pricing logic tick-by-tick.
+ * Why runOneTickBacktest instead of runOneTick:
+ *   runOneTick's inner walk loop cancels each GTC before the replay client's
+ *   advance() can register fills (timebox=0 fires immediately). Result: 0 fills
+ *   on every backtest run. runOneTickBacktest skips the inner loop entirely —
+ *   one post per tick, check/carry/replace next tick. Realistic fill accumulation.
  *
  * Journal writes go to a per-run tmp dir; cleaned up on break_loop.
  * State is initialised lazily on first tick.
@@ -26,7 +28,7 @@ import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { runOneTick as passiveRunOneTick } from '../../passive.js';
+import { runOneTickBacktest as passiveRunOneTick } from '../../passive.js';
 import type { PassiveRunState, PassiveRunDeps, PassiveConfig } from '../../passive.js';
 import { Journal, generateJobId } from '../../journal.js';
 import type { KalshiClientLike } from '../../types.js';
@@ -112,9 +114,8 @@ export function makePassiveAdapter(params: Record<string, unknown>): StrategyAda
           config,
           journal,
           chunkSize,
-          // passiveTimeboxMs=0: deadline expires immediately, no sleep, no poll.
-          // GTC orders that don't fill at createOrder time are immediately cancelled
-          // by the inner loop's "timebox expired" path.
+          // passiveTimeboxMs is not used by runOneTickBacktest (no inner walk loop).
+          // Set to 0 to satisfy the PassiveRunDeps interface.
           passiveTimeboxMs: 0,
           walkStepCents,
           submittedCap,
