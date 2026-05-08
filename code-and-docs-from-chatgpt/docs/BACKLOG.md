@@ -8,7 +8,7 @@ Last `/backlog-sync`: 2026-05-08 (Slice 2 shipped — SH-EDGE-PHASE-B cleanup, E
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 2 |
+| 🧊 Tooling ecosystem (SH) | 3 |
 | 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
 | ✅ Shipped (this log) | 67 |
@@ -385,6 +385,30 @@ _SH-SCANNER-RATELIMIT shipped 2026-05-07 — see §7._
 _SH-BACKTEST-RUNTICK shipped 2026-05-08 — see §7._
 
 _ENGINE-NAV-WIRE shipped 2026-05-08 — see §7._
+
+### 🧊 SH-SCANNER-SYNC-FIX-2 — `kea record sync` silently exits without transferring
+**Tags:** engine [ops]
+
+**Trigger:** discovered during the 2026-05-08 first live backtest run.
+`node dist/cli.js record sync --fly-app auto-exit-scanner` connects to
+the Fly machine, prints `Connecting to fdaa:...`, then exits silently
+with no files transferred. Workaround: run the underlying tar pipe
+manually — `fly ssh console -a auto-exit-scanner -C "tar czf - -C /data
+recordings" | tar xzvf -` — which works correctly (pulled all 89 files,
+105MB).
+
+**Suspected cause:** stdin/stdout pipe handling in `src/backtest/sync.ts`.
+PR #111 replaced the broken rsync wrapper with a tar-pipe-over-fly-ssh,
+and it worked at the time. Either Fly CLI behavior changed, or the
+spawn'd `fly ssh` process exits without forwarding stdout (the
+`{ stdio: ['ignore', 'pipe', 'inherit'] }` option may swallow errors).
+
+**Proposed:** add stderr capture from the fly ssh subprocess + log it
+on non-zero exit; assert at least one byte was piped to tar before
+considering the sync successful; fail loudly if either condition is
+violated. Cost: ~1-2h.
+
+**Dependency:** none.
 
 ### 🧊 SH-BACKTEST-PHASE-D — wire s-trail and synthetics adapters; passive fill realism
 **Tags:** engine [backtest]
