@@ -209,4 +209,33 @@ describe('runBacktest', () => {
     expect(report.trace).toHaveLength(0);
     expect(report.fills).toHaveLength(0);
   });
+
+  // Phase D: verify all 5 Watcher-backed strategy IDs resolve and return a report.
+  // Snapshots have yes bids 50–54 cents — none crosses the default trigger thresholds
+  // (take_profit default=75, stop_loss default=30, trailCents default=5), so most will
+  // not fire, but all must complete without throwing.
+  it.each(['s-trail', 'trailing_stop', 'take_profit', 'oco', 'bracket'])(
+    'resolves %s to a Watcher-backed adapter',
+    async (strategyId) => {
+      const config = {
+        recordingPath,
+        strategyId,
+        params: {
+          ticker: TICKER,
+          side: 'yes' as const,
+          size: 1,
+          trailCents: 5,
+          triggerPriceCents: 30,
+          targetPriceCents: 75,
+          stopPriceCents: 30,
+          takeProfitCents: 75,
+          stopLossCents: 30,
+        },
+        initialPosition: { ticker: TICKER, side: 'yes' as const, quantity: 1 },
+      };
+      const report = await runBacktest(config);
+      expect(report.strategyId).toBe(strategyId);
+      expect(Array.isArray(report.trace)).toBe(true);
+    },
+  );
 });
