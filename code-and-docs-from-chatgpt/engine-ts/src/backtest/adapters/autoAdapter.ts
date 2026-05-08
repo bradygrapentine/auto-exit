@@ -14,9 +14,13 @@ interface AutoParams {
   warmupTicks?: number;
   /** 'fixed' (default — v4 thresholds) or 'proportional' (scales with warmup). */
   thresholdMode?: 'fixed' | 'proportional';
-  /** Re-classify every N ticks after the warmup completes. 0 = never (v5 behavior). */
+  /**
+   * @deprecated Rolling re-classify produced 0% lift across v7 / v8 / v9 sweeps
+   * (see `docs/runbooks/2026-05-08-strategy-comparison-v9.md`). Set to 0 (default).
+   * Pending removal via SH-AUTO-SINGLE-SHOT-SIMPLIFY.
+   */
   reclassifyInterval?: number;
-  /** Require N consecutive different-regime classifications before switching. Default 3. */
+  /** @deprecated Only meaningful when reclassifyInterval > 0 — itself deprecated. */
   hysteresisTicks?: number;
   [key: string]: unknown;
 }
