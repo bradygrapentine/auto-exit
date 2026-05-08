@@ -35,6 +35,11 @@ function makeDeps(orderbook: { yes: { priceCents: number; size: number }[]; no: 
   };
 }
 
+function makeBuyDeps(orderbook: { yes: { priceCents: number; size: number }[]; no: { priceCents: number; size: number }[] }): PassiveRunDeps {
+  const deps = makeDeps(orderbook);
+  return { ...deps, config: { ...deps.config, side: 'buy' } };
+}
+
 describe('passive spread fallback (SH-PASSIVE-SPREAD-LOGIC)', () => {
   it('posts an order on a one-sided book (no-side empty)', async () => {
     const orderbook = {
@@ -76,13 +81,42 @@ describe('passive spread fallback (SH-PASSIVE-SPREAD-LOGIC)', () => {
     expect((outcome as { reason?: string }).reason).toBe('spread_too_tight');
   });
 
-  it('preserves existing behavior when no-side is present', async () => {
-    // Normal two-sided book: yesAsk=65, implied yesBid=100-41=59, spread=6
+  it('SH-PASSIVE-STILL-NO-FILLS: posts a sell on a KXINXU-shape two-sided book', async () => {
+    // KXINXU first snapshot: yes=[14,34,...,55], no=[5,7,...,12]. Pre-fix this
+    // produced bestAsk=14, bestBid=95 → spread=-81 → spread_too_tight. Post-fix
+    // sell-side uses yes-depth: bestAsk=55, bestBid=14, spread=41 → posts.
     const orderbook = {
-      yes: [{ priceCents: 65, size: 100 }],
-      no:  [{ priceCents: 41, size: 100 }],
+      yes: [
+        { priceCents: 14, size: 22 },
+        { priceCents: 34, size: 101 },
+        { priceCents: 55, size: 112 },
+      ],
+      no: [
+        { priceCents: 5, size: 35 },
+        { priceCents: 12, size: 22 },
+      ],
     };
     const deps = makeDeps(orderbook);
+    const state: PassiveRunState = {
+      filled: 0, remaining: 100, totalNotionalCents: 0,
+      feesIncurredDollars: 0, totalSubmittedShares: 0,
+      guardHit: false, oneSidedWarned: false,
+    };
+
+    const outcome = await runOneTickBacktest(state, deps);
+
+    expect(outcome.kind).toBe('continue');
+    expect(state.pendingOrderId).toBe('o-1');
+  });
+
+  it('buy-side semantics unchanged: cross-side bid/ask still applies', async () => {
+    // Two-sided book where buy-side cross-conversion still works:
+    // yesAsk = 65 (lowest yes), bestBid = 100-41 = 59, spread = 6 → posts.
+    const orderbook = {
+      yes: [{ priceCents: 65, size: 100 }, { priceCents: 70, size: 50 }],
+      no:  [{ priceCents: 41, size: 100 }],
+    };
+    const deps = makeBuyDeps(orderbook);
     const state: PassiveRunState = {
       filled: 0, remaining: 100, totalNotionalCents: 0,
       feesIncurredDollars: 0, totalSubmittedShares: 0,

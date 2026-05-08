@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-08 (SH-FILL-SIM-DIRECTIONAL shipped #132; SH-PASSIVE-SELL-LIMIT demoted to cleanup; SH-PASSIVE-SPREAD-LOGIC filed from KXINXU validation)
+Last `/backlog-sync`: 2026-05-08 (SH-PASSIVE-STILL-NO-FILLS shipped — passive fills on all 3 sweep recordings; SH-TWAP-CADENCE filed — dryRun-mode invisible to simulator)
 
 | Status | Count |
 |--------|-------|
@@ -8,7 +8,7 @@ Last `/backlog-sync`: 2026-05-08 (SH-FILL-SIM-DIRECTIONAL shipped #132; SH-PASSI
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 5 |
+| 🧊 Tooling ecosystem (SH) | 6 |
 | 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
 | ✅ Shipped (this log) | 68 |
@@ -479,6 +479,21 @@ math works in both contexts.
 
 **Dependency:** SH-FILL-SIM-DIRECTIONAL (otherwise the new limit math
 still won't fill in backtest).
+
+### 🧊 SH-TWAP-CADENCE — `s-twap` returns 0 fills in backtest because it uses dryRun mode
+**Tags:** engine [backtest]
+
+**Trigger:** strategy comparison sweep v1 + v2 + v3 all showed `s-twap` with 0 fills across all recordings, even after passive fills correctly post-SH-PASSIVE-STILL-NO-FILLS.
+
+**Root cause (diagnosed 2026-05-08):** `src/backtest/adapters/twapAdapter.ts:45+` builds a `passiveInvoke` that calls `passive.runOneTick(... dryRun: true)` per interval. In dry-run mode, passive simulates fills internally (incrementing `state.filled`) **without** calling `client.createOrder`. The replay client's `fillLog` therefore never sees the fills, the harness's `remainingQty` never decrements, and `report.summary.fill_count` is 0.
+
+**Concrete observation:** journal-trace a backtest run with `--strategy s-twap` and you'll see passive logs `order_placed { dryRun: true }` events but `getFillLog()` returns `[]` at run end. Twap's outer schedule advances correctly (interval 0 → 1 → break_loop:schedule_complete) but every interval is invisible to the simulator.
+
+**Proposed:** drop `dryRun: true` from the twap adapter's passiveInvoke so passive's createOrder calls hit the replay client. The twap adapter's per-interval invocation already accounts for the ONE GTC per tick semantics that PR #129 baked in. ~1-2h fix + new test asserting twap produces non-zero fills on a known-fillable recording.
+
+**Cost:** ~1-2h.
+
+**Dependency:** SH-PASSIVE-STILL-NO-FILLS (shipped — same PR as this ticket's filing).
 
 ### 🧊 SH-PASSIVE-SPREAD-LOGIC — passive break_loops on one-sided / skewed books
 **Tags:** engine [shared]
