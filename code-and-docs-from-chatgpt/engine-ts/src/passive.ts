@@ -170,12 +170,13 @@ export async function runOneTick(
     .filter((l) => l.size > 0)
     .sort((a, b) => a.priceCents - b.priceCents);
 
-  // SH-PASSIVE-SPREAD-LOGIC: when no-side is empty, synthesize a spread from
-  // the yes-side depth so the spread check doesn't collapse on one-sided books.
-  // yesAsks is sorted ascending: [0]=lowest ask, [last]=highest ask.
-  // When no-side present: bestAsk=lowest yes, bestBid=100-lowest no (normal path).
-  // When no-side empty:   bestAsk=highest yes, bestBid=lowest yes — the yes depth
-  // IS the spread. A single-level yes book gives spread=0 → spread_too_tight.
+  // SH-PASSIVE-SPREAD-LOGIC (live path): when no-side is empty, synthesize
+  // a spread from yes-depth. Live uses cross-quoted bid/ask semantics
+  // (yes-side[0] = yes ask) because Kalshi's matching engine accepts the
+  // resulting GTC regardless of how off the limit math is and matches
+  // against the real book. This DIFFERS intentionally from
+  // runOneTickBacktest below, which mirrors the recording's bid-quoted
+  // representation (yes-side stores yes BIDS).
   const bestAskCents = noAsks.length > 0
     ? (yesAsks[0]?.priceCents ?? 99)
     : (yesAsks[yesAsks.length - 1]?.priceCents ?? 99);
@@ -427,17 +428,21 @@ export async function runOneTickBacktest(
     .filter((l) => l.size > 0)
     .sort((a, b) => a.priceCents - b.priceCents);
 
-  // SH-PASSIVE-SPREAD-LOGIC: when no-side is empty, synthesize a spread from
-  // the yes-side depth so the spread check doesn't collapse on one-sided books.
-  // yesAsks is sorted ascending: [0]=lowest ask, [last]=highest ask.
-  // When no-side present: bestAsk=lowest yes, bestBid=100-lowest no (normal path).
-  // When no-side empty:   bestAsk=highest yes, bestBid=lowest yes — the yes depth
-  // IS the spread. A single-level yes book gives spread=0 → spread_too_tight.
-  const bestAskCents = noAsks.length > 0
-    ? (yesAsks[0]?.priceCents ?? 99)
+  // SH-PASSIVE-STILL-NO-FILLS: real Kalshi recordings store yes-side BIDS (not
+  // cross-side asks), so `crossAsk = yesAsks[0]` and `crossBid = 100 - noAsks[0]`
+  // can produce a NEGATIVE spread (e.g. KXINXU: yes=14, no=5 → ask=14, bid=95,
+  // spread=-81). When that happens we fall back to a yes-depth interpretation
+  // (ask = highest yes, bid = lowest yes). The cross-quoted path is preserved
+  // for live-style books and existing tests.
+  const crossAskCents = yesAsks[0]?.priceCents ?? 99;
+  const crossBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : Number.NEGATIVE_INFINITY;
+  const crossSpreadValid = noAsks.length > 0 && crossAskCents - crossBidCents > 0;
+
+  const bestAskCents = crossSpreadValid
+    ? crossAskCents
     : (yesAsks[yesAsks.length - 1]?.priceCents ?? 99);
-  const bestBidCents = noAsks[0] != null
-    ? 100 - noAsks[0].priceCents
+  const bestBidCents = crossSpreadValid
+    ? crossBidCents
     : (yesAsks[0]?.priceCents ?? 1);
 
   // One-sided book warning (same as runOneTick)
