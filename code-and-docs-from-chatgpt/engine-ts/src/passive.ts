@@ -170,8 +170,18 @@ export async function runOneTick(
     .filter((l) => l.size > 0)
     .sort((a, b) => a.priceCents - b.priceCents);
 
-  const bestAskCents = yesAsks[0]?.priceCents ?? 99;
-  const bestBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : 1;
+  // SH-PASSIVE-SPREAD-LOGIC: when no-side is empty, synthesize a spread from
+  // the yes-side depth so the spread check doesn't collapse on one-sided books.
+  // yesAsks is sorted ascending: [0]=lowest ask, [last]=highest ask.
+  // When no-side present: bestAsk=lowest yes, bestBid=100-lowest no (normal path).
+  // When no-side empty:   bestAsk=highest yes, bestBid=lowest yes — the yes depth
+  // IS the spread. A single-level yes book gives spread=0 → spread_too_tight.
+  const bestAskCents = noAsks.length > 0
+    ? (yesAsks[0]?.priceCents ?? 99)
+    : (yesAsks[yesAsks.length - 1]?.priceCents ?? 99);
+  const bestBidCents = noAsks[0] != null
+    ? 100 - noAsks[0].priceCents
+    : (yesAsks[0]?.priceCents ?? 1);
 
   const counterpartyEmpty =
     config.side === 'sell' ? noAsks.length === 0 : yesAsks.length === 0;
@@ -417,8 +427,18 @@ export async function runOneTickBacktest(
     .filter((l) => l.size > 0)
     .sort((a, b) => a.priceCents - b.priceCents);
 
-  const bestAskCents = yesAsks[0]?.priceCents ?? 99;
-  const bestBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : 1;
+  // SH-PASSIVE-SPREAD-LOGIC: when no-side is empty, synthesize a spread from
+  // the yes-side depth so the spread check doesn't collapse on one-sided books.
+  // yesAsks is sorted ascending: [0]=lowest ask, [last]=highest ask.
+  // When no-side present: bestAsk=lowest yes, bestBid=100-lowest no (normal path).
+  // When no-side empty:   bestAsk=highest yes, bestBid=lowest yes — the yes depth
+  // IS the spread. A single-level yes book gives spread=0 → spread_too_tight.
+  const bestAskCents = noAsks.length > 0
+    ? (yesAsks[0]?.priceCents ?? 99)
+    : (yesAsks[yesAsks.length - 1]?.priceCents ?? 99);
+  const bestBidCents = noAsks[0] != null
+    ? 100 - noAsks[0].priceCents
+    : (yesAsks[0]?.priceCents ?? 1);
 
   // One-sided book warning (same as runOneTick)
   const counterpartyEmpty =
