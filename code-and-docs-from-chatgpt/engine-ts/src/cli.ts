@@ -656,13 +656,13 @@ Scanner / recording commands:
                                      Pull recordings from Fly.io volume via tar-pipe over fly ssh console
 
 Backtest commands:
-  backtest run --recording <path> --strategy <name>
+  backtest run --recording <path> --strategy <name> --ticker <T>
        [--params <json>] [--initial-position <json>]
        [--ts-from <iso>] [--ts-to <iso>]
        [--fill-model naive|queue_aware]
        [--report-path <path>] [--mode markdown|json]
                                      Replay a recording against a strategy; print counterfactual report
-  backtest sweep --recording <path> --strategy <name> --grid <json>
+  backtest sweep --recording <path> --strategy <name> --ticker <T> --grid <json>
        [--rank-by <field>] [--initial-position <json>] [--out-dir <path>]
                                      Cartesian-expand grid, run one backtest per combo, print comparison table
   backtest report --report-path <path> [--mode markdown|json]
@@ -1633,6 +1633,15 @@ async function cmdBacktest(
         ? (JSON.parse(flags['initial-position']) as { size: number; side: 'yes' | 'no'; costBasisCents: number })
         : undefined;
 
+      // Top-level --ticker is folded into params.ticker (and initialPosition.ticker)
+      // so users don't have to spell it twice across two JSON blobs.
+      if (flags['ticker'] && !params['ticker']) params['ticker'] = flags['ticker'];
+
+      const resolvedTicker = (params['ticker'] as string | undefined) ?? flags['ticker'] ?? '';
+      if (!resolvedTicker) {
+        die('backtest run requires --ticker <T> (or "ticker" inside --params <json>)');
+      }
+
       const config: BacktestConfig = {
         recordingPath: flags['recording'],
         strategyId: flags['strategy'],
@@ -1642,7 +1651,7 @@ async function cmdBacktest(
         tsTo: flags['ts-to'],
         initialPosition: initialPositionRaw
           ? {
-              ticker: (params['ticker'] as string | undefined) ?? '',
+              ticker: resolvedTicker,
               side: initialPositionRaw.side,
               quantity: initialPositionRaw.size,
             }
@@ -1677,6 +1686,12 @@ async function cmdBacktest(
         ? (JSON.parse(flags['initial-position']) as { size: number; side: 'yes' | 'no'; costBasisCents: number })
         : undefined;
       const baseParams: Record<string, unknown> = {};
+      if (flags['ticker']) baseParams['ticker'] = flags['ticker'];
+
+      const resolvedTicker = (baseParams['ticker'] as string | undefined) ?? '';
+      if (!resolvedTicker) {
+        die('backtest sweep requires --ticker <T>');
+      }
 
       const config: SweepConfig = {
         recordingPath: flags['recording'],
@@ -1686,7 +1701,7 @@ async function cmdBacktest(
         rankBy: (flags['rank-by'] as keyof CounterfactualReport['summary']) ?? 'pnl_cents',
         initialPosition: initialPositionRaw
           ? {
-              ticker: '',
+              ticker: resolvedTicker,
               side: initialPositionRaw.side,
               quantity: initialPositionRaw.size,
             }
