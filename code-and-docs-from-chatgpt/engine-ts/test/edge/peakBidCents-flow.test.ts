@@ -28,6 +28,10 @@ describe('peakBidCents flows end-to-end through edge pipeline', () => {
 
   it('triggerHistogram bins fire by triggerQuality using peakBidCents-derived benchmark', () => {
     const fires = joinFires(journal);
+    // Guard: triggerHistogram skips fires without triggerArmedAt (aggregate.ts:139).
+    // If joinFires ever stops setting it from synthetic_fired, this test would
+    // silently pass with hist.length === 0 instead of failing loudly.
+    expect(fires[0]!.triggerArmedAt).toBeDefined();
     const hist = triggerHistogram(fires);
     expect(hist).toHaveLength(1);
     expect(hist[0]!.triggerKind).toBe('take_profit');

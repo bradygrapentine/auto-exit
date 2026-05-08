@@ -199,9 +199,14 @@ export class KalshiClient implements KalshiClientLike {
         this.config.baseUrl + path,
         { headers: this.authHeaders('GET', path) },
       );
-      const json = (await res.json()) as { balance?: number };
-      const cents = json.balance ?? 0;
-      return cents / 100;
+      const json = (await res.json()) as { balance?: unknown };
+      const raw = json.balance;
+      if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
+        // Defense in depth — a malformed balance field would propagate as NaN
+        // into the SH-2 concentration check and silently bypass the cap.
+        throw new Error(`Kalshi /portfolio/balance returned invalid balance: ${String(raw)} (typeof=${typeof raw})`);
+      }
+      return raw / 100;
     });
   }
 

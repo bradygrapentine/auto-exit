@@ -6,10 +6,13 @@
  * tight loops while keeping the value fresh enough that mid-job position
  * size changes don't drift the concentration check materially.
  *
- * On fetch failure: return 0 (and log) rather than throw — the risk gate's
- * concentration check then short-circuits, matching the prior placeholder
+ * On fetch failure or invalid value: return 0 (and log) rather than throw —
+ * the risk gate's concentration check then short-circuits (safety.ts:222
+ * gates on `portfolioNAVDollars > 0`), matching the prior placeholder
  * behavior. Pre-trade risk failures should not block startup on transient
- * Kalshi outages.
+ * Kalshi outages, but they MUST be loud — silent NaN/Infinity propagation
+ * into the concentration check would bypass the cap without operator
+ * notice.
  */
 
 interface BalanceFetcher {
@@ -31,6 +34,10 @@ export async function getPortfolioNAVDollars(client: BalanceFetcher): Promise<nu
       return 0;
     }
     const v = await client.fetchBalanceDollars();
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+      console.error(`[balance] fetchBalanceDollars returned invalid value: ${String(v)} (typeof=${typeof v}); falling back to 0 — concentration check will be skipped`);
+      return 0;
+    }
     cachedDollars = v;
     cachedAt = now;
     return v;
