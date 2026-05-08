@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-08 (Slice 2 shipped — SH-EDGE-PHASE-B cleanup, ENGINE-NAV-WIRE, SH-BACKTEST-RUNTICK wide refactor + Phase 2 adapters; SH-BACKTEST-PHASE-D filed)
+Last `/backlog-sync`: 2026-05-08 (Phase D shipped — Watcher adapters + passive fill-realism mechanical fix; SH-FILL-SIM-DIRECTIONAL + SH-PASSIVE-SELL-LIMIT filed from validation re-run)
 
 | Status | Count |
 |--------|-------|
@@ -8,10 +8,10 @@ Last `/backlog-sync`: 2026-05-08 (Slice 2 shipped — SH-EDGE-PHASE-B cleanup, E
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 3 |
+| 🧊 Tooling ecosystem (SH) | 4 |
 | 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 67 |
+| ✅ Shipped (this log) | 68 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -410,40 +410,67 @@ violated. Cost: ~1-2h.
 
 **Dependency:** none.
 
-### 🧊 SH-BACKTEST-PHASE-D — wire s-trail and synthetics adapters; passive fill realism
+_SH-BACKTEST-PHASE-D shipped 2026-05-08 — see §7._
+
+### 🧊 SH-FILL-SIM-DIRECTIONAL — `simulateFill` walks levels ascending for both buy and sell
 **Tags:** engine [backtest]
 
-**Trigger:** SH-BACKTEST-RUNTICK shipped runOneTick seams in passive,
-aggressive, exitRunner, and sTwap (PRs #120-#123), and Phase 2 wired
-runOneTick-driven adapters for `s-passive`, `s-aggressive`, `s-twap`
-(PR #124). Three loose ends remain:
+**Trigger:** discovered during the 2026-05-08 Phase D validation re-run.
+`fillSimulator.ts:222` calls `sweepBook(levels, size, maxPrice)` where
+`levels = getLiquidityLevels(book, side).sort(asc)`. For BUY this is
+correct (lowest ask first → operator gets best buy price). For SELL it
+is wrong: an operator selling N contracts hits the HIGHEST bid first
+(best price for seller), then walks down. The current behavior gives
+sellers the WORST available price, and combined with the `p <= maxPrice`
+filter, sells with limit prices at or near the operator-reachable bid
+(e.g. passive's `bestBid - walkStepCents`) silently fail to match —
+the limit is below all yes-side levels even though there's deep
+crossing liquidity.
 
-1. **s-trail adapter** — s-trail registers with the Watcher daemon (a
-   different evaluator architecture than the runner-loop strategies).
-   Wiring requires extracting a tick-callable seam from the Watcher's
-   per-position evaluator, which is its own refactor.
-2. **Synthetics adapters** — `trailing_stop`, `take_profit`, `oco`,
-   `bracket` similarly use the Watcher framework. Same approach as
-   (1).
-3. **Passive fill realism** — `passiveAdapter.ts` sets
-   `passiveTimeboxMs=0` so the inner walk loop cancels GTC orders
-   before the replay client's next `advance()` can fill them. Pricing
-   logic is exercised tick-by-tick, but `fill_count > 0` is rarely
-   achieved. Fix path: either inject a `sleepMs` seam into
-   `passive.runOneTick` deps, or restructure the passive walk loop so
-   "wait for fill" is one tick rather than an inner loop.
+**Concrete observation:** s-aggressive on KXINXU with limit=99¢ filled
+10 contracts at 14¢/contract — the LOWEST yes-side level — yielding
++131c PnL. Real-world execution at the highest yes bid (39¢) would
+yield +390c. Strategies-with-limit-99 work but are unrealistically
+pessimistic; strategies-with-limit-near-bid don't work at all.
 
-**Proposed:** (1) and (2) — extract per-position evaluator tick seam in
-`src/synthetics/watcher.ts`; build a `makeWatcherAdapter(triggerKind, params)`
-factory that drives one evaluator per harness tick. (3) — add
-`sleepMs?: (ms: number) => Promise<void>` to `PassiveRunDeps`; backtest
-adapter passes a no-op so the inner walk advances one step per harness
-tick without timeout cancellation.
+**Proposed:** in `getLiquidityLevels`, sort DESC when `order.action ===
+'sell'`; flip `priceCents > maxPrice` early-out to `priceCents < maxPrice`
+on the sell branch. Add a regression test covering: yes-side book
+[12, 13, 18, 39], sell limit=11 → fills at 39 (the highest available
+≥11); sell limit=99 → fills at 39 (still the highest available ≤99).
 
-**Cost:** ~1-2 days for (1)+(2) (Watcher seam + 4 adapters + tests).
-~2-3h for (3) (deps interface + adapter wiring + tests).
+**Cost:** ~3-4h (sort flip + filter flip + 4-6 tests + verify aggressive
+PnL improves on KXINXU fixture).
 
-**Dependency:** none — fully self-contained.
+**Dependency:** none.
+
+### 🧊 SH-PASSIVE-SELL-LIMIT — `bestAskCents` is misnamed; sell limit calculation uses wrong reference
+**Tags:** engine [shared]
+
+**Trigger:** discovered during the same 2026-05-08 Phase D validation.
+`passive.runOneTick` (and `runOneTickBacktest`) compute
+`bestAskCents = orderbook.yes.sort(asc)[0].priceCents` — the LOWEST
+yes-side level — and use `iterPrice = bestAskCents - walkStepCents`
+for sell. Under Kalshi conventions, the yes side stores yes-side BIDS
+(buyers willing to BUY yes contracts at that price), not asks. So
+`bestAskCents` is actually the lowest yes BID, and `iterPrice` ends
+up below ALL yes-side levels. This is fine in production (Kalshi
+matches at the actual best bid regardless of how low the limit is),
+but in backtest it's an unfillable order against the naive fill
+model — surfaced when SH-FILL-SIM-DIRECTIONAL is fixed.
+
+**Proposed:** rename `bestAskCents` to `bestYesLevelCents` (or similar),
+clarify in passive's docblock that for SELL the limit is set BELOW the
+operator-reachable bid (intentional: lets Kalshi take the spread to
+the operator's benefit), and document the production-vs-backtest
+divergence. OR: change the sell-side limit calculation to use a true
+best-bid reference (`bestYesLevelCents` = highest yes bid) so the same
+math works in both contexts.
+
+**Cost:** ~2-3h (rename + 1 calculation change + update tests).
+
+**Dependency:** SH-FILL-SIM-DIRECTIONAL (otherwise the new limit math
+still won't fill in backtest).
 
 ### 🧊 SH-SCANNER-WS — WebSocket transport for the multi-ticker scanner
 **Tags:** shared [engine, ops]
@@ -724,6 +751,23 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-08 — SH-BACKTEST-PHASE-D — Watcher adapters + passive fill-realism mechanical fix (3 PRs).**
+  PRs #128, #129, #130. Adds the generic `makeWatcherAdapter(buildArgs, params)`
+  factory that drives a real `Watcher` instance via `Watcher.tick()` per
+  harness tick (#128); a `passive.runOneTickBacktest()` sibling to the
+  production `runOneTick` that posts ONE GTC per tick and tracks the
+  resting order across ticks via new optional state fields (#129); five
+  thin factory wrappers (`makeSTrailWatcherAdapter`, `makeTrailingStopAdapter`,
+  `makeTakeProfitAdapter`, `makeOcoAdapter`, `makeBracketAdapter`) that
+  wire `s-trail` + 4 synthetics through `harness.ts:resolveAdapter` (#130).
+  All four `// TODO(SH-BACKTEST Phase D)` markers in harness.ts removed.
+  Validation re-run on KXINXU recording (`docs/superpowers/specs/2026-05-08-phase-d-validation-results.md`)
+  confirmed: all 5 new strategy IDs resolve and run; trailing_stop fires
+  + sells via Watcher; passive's mechanical 0-fill issue is fixed but
+  end-to-end fill realism still blocked by 2 deeper pre-existing bugs
+  filed as SH-FILL-SIM-DIRECTIONAL + SH-PASSIVE-SELL-LIMIT. Total ~50 new
+  tests; full suite at 2001 passing.
 
 - **2026-05-08 — SH-BACKTEST-RUNTICK wide refactor + Phase 2 adapters (6 PRs).**
   PRs #120, #121, #122, #123, #124, #125. Phase 1 extracted `runOneTick()`
