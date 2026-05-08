@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-08 (Phase D shipped — Watcher adapters + passive fill-realism mechanical fix; SH-FILL-SIM-DIRECTIONAL + SH-PASSIVE-SELL-LIMIT filed from validation re-run)
+Last `/backlog-sync`: 2026-05-08 (SH-FILL-SIM-DIRECTIONAL shipped in PR #132; SH-PASSIVE-SELL-LIMIT demoted to naming-cleanup since fill-sim fix resolved the functional bug)
 
 | Status | Count |
 |--------|-------|
@@ -412,8 +412,12 @@ violated. Cost: ~1-2h.
 
 _SH-BACKTEST-PHASE-D shipped 2026-05-08 — see §7._
 
-### 🧊 SH-FILL-SIM-DIRECTIONAL — `simulateFill` walks levels ascending for both buy and sell
+### ✅ SH-FILL-SIM-DIRECTIONAL — shipped 2026-05-08 in PR #132
 **Tags:** engine [backtest]
+
+`SimOrder` now carries `action`; `getLiquidityLevels` reverse-sorts for sells; `sweepBook` treats `limitPriceCents` as a floor on sell. `replayClient` propagates `payload.action` through both order paths. Aggressive-sweep callsites in `harness.ts` (stop_loss inline) and `watcherAdapter.ts` (fireHook) flipped from `yes/no_price=99` → `1` to match new floor semantics. All 47 backtest unit tests pass.
+
+(Original ticket below for history.)
 
 **Trigger:** discovered during the 2026-05-08 Phase D validation re-run.
 `fillSimulator.ts:222` calls `sweepBook(levels, size, maxPrice)` where
@@ -444,8 +448,12 @@ PnL improves on KXINXU fixture).
 
 **Dependency:** none.
 
-### 🧊 SH-PASSIVE-SELL-LIMIT — `bestAskCents` is misnamed; sell limit calculation uses wrong reference
+### 🟡 SH-PASSIVE-SELL-LIMIT — `bestAskCents` naming cleanup (functional bug resolved by SH-FILL-SIM-DIRECTIONAL)
 **Tags:** engine [shared]
+
+**Status update 2026-05-08:** with PR #132 landed, the sell-side fill semantics now treat `limitPriceCents` as a floor. Passive's existing `iterPrice = bestAskCents - walkStepCents` (e.g. 11¢ when lowest yes level is 12¢) works correctly under the new sweep — walks descending and fills at the highest crossing yes level. The remaining work is a pure naming/docs cleanup (variable should be `bestYesLevelCents` and the docblock should explain why a sell limit deliberately sits below all visible yes levels). Demoted from blocker to cleanup; no production-vs-backtest semantic divergence remains.
+
+(Original ticket below for history.)
 
 **Trigger:** discovered during the same 2026-05-08 Phase D validation.
 `passive.runOneTick` (and `runOneTickBacktest`) compute
