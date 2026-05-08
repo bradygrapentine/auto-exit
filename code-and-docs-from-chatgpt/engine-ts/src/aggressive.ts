@@ -37,6 +37,20 @@ export interface AggressiveResult {
   reason: 'filled' | 'partial' | 'unfilled';
 }
 
+// ── Tick outcome ───────────────────────────────────────────────────────────────
+
+/**
+ * Outcome of a single runOneTick() call.
+ * - 'done'       : order placed & reconciled; result carries fill details.
+ * - 'break_loop' : a non-throwing break condition (empty book, no liquidity).
+ *
+ * Note: the aggressive strategy is single-shot (no sweep loop), so 'continue'
+ * is intentionally absent. The loop in run() terminates after the first tick.
+ */
+export type AggressiveTickOutcome =
+  | { kind: 'done'; result: AggressiveResult }
+  | { kind: 'break_loop'; reason: string };
+
 // ── Runner ─────────────────────────────────────────────────────────────────────
 
 export class AggressiveRunner {
@@ -51,13 +65,15 @@ export class AggressiveRunner {
     if (config.size <= 0) throw new Error('size must be > 0');
   }
 
-  async run(): Promise<AggressiveResult> {
-    this.journal?.append(jk('aggressive_started'), {
-      ticker: this.config.ticker,
-      action: this.config.action,
-      size: this.config.size,
-    });
-
+  /**
+   * Execute one tick of the aggressive sweep: fetch book, compute limit price,
+   * post IoC order, reconcile fill, journal entries.
+   *
+   * Returns AggressiveTickOutcome:
+   *  - { kind: 'done'; result }   — order placed and reconciled (loop should stop).
+   *  - { kind: 'break_loop'; reason } — empty book or no liquidity; loop should stop.
+   */
+  async runOneTick(): Promise<AggressiveTickOutcome> {
     const book = await this.client.getOrderbook(this.config.ticker, 5);
 
     // Determine limit price.
@@ -67,12 +83,16 @@ export class AggressiveRunner {
     if (this.config.action === 'sell') {
       const levels = book.yes.filter((l) => l.size > 0).sort((a, b) => b.priceCents - a.priceCents);
       const topBid = levels[0]?.priceCents;
-      if (topBid === undefined) throw new Error('S2 aggressive: empty yes-side book — cannot sell');
+      if (topBid === undefined) {
+        return { kind: 'break_loop', reason: 'empty_yes_book' };
+      }
       limitPriceCents = this.config.oneTickIn ? Math.max(1, topBid - 1) : topBid;
     } else {
       const levels = book.no.filter((l) => l.size > 0).sort((a, b) => b.priceCents - a.priceCents);
       const topNoBid = levels[0]?.priceCents;
-      if (topNoBid === undefined) throw new Error('S2 aggressive: empty no-side book — cannot buy');
+      if (topNoBid === undefined) {
+        return { kind: 'break_loop', reason: 'empty_no_book' };
+      }
       const ask = 100 - topNoBid;
       limitPriceCents = this.config.oneTickIn ? Math.min(99, ask + 1) : ask;
     }
@@ -111,6 +131,32 @@ export class AggressiveRunner {
       reason,
     });
 
-    return { filled: order.filledCount, orderId: order.orderId, reason };
+    return {
+      kind: 'done',
+      result: { filled: order.filledCount, orderId: order.orderId, reason },
+    };
+  }
+
+  async run(): Promise<AggressiveResult> {
+    this.journal?.append(jk('aggressive_started'), {
+      ticker: this.config.ticker,
+      action: this.config.action,
+      size: this.config.size,
+    });
+
+    const outcome = await this.runOneTick();
+
+    if (outcome.kind === 'break_loop') {
+      // Re-raise as errors to preserve original throwing behaviour.
+      if (outcome.reason === 'empty_yes_book') {
+        throw new Error('S2 aggressive: empty yes-side book — cannot sell');
+      }
+      if (outcome.reason === 'empty_no_book') {
+        throw new Error('S2 aggressive: empty no-side book — cannot buy');
+      }
+      throw new Error(`S2 aggressive: unexpected break: ${outcome.reason}`);
+    }
+
+    return outcome.result;
   }
 }
