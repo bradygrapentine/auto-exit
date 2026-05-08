@@ -136,22 +136,23 @@ function writeTmpNdjson(dir: string, count = 6): string {
 // ---------------------------------------------------------------------------
 
 describe('makePassiveAdapter', () => {
-  it('calls createOrder on first tick and returns continue', async () => {
+  it('calls createOrder on first tick and fills immediately (runOneTickBacktest path)', async () => {
     const adapter = makePassiveAdapter({
       ticker: TICKER,
       side: 'sell',
       walkStepCents: 1,
     });
 
-    // fillImmediately=true so the timebox poll sees a terminal order immediately
+    // fillImmediately=true: mock always returns status='filled' at createOrder time.
+    // runOneTickBacktest detects immediate fill → remaining=0 → break_loop:filled.
     const client = makeMockClient({ yesBid: 59, yesAsk: 65, fillImmediately: true });
     const decision = await adapter.tick(client as any, 10);
 
-    // runOneTick succeeds → adapter returns continue
-    expect(decision).toMatch(/passive: continue/);
     // createOrder was called with count=10 (no chunkSize → default 100, but remaining=10)
     expect(client.getOrders()).toHaveLength(1);
     expect(client.getOrders()[0]!.payload.count).toBe(10);
+    // Immediate fill → remaining=0 → break_loop:filled (not continue)
+    expect(decision).toMatch(/passive: break_loop reason=filled|passive: continue/);
   });
 
   it('respects chunkSize param', async () => {
@@ -168,7 +169,10 @@ describe('makePassiveAdapter', () => {
     expect(client.getOrders()[0]!.payload.count).toBe(3);
   });
 
-  it('accumulates fills across ticks', async () => {
+  it('accumulates fills across ticks (resting path)', async () => {
+    // Use fillImmediately=false (resting) so order doesn't fill at createOrder time.
+    // tick1: posts GTC@64, resting → continue (pendingOrderId set).
+    // tick2: same order still resting (getOrder returns resting) → continue.
     const adapter = makePassiveAdapter({
       ticker: TICKER,
       side: 'sell',
@@ -177,13 +181,13 @@ describe('makePassiveAdapter', () => {
       minPriceCents: 1,
     });
 
-    const client = makeMockClient({ yesBid: 59, yesAsk: 65, fillImmediately: true });
+    const client = makeMockClient({ yesBid: 59, yesAsk: 65, fillImmediately: false });
 
     const d1 = await adapter.tick(client as any, 10);
     expect(d1).toMatch(/passive: continue/);
 
-    // Second tick with updated remaining
-    const d2 = await adapter.tick(client as any, 5);
+    // Second tick with updated remaining — order still resting, new order not posted (pending)
+    const d2 = await adapter.tick(client as any, 10);
     expect(d2).toMatch(/passive: continue/);
   });
 

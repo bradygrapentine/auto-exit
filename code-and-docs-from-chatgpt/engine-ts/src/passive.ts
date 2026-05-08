@@ -124,6 +124,10 @@ export interface PassiveRunState {
   totalSubmittedShares: number;
   guardHit: boolean;
   oneSidedWarned: boolean;
+  /** Backtest mode only: orderId of the resting GTC carried across ticks. */
+  pendingOrderId?: string;
+  /** Backtest mode only: limit price of the resting GTC, used to decide cancel/replace. */
+  pendingPriceCents?: number;
 }
 
 /** Everything runOneTick needs that isn't the mutable state. */
@@ -377,6 +381,223 @@ export async function runOneTick(
       }
     }
   } // end inner walk loop
+
+  return { kind: 'continue' };
+}
+
+/**
+ * Backtest-mode passive runOneTick. Designed for tick-by-tick replay drivers.
+ *
+ * Differences from production runOneTick:
+ *   - No inner walk loop. Each call posts ONE GTC (or checks existing one),
+ *     returns continue. Multiple harness ticks accumulate fills naturally.
+ *   - Tracks resting order across ticks via state.pendingOrderId / pendingPriceCents.
+ *   - Reuses guard checks (spread / one-sided / floor / ceiling / safety_cap).
+ *
+ * The adapter (passiveAdapter.ts) calls this instead of runOneTick so that
+ * resting GTC orders are not immediately cancelled before the replay client's
+ * naive fill model can register the fill. passiveTimeboxMs is irrelevant here.
+ */
+export async function runOneTickBacktest(
+  state: PassiveRunState,
+  deps: PassiveRunDeps,
+): Promise<PassiveTickOutcome> {
+  if (state.remaining <= 0) return { kind: 'break_loop', reason: 'filled' };
+
+  const { client, config, journal, chunkSize, walkStepCents,
+          submittedCap, effectiveFloorCents, kalshiSide, roundCents } = deps;
+
+  // ── 1. Fetch orderbook ──────────────────────────────────────────────────────
+  const orderbook = await client.getOrderbook(config.ticker, 20);
+
+  const yesAsks = orderbook.yes
+    .filter((l) => l.size > 0)
+    .sort((a, b) => a.priceCents - b.priceCents);
+  const noAsks = orderbook.no
+    .filter((l) => l.size > 0)
+    .sort((a, b) => a.priceCents - b.priceCents);
+
+  const bestAskCents = yesAsks[0]?.priceCents ?? 99;
+  const bestBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : 1;
+
+  // One-sided book warning (same as runOneTick)
+  const counterpartyEmpty =
+    config.side === 'sell' ? noAsks.length === 0 : yesAsks.length === 0;
+  if (counterpartyEmpty && !state.oneSidedWarned) {
+    journal.append(jk('passive_no_opposite_liquidity'), {
+      side: config.side,
+      bestAskCents,
+      bestBidCents,
+    });
+    state.oneSidedWarned = true;
+  }
+
+  const spreadCents = bestAskCents - bestBidCents;
+
+  // ── 2. Check pending order status FIRST — always drain a fill before spread/guard checks.
+  //       If a resting GTC filled while the spread tightened, we must record the fill.
+  if (state.pendingOrderId) {
+    let statusResult: OrderResult;
+    try {
+      statusResult = await client.getOrder(state.pendingOrderId);
+    } catch {
+      // Can't query — treat as still resting; next tick will retry
+      return { kind: 'continue' };
+    }
+
+    if (statusResult.status === 'filled' || statusResult.remainingCount <= 0) {
+      const filledNow = statusResult.filledCount;
+      const priceCentsUsed = state.pendingPriceCents ?? bestAskCents;
+      state.filled += filledNow;
+      state.remaining = Math.max(0, state.remaining - filledNow);
+      if (statusResult.takerFeesDollars) state.feesIncurredDollars += statusResult.takerFeesDollars;
+      state.totalNotionalCents += filledNow * priceCentsUsed;
+      state.pendingOrderId = undefined;
+      state.pendingPriceCents = undefined;
+      if (state.remaining <= 0) return { kind: 'break_loop', reason: 'filled' };
+    } else if (statusResult.status === 'canceled') {
+      state.pendingOrderId = undefined;
+      state.pendingPriceCents = undefined;
+    }
+    // else: still resting — fall through to spread/price checks
+  }
+
+  // ── 3. Spread check ─────────────────────────────────────────────────────────
+  if (spreadCents < walkStepCents) {
+    // Cancel any resting order before stopping — spread too tight to repost.
+    if (state.pendingOrderId) {
+      try { await client.cancelOrder(state.pendingOrderId); } catch { /* ignore */ }
+      state.pendingOrderId = undefined;
+      state.pendingPriceCents = undefined;
+    }
+    journal.append(jk('passive_spread_too_tight'), {
+      bestBidCents,
+      bestAskCents,
+      spreadCents,
+    });
+    return { kind: 'break_loop', reason: 'spread_too_tight' };
+  }
+
+  // ── 4. Decide this tick's posting price ─────────────────────────────────────
+  let iterPrice: number;
+  if (config.useMidpointPeg) {
+    const offset = config.pegOffsetCents ?? 1;
+    const pegged = computePeggedPrice(
+      config.side === 'sell' ? 'sell' : 'buy',
+      orderbook,
+      offset,
+      effectiveFloorCents,
+    );
+    iterPrice = pegged !== null
+      ? pegged
+      : roundCents(config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents);
+  } else {
+    iterPrice = roundCents(
+      config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents,
+    );
+  }
+
+  // ── 5. Guard: sell floor ─────────────────────────────────────────────────────
+  if (config.side === 'sell' && iterPrice < effectiveFloorCents) {
+    journal.append(jk('passive_floor_hit'), { iterPrice, effectiveFloorCents });
+    state.guardHit = true;
+    return { kind: 'break_loop', reason: 'floor_hit' };
+  }
+
+  // ── 6. Guard: buy ceiling ────────────────────────────────────────────────────
+  if (
+    config.side === 'buy' &&
+    config.maxPriceCents !== undefined &&
+    iterPrice > config.maxPriceCents
+  ) {
+    journal.append(jk('passive_ceiling_hit'), { iterPrice, maxPriceCents: config.maxPriceCents });
+    state.guardHit = true;
+    return { kind: 'break_loop', reason: 'ceiling_hit' };
+  }
+
+  // ── 7. Cancel+replace if price decision changed ──────────────────────────────
+  if (state.pendingOrderId && state.pendingPriceCents !== iterPrice) {
+    try {
+      const cancelled = await client.cancelOrder(state.pendingOrderId);
+      const cancelFilled = Math.max(0, Math.min(state.remaining, cancelled.filledCount));
+      if (cancelFilled > 0) {
+        state.filled += cancelFilled;
+        state.remaining = Math.max(0, state.remaining - cancelFilled);
+        state.totalNotionalCents += cancelFilled * (state.pendingPriceCents ?? iterPrice);
+        if (cancelled.takerFeesDollars) state.feesIncurredDollars += cancelled.takerFeesDollars;
+      }
+    } catch {
+      // Ignore cancel errors
+    }
+    state.pendingOrderId = undefined;
+    state.pendingPriceCents = undefined;
+    if (state.remaining <= 0) return { kind: 'break_loop', reason: 'filled' };
+  }
+
+  // ── 8. Post GTC if no pending order ─────────────────────────────────────────
+  if (!state.pendingOrderId) {
+    const chunk = Math.min(chunkSize, state.remaining);
+
+    // Guard: safety cap
+    if (state.totalSubmittedShares + chunk > submittedCap) {
+      journal.append(jk('passive_safety_cap_breached'), {
+        totalSubmittedShares: state.totalSubmittedShares,
+        attemptedChunk: chunk,
+        cap: submittedCap,
+      });
+      state.guardHit = true;
+      return { kind: 'break_loop', reason: 'safety_cap_breached' };
+    }
+
+    const clientOrderId = `kea-passive-bt-${Date.now()}-${crypto.randomUUID()}`;
+    const payload: OrderPayload = {
+      ticker: config.ticker,
+      action: config.side === 'sell' ? 'sell' : 'buy',
+      side: kalshiSide,
+      count: chunk,
+      type: 'limit',
+      reduce_only: false,
+      time_in_force: 'good_till_canceled',
+      client_order_id: clientOrderId,
+      yes_price_dollars:
+        kalshiSide === 'yes' ? centsToPrice(iterPrice) : undefined,
+      no_price_dollars:
+        kalshiSide === 'no' ? centsToPrice(iterPrice) : undefined,
+    };
+
+    journal.append('order_intent', { clientOrderId, payload });
+
+    state.totalSubmittedShares += chunk;
+    const result = await client.createOrder(payload);
+
+    journal.append('order_placed', {
+      orderId: result.orderId,
+      payload,
+      decisionRequested: chunk,
+      backtestMode: true,
+    });
+
+    if (result.status === 'filled' || result.remainingCount <= 0) {
+      // Replay client filled immediately at createOrder time
+      const filledNow = result.filledCount;
+      state.filled += filledNow;
+      state.remaining = Math.max(0, state.remaining - filledNow);
+      state.totalNotionalCents += filledNow * iterPrice;
+      if (result.takerFeesDollars) state.feesIncurredDollars += result.takerFeesDollars;
+      journal.append('order_reconciled', {
+        orderId: result.orderId,
+        status: result.status,
+        filled: filledNow,
+        requested: chunk,
+        remainingPosition: state.remaining,
+      });
+      if (state.remaining <= 0) return { kind: 'break_loop', reason: 'filled' };
+    } else {
+      // Order is resting — carry across ticks
+      state.pendingOrderId = result.orderId;
+      state.pendingPriceCents = iterPrice;
+    }
+  }
 
   return { kind: 'continue' };
 }
