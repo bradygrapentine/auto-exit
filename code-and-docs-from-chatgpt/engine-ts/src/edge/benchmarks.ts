@@ -41,12 +41,10 @@ export function immediateExitBenchmark(fire: Fire): number {
 /**
  * Optimal-hindsight benchmark: best possible exit mid within the trigger window.
  *
- * For take-profit style fires (sell at peak): use peakBidCents.
- * For stop-loss style fires (sell at trough): use the lowest exit fill as proxy.
- * Falls back to the realized exit WAVG if neither is available.
- *
- * TODO(SH-EDGE Phase B): when SH-WATCH emits richer peakBidCents / troughBidCents
- * in 'synthetic_fired' data, use those directly.
+ * For take-profit / trailing fires: use peakBidCents (recorded high-water mark
+ * at trigger fire time, populated by SH-WATCH watchers as of PR #112).
+ * For stop-loss / trailing-stop fires: use lowest exit fill as proxy.
+ * Falls back to decisionMidCents otherwise.
  */
 export function optimalHindsightBenchmark(fire: Fire): number {
   if (fire.peakBidCents !== undefined) return fire.peakBidCents;

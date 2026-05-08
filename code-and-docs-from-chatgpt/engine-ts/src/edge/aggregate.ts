@@ -129,8 +129,6 @@ export function groupByMarket(fires: Fire[]): MarketGroup[] {
  *
  * Bins: tooEarly (exit < optimalHindsight − 1¢), onTime (±1¢), tooLate (> +1¢).
  * Only fires with triggerArmedAt set are included.
- *
- * TODO(SH-EDGE Phase B): use actual optimalHindsightMidCents from SH-WATCH when available.
  */
 export function triggerHistogram(fires: Fire[]): TriggerHistogram[] {
   const map = new Map<string, TriggerHistogram>();
