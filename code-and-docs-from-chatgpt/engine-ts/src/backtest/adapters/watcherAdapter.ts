@@ -29,7 +29,7 @@ import { buildSTrailArgs } from '../../strategies/sTrail.js';
 // Types
 // ---------------------------------------------------------------------------
 
-type ArgsBuilder = (params: Record<string, unknown>) => RegisterArgs;
+type ArgsBuilder = (params: Record<string, unknown>, remainingQty: number) => RegisterArgs;
 
 // Minimal WatcherConfig sufficient for backtest use (no real API credentials needed).
 const BACKTEST_WATCHER_CONFIG: WatcherConfig = {
@@ -93,7 +93,7 @@ export function makeWatcherAdapter(
           fired = true;
         });
 
-        const args = buildArgs(params);
+        const args = buildArgs(params, remainingQty);
         synthId = watcher.register(args);
       }
 
@@ -121,10 +121,10 @@ export function makeWatcherAdapter(
  * STrailOpts requires: ticker, side, positionSize, trailCents.
  */
 export function makeSTrailWatcherAdapter(params: Record<string, unknown>): StrategyAdapter {
-  return makeWatcherAdapter((p) => {
+  return makeWatcherAdapter((p, remainingQty) => {
     const ticker = (p['ticker'] as string | undefined) ?? '';
     const side = (p['side'] as 'yes' | 'no' | undefined) ?? 'yes';
-    const positionSize = (p['size'] as number | undefined) ?? 0;
+    const positionSize = (p['size'] as number | undefined) ?? remainingQty;
     const trailCents = (p['trailCents'] as number | undefined) ?? 5;
     const floorPriceCents = p['floorPriceCents'] as number | undefined;
     const autoCancelOnZeroPosition = p['autoCancelOnZeroPosition'] as boolean | undefined;
@@ -137,11 +137,11 @@ export function makeSTrailWatcherAdapter(params: Record<string, unknown>): Strat
  * params: { ticker, side, size, trailCents, executionStrategy?, floorPriceCents? }
  */
 export function makeTrailingStopAdapter(params: Record<string, unknown>): StrategyAdapter {
-  return makeWatcherAdapter((p) => ({
+  return makeWatcherAdapter((p, remainingQty) => ({
     kind: 'trailing_stop',
     ticker: (p['ticker'] as string | undefined) ?? '',
     side: (p['side'] as 'yes' | 'no' | undefined) ?? 'yes',
-    positionSize: (p['size'] as number | undefined) ?? 0,
+    positionSize: (p['size'] as number | undefined) ?? remainingQty,
     params: {
       trailCents: (p['trailCents'] as number | undefined) ?? 5,
       executionStrategy: p['executionStrategy'] as 'losing_exit' | 'aggressive' | undefined,
@@ -155,11 +155,11 @@ export function makeTrailingStopAdapter(params: Record<string, unknown>): Strate
  * params: { ticker, side, size, triggerPriceCents?, executionStrategy? }
  */
 export function makeTakeProfitAdapter(params: Record<string, unknown>): StrategyAdapter {
-  return makeWatcherAdapter((p) => ({
+  return makeWatcherAdapter((p, remainingQty) => ({
     kind: 'take_profit',
     ticker: (p['ticker'] as string | undefined) ?? '',
     side: (p['side'] as 'yes' | 'no' | undefined) ?? 'yes',
-    positionSize: (p['size'] as number | undefined) ?? 0,
+    positionSize: (p['size'] as number | undefined) ?? remainingQty,
     params: {
       triggerPriceCents: (p['triggerPriceCents'] as number | undefined) ?? 75,
       executionStrategy: p['executionStrategy'] as 'scale_out' | 'passive' | 'aggressive' | undefined,
@@ -173,11 +173,11 @@ export function makeTakeProfitAdapter(params: Record<string, unknown>): Strategy
  * params: { ticker, side, size, targetPriceCents?, stopPriceCents? }
  */
 export function makeOcoAdapter(params: Record<string, unknown>): StrategyAdapter {
-  return makeWatcherAdapter((p) => ({
+  return makeWatcherAdapter((p, remainingQty) => ({
     kind: 'oco',
     ticker: (p['ticker'] as string | undefined) ?? '',
     side: (p['side'] as 'yes' | 'no' | undefined) ?? 'yes',
-    positionSize: (p['size'] as number | undefined) ?? 0,
+    positionSize: (p['size'] as number | undefined) ?? remainingQty,
     params: {
       legs: [
         { kind: 'take_profit', params: { triggerPriceCents: (p['targetPriceCents'] as number | undefined) ?? 75 } },
@@ -193,11 +193,11 @@ export function makeOcoAdapter(params: Record<string, unknown>): StrategyAdapter
  * params: { ticker, side, size, takeProfitCents?, stopLossCents? }
  */
 export function makeBracketAdapter(params: Record<string, unknown>): StrategyAdapter {
-  return makeWatcherAdapter((p) => ({
+  return makeWatcherAdapter((p, remainingQty) => ({
     kind: 'bracket',
     ticker: (p['ticker'] as string | undefined) ?? '',
     side: (p['side'] as 'yes' | 'no' | undefined) ?? 'yes',
-    positionSize: (p['size'] as number | undefined) ?? 0,
+    positionSize: (p['size'] as number | undefined) ?? remainingQty,
     params: {
       takeProfitCents: (p['takeProfitCents'] as number | undefined) ?? 75,
       stopLossCents:   (p['stopLossCents']   as number | undefined) ?? 30,
