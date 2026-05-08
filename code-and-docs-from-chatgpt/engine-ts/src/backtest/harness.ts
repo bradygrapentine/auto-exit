@@ -39,6 +39,7 @@ import {
   makeOcoAdapter,
   makeBracketAdapter,
 } from './adapters/watcherAdapter.js';
+import { makeAutoAdapter } from './adapters/autoAdapter.js';
 
 // ---------------------------------------------------------------------------
 // §8 fidelity caveats — appended to every report
@@ -81,7 +82,7 @@ export interface StrategyAdapter {
  * Evaluates: if best yes bid < stopPriceCents → market-sell all remaining.
  * params: { ticker: string, side: 'yes'|'no', stopPriceCents: number, size: number }
  */
-function makeStopLossAdapter(params: Record<string, unknown>): StrategyAdapter {
+export function makeStopLossAdapter(params: Record<string, unknown>): StrategyAdapter {
   const ticker = (params['ticker'] as string | undefined) ?? '';
   const side = (params['side'] as 'yes' | 'no' | undefined) ?? 'yes';
   const stopCents = (params['stopPriceCents'] as number | undefined) ?? 0;
@@ -164,10 +165,13 @@ function resolveAdapter(
     case 'bracket':
       // Phase D: bracket composite synthetic via Watcher (take_profit + stop_loss legs).
       return makeBracketAdapter(params);
+    case 'auto':
+      // Regime-aware: buffers warmup ticks, detects regime, delegates to per-regime strategy.
+      return makeAutoAdapter(params);
     default:
       throw new Error(
         `runBacktest: unknown strategyId '${strategyId}'. ` +
-          `Wired: stop_loss, stub, s-passive, s-aggressive, s-twap, s-trail, trailing_stop, take_profit, oco, bracket. ` +
+          `Wired: stop_loss, stub, s-passive, s-aggressive, s-twap, s-trail, trailing_stop, take_profit, oco, bracket, auto. ` +
           `None pending.`,
       );
   }
