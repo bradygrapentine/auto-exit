@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-07 (post-cluster hygiene — scanner + pre-live-backtest cluster shipped; SH-BACKTEST-RUNTICK + ENGINE-NAV-WIRE filed)
+Last `/backlog-sync`: 2026-05-08 (Slice 2 shipped — SH-EDGE-PHASE-B cleanup, ENGINE-NAV-WIRE, SH-BACKTEST-RUNTICK wide refactor + Phase 2 adapters; SH-BACKTEST-PHASE-D filed)
 
 | Status | Count |
 |--------|-------|
@@ -8,10 +8,10 @@ Last `/backlog-sync`: 2026-05-07 (post-cluster hygiene — scanner + pre-live-ba
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 4 |
+| 🧊 Tooling ecosystem (SH) | 2 |
 | 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 65 |
+| ✅ Shipped (this log) | 67 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -382,47 +382,44 @@ _SH-RECOMMENDER EV/Kelly/strategy recommender shipped 2026-05-06 — see §7._
 
 _SH-SCANNER-RATELIMIT shipped 2026-05-07 — see §7._
 
-### 🧊 SH-BACKTEST-RUNTICK — `runOneTick()` seam in exitRunner / buyRunner
+_SH-BACKTEST-RUNTICK shipped 2026-05-08 — see §7._
+
+_ENGINE-NAV-WIRE shipped 2026-05-08 — see §7._
+
+### 🧊 SH-BACKTEST-PHASE-D — wire s-trail and synthetics adapters; passive fill realism
 **Tags:** engine [backtest]
 
-**Trigger:** SH-BACKTEST Phase C delivered the harness CLI surface (PR
-#114) and one ExitRunner adapter (`s-passive` in PR #115) but four more
-adapters (`s-trail`, `s-aggressive`, `s-twap`, and synthetics
-`trailing_stop` / `take_profit` / `oco` / `bracket`) carry
-`TODO(SH-BACKTEST Phase C)` markers in `src/backtest/harness.ts:131-135`.
-The blocker is that `ExitRunner.run()` and `BuyRunner.run()` are
-blocking loops with internal `sleep()` / timebox polling — there is no
-single-tick callable seam. Cloning each strategy's pricing logic
-into `src/backtest/adapters/*.ts` (as `s-passive` does) duplicates code
-and risks divergence as the live runners evolve.
+**Trigger:** SH-BACKTEST-RUNTICK shipped runOneTick seams in passive,
+aggressive, exitRunner, and sTwap (PRs #120-#123), and Phase 2 wired
+runOneTick-driven adapters for `s-passive`, `s-aggressive`, `s-twap`
+(PR #124). Three loose ends remain:
 
-**Proposed:** extract a `runOneTick(state, snapshot, now)` pure function
-from each runner. The blocking `run()` becomes `while (!done) { state =
-runOneTick(...); await sleep(...); }`. Backtest adapters call
-`runOneTick` directly with replayed snapshots, no mock sleep needed.
+1. **s-trail adapter** — s-trail registers with the Watcher daemon (a
+   different evaluator architecture than the runner-loop strategies).
+   Wiring requires extracting a tick-callable seam from the Watcher's
+   per-position evaluator, which is its own refactor.
+2. **Synthetics adapters** — `trailing_stop`, `take_profit`, `oco`,
+   `bracket` similarly use the Watcher framework. Same approach as
+   (1).
+3. **Passive fill realism** — `passiveAdapter.ts` sets
+   `passiveTimeboxMs=0` so the inner walk loop cancels GTC orders
+   before the replay client's next `advance()` can fill them. Pricing
+   logic is exercised tick-by-tick, but `fill_count > 0` is rarely
+   achieved. Fix path: either inject a `sleepMs` seam into
+   `passive.runOneTick` deps, or restructure the passive walk loop so
+   "wait for fill" is one tick rather than an inner loop.
 
-**Cost:** ~1-2 days. ExitRunner is the larger lift; BuyRunner mirrors.
-Each adapter then collapses to ~30 lines.
+**Proposed:** (1) and (2) — extract per-position evaluator tick seam in
+`src/synthetics/watcher.ts`; build a `makeWatcherAdapter(triggerKind, params)`
+factory that drives one evaluator per harness tick. (3) — add
+`sleepMs?: (ms: number) => Promise<void>` to `PassiveRunDeps`; backtest
+adapter passes a no-op so the inner walk advances one step per harness
+tick without timeout cancellation.
 
-**Dependency:** none.
+**Cost:** ~1-2 days for (1)+(2) (Watcher seam + 4 adapters + tests).
+~2-3h for (3) (deps interface + adapter wiring + tests).
 
-### 🧊 ENGINE-NAV-WIRE — pass real `portfolioNAVDollars` to risk gate
-**Tags:** engine [shared]
-
-**Trigger:** `buyRunner.ts:220` and `exitRunner.ts:375` both pass
-`portfolioNAVDollars: 0` into the SH-2 pre-trade risk check, which
-short-circuits the concentration-cap check (0 NAV → all positions
-flagged or no positions flagged depending on threshold semantics).
-Need to call `kalshiClient.fetchBalance()` (already implemented per
-SH-2 design) on runner startup and at each tick.
-
-**Proposed:** add `getPortfolioNAVDollars()` helper in `src/balance.ts`
-that wraps `fetchBalance` with a short TTL cache (10s); call from both
-runners before invoking the risk gate.
-
-**Cost:** ~2-3h (helper + cache + 2 wire-ups + tests).
-
-**Dependency:** none — `fetchBalance` already shipped in SH-2.
+**Dependency:** none — fully self-contained.
 
 ### 🧊 SH-SCANNER-WS — WebSocket transport for the multi-ticker scanner
 **Tags:** shared [engine, ops]
@@ -703,6 +700,34 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-08 — SH-BACKTEST-RUNTICK wide refactor + Phase 2 adapters (6 PRs).**
+  PRs #120, #121, #122, #123, #124, #125. Phase 1 extracted `runOneTick()`
+  seams from all four runners (4 parallel Sonnet subagents on file-disjoint
+  worktrees): `ExitRunner.runOneTick` (#120, 5 break_loop reasons),
+  `AggressiveRunner.runOneTick` (#121, single-shot done|break_loop),
+  `passive.runOneTick` (#122, function-based with PassiveRunState +
+  PassiveRunDeps), `STwapRunner.runOneTick` (#123, takes STwapTickState
+  for interval-by-interval scheduling). Phase 2 (#124) wired
+  runOneTick-driven adapters in `src/backtest/adapters/`:
+  `passiveAdapter.ts` replaces the PR #115 clone, plus new
+  `aggressiveAdapter.ts` and `twapAdapter.ts`. `harness.ts:resolveAdapter`
+  now wires s-passive, s-aggressive, s-twap (s-trail + synthetics deferred
+  to SH-BACKTEST-PHASE-D — Watcher-based evaluator architecture). Audit
+  follow-up (#125) closed a silent `catch {}` in twap's passiveInvoke,
+  fixed an `aggressive done = true` ordering bug, removed dead code, and
+  fixed a misleading comment. Total: +2070 LOC, ~50 new tests, full suite
+  green at 1976.
+
+- **2026-05-08 — ENGINE-NAV-WIRE — real portfolioNAVDollars in SH-2 risk gate.**
+  PRs #118, #119. Added `KalshiClient.fetchBalanceDollars()` and
+  `src/balance.ts` (10s TTL cache via `getPortfolioNAVDollars(client)`),
+  replaced `portfolioNAVDollars: 0` placeholders in both runners.
+  Audit (#119) added strict validation — NaN/Infinity/string/null/negative
+  responses now log + return 0 deterministically rather than silently
+  bypassing the SH-2 concentration cap (`safety.ts:222` gates on
+  `portfolioNAVDollars > 0`, and `NaN > 0` is false → check would skip).
+  10 new tests cover the validation paths.
 
 - **2026-05-07 — Pre-live-backtest cluster (4 PRs).** PRs #112, #113, #114, #115.
   #112 SH-EDGE: `synthetic_fired` journal entries now include `peakBidCents`
