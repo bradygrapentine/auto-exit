@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { Journal, generateJobId } from './journal.js';
 import { getSafety, checkPreTradeRisk, appendRealizedLoss } from './safety.js';
+import { getPortfolioNAVDollars } from './balance.js';
 import { chooseChunkSize } from './runnerUtils.js';
 import type { BuyConfig, BuyResult, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, SafetyConfig, TcaEntry } from './types.js';
 
@@ -214,10 +215,11 @@ export class BuyRunner {
       // Use fallback price of 0.5 ($0.50) when no live price available.
       const fallbackPriceCents = 50;
       const sizeDollars = this.config.size * (fallbackPriceCents / 100);
+      const navDollars = await getPortfolioNAVDollars(this.client);
       await checkPreTradeRisk({
         ticker: this.config.ticker,
         sizeDollars,
-        portfolioNAVDollars: 0, // TODO: pass real NAV when fetchBalance is available
+        portfolioNAVDollars: navDollars,
         safety: safetySnapshot,
       });
 
