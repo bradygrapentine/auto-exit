@@ -7,6 +7,10 @@ import { mergeIntoExitConfig, getSafety, checkPreTradeRisk, appendRealizedLoss }
 import { getPortfolioNAVDollars } from './balance.js';
 import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, Position, TcaEntry } from './types.js';
 
+export type ExitTickOutcome =
+  | { kind: 'continue' }
+  | { kind: 'break_loop'; reason: 'kill_switch' | 'max_orders' | 'safety_cap' | 'gtc_resting' | 'stop_requested' };
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export interface ExitRunnerOptions {
@@ -322,6 +326,154 @@ export class ExitRunner {
     }
   }
 
+  /**
+   * Execute one iteration of the exit loop body.
+   * Callers (backtest adapters, tests) can drive the loss-cutting logic tick-by-tick
+   * without the blocking sleep in run(). Requires status.running = true before calling.
+   */
+  async runOneTick(): Promise<ExitTickOutcome> {
+    if (this.stopRequested) return { kind: 'break_loop', reason: 'stop_requested' };
+    if (this.killSwitchExists()) {
+      this.log('warn', 'kill_switch_found', { path: this.config.killSwitchPath });
+      return { kind: 'break_loop', reason: 'kill_switch' };
+    }
+    if (this.status.ordersAttempted >= this.config.maxOrders) {
+      this.log('error', 'max_orders_reached', { maxOrders: this.config.maxOrders });
+      return { kind: 'break_loop', reason: 'max_orders' };
+    }
+
+    const orderbook = await this.client.getOrderbook(this.config.marketTicker, this.config.orderbookDepth);
+    // Arrival mid: (top YES bid + top YES ask) / 2.
+    // YES ask = 100 - top NO bid. If either side is empty, fall back to 0.
+    const topYesBid = orderbook.yes[0]?.priceCents ?? 0;
+    const topYesAsk = orderbook.no[0] != null ? (100 - orderbook.no[0].priceCents) : 100;
+    const arrivalMidCents = (topYesBid + topYesAsk) / 2;
+    const decision = decideLosingExitOrder(orderbook, this.status.remaining, this.config);
+    const payload = buildSellPayload(this.config, decision);
+    this.status.lastDecision = decision;
+    this.status.lastPayload = payload;
+    this.status.ordersAttempted += 1;
+    this.log('info', 'order_decision', { remaining: this.status.remaining, decision, payload });
+
+    if (this.config.dryRun) {
+      this.status.filledTotal += decision.chunkSize;
+      this.status.remaining -= decision.chunkSize;
+    } else {
+      // Runtime safety bound — defends against parser/fill misreads where the engine
+      // would re-submit executed orders. We track every share submitted (regardless of
+      // the reported fill outcome) and halt before exceeding the configured multiple.
+      const multiple = this.config.safetySubmittedMultiple ?? 1.5;
+      const cap = this.status.initialPosition * multiple;
+      if (this.status.submittedTotal + decision.chunkSize > cap) {
+        this.log('error', 'safety_submitted_cap_reached', {
+          submittedTotal: this.status.submittedTotal,
+          wouldSubmit: decision.chunkSize,
+          cap,
+          initialPosition: this.status.initialPosition,
+          multiple,
+        });
+        return { kind: 'break_loop', reason: 'safety_cap' };
+      }
+      this.status.submittedTotal += decision.chunkSize;
+
+      // ── Journal: order intent (pre-call, crash-safe) ─────────────────
+      // Written BEFORE createOrder so that if the process is killed between
+      // createOrder returning and order_placed being appended, resume can
+      // still find the order via clientOrderId lookup.
+      this.journal.append('order_intent', {
+        clientOrderId: payload.client_order_id,
+        payload,
+      });
+
+      const created = await this.client.createOrder(payload);
+      this.log('info', 'order_created', { orderId: created.orderId, status: created.status });
+
+      // ── Journal: order placed (durable before reconcile) ──────────────
+      // Includes orderbook + decision so the entry is self-describing for
+      // post-hoc replay / cross-validation against the engine's pricing.
+      this.journal.append('order_placed', {
+        orderId: created.orderId,
+        payload,
+        decisionRequested: decision.chunkSize,
+        orderbook,
+        decision,
+      });
+
+      // ── Test-only: deliberate pause to reproduce the crash-mid-flight scenario.
+      // The journal already has `order_placed`; sleeping here gives a Ctrl-C window
+      // before `order_reconciled` is appended. Production configs leave this at 0.
+      const pauseMs = this.config.deliberatePauseAfterPlaceMs ?? 0;
+      if (pauseMs > 0) {
+        this.log('warn', 'deliberate_pause_after_place', { ms: pauseMs, orderId: created.orderId });
+        await sleep(pauseMs);
+      }
+
+      // ── GTC: leave a resting order on the book and exit the loop ─────
+      // The order is durable on Kalshi until filled/canceled. The user comes back
+      // later (next /start invocation) to check fill state or place more.
+      const tif = this.config.orderTimeInForce ?? 'immediate_or_cancel';
+      if (tif === 'good_till_canceled' && created.status === 'resting') {
+        this.journal.append('gtc_resting', { orderId: created.orderId, requested: decision.chunkSize });
+        this.log('info', 'gtc_order_resting_exit', { orderId: created.orderId, priceDollars: decision.priceDollars });
+        return { kind: 'break_loop', reason: 'gtc_resting' };
+      }
+
+      const reconciled = await this.reconcileOrder(created);
+      const filled = Math.max(0, Math.min(decision.chunkSize, reconciled.filledCount));
+      this.status.filledTotal += filled;
+      this.status.remaining = Math.max(0, this.status.remaining - filled);
+      if (reconciled.status === 'canceled' && filled < decision.chunkSize) {
+        this.status.canceledTotal += decision.chunkSize - filled;
+      }
+      if (reconciled.takerFeesDollars && Number.isFinite(reconciled.takerFeesDollars)) {
+        this.status.feesIncurredDollars = Number(
+          (this.status.feesIncurredDollars + reconciled.takerFeesDollars).toFixed(4),
+        );
+      }
+
+      // ── Journal: order reconciled ──────────────────────────────────────
+      this.journal.append('order_reconciled', {
+        orderId: reconciled.orderId,
+        status: reconciled.status,
+        filled,
+        requested: decision.chunkSize,
+        remainingPosition: this.status.remaining,
+      });
+
+      this.log('info', 'order_reconciled', {
+        orderId: reconciled.orderId,
+        status: reconciled.status,
+        filled,
+        requested: decision.chunkSize,
+        remainingPosition: this.status.remaining,
+      });
+
+      // ── Journal: TCA entry ─────────────────────────────────────────────
+      const executedPriceCents = decision.priceCentsExact;
+      const slippageCents = executedPriceCents - arrivalMidCents;
+      const depthTier = decision.cumulativeSizeAtPrice > 0
+        ? Math.ceil(decision.cumulativeSizeAtPrice / decision.chunkSize)
+        : 1;
+      this.journal.append('tca', {
+        jobId: this.journal.jobId,
+        ticker: this.config.marketTicker,
+        side: 'sell',
+        chunkIndex: this.status.ordersAttempted - 1,
+        arrivalMidCents,
+        executedPriceCents,
+        slippageCents,
+        chunkSize: decision.chunkSize,
+        depthTier,
+      } satisfies Omit<TcaEntry, 'kind' | 'ts'>);
+
+      if (filled === 0 && reconciled.status === 'canceled') {
+        this.log('warn', 'no_fill_on_chunk', { ordersAttempted: this.status.ordersAttempted });
+      }
+    }
+
+    return { kind: 'continue' };
+  }
+
   async run(): Promise<JobStatus> {
     if (this.status.running) throw new Error('runner already running');
 
@@ -383,145 +535,8 @@ export class ExitRunner {
       }
 
       while (this.status.remaining > 0) {
-        if (this.stopRequested) break;
-        if (this.killSwitchExists()) {
-          this.log('warn', 'kill_switch_found', { path: this.config.killSwitchPath });
-          break;
-        }
-        if (this.status.ordersAttempted >= this.config.maxOrders) {
-          this.log('error', 'max_orders_reached', { maxOrders: this.config.maxOrders });
-          break;
-        }
-
-        const orderbook = await this.client.getOrderbook(this.config.marketTicker, this.config.orderbookDepth);
-        // Arrival mid: (top YES bid + top YES ask) / 2.
-        // YES ask = 100 - top NO bid. If either side is empty, fall back to 0.
-        const topYesBid = orderbook.yes[0]?.priceCents ?? 0;
-        const topYesAsk = orderbook.no[0] != null ? (100 - orderbook.no[0].priceCents) : 100;
-        const arrivalMidCents = (topYesBid + topYesAsk) / 2;
-        const decision = decideLosingExitOrder(orderbook, this.status.remaining, this.config);
-        const payload = buildSellPayload(this.config, decision);
-        this.status.lastDecision = decision;
-        this.status.lastPayload = payload;
-        this.status.ordersAttempted += 1;
-        this.log('info', 'order_decision', { remaining: this.status.remaining, decision, payload });
-
-        if (this.config.dryRun) {
-          this.status.filledTotal += decision.chunkSize;
-          this.status.remaining -= decision.chunkSize;
-        } else {
-          // Runtime safety bound — defends against parser/fill misreads where the engine
-          // would re-submit executed orders. We track every share submitted (regardless of
-          // the reported fill outcome) and halt before exceeding the configured multiple.
-          const multiple = this.config.safetySubmittedMultiple ?? 1.5;
-          const cap = this.status.initialPosition * multiple;
-          if (this.status.submittedTotal + decision.chunkSize > cap) {
-            this.log('error', 'safety_submitted_cap_reached', {
-              submittedTotal: this.status.submittedTotal,
-              wouldSubmit: decision.chunkSize,
-              cap,
-              initialPosition: this.status.initialPosition,
-              multiple,
-            });
-            break;
-          }
-          this.status.submittedTotal += decision.chunkSize;
-
-          // ── Journal: order intent (pre-call, crash-safe) ─────────────────
-          // Written BEFORE createOrder so that if the process is killed between
-          // createOrder returning and order_placed being appended, resume can
-          // still find the order via clientOrderId lookup.
-          this.journal.append('order_intent', {
-            clientOrderId: payload.client_order_id,
-            payload,
-          });
-
-          const created = await this.client.createOrder(payload);
-          this.log('info', 'order_created', { orderId: created.orderId, status: created.status });
-
-          // ── Journal: order placed (durable before reconcile) ──────────────
-          // Includes orderbook + decision so the entry is self-describing for
-          // post-hoc replay / cross-validation against the engine's pricing.
-          this.journal.append('order_placed', {
-            orderId: created.orderId,
-            payload,
-            decisionRequested: decision.chunkSize,
-            orderbook,
-            decision,
-          });
-
-          // ── Test-only: deliberate pause to reproduce the crash-mid-flight scenario.
-          // The journal already has `order_placed`; sleeping here gives a Ctrl-C window
-          // before `order_reconciled` is appended. Production configs leave this at 0.
-          const pauseMs = this.config.deliberatePauseAfterPlaceMs ?? 0;
-          if (pauseMs > 0) {
-            this.log('warn', 'deliberate_pause_after_place', { ms: pauseMs, orderId: created.orderId });
-            await sleep(pauseMs);
-          }
-
-          // ── GTC: leave a resting order on the book and exit the loop ─────
-          // The order is durable on Kalshi until filled/canceled. The user comes back
-          // later (next /start invocation) to check fill state or place more.
-          const tif = this.config.orderTimeInForce ?? 'immediate_or_cancel';
-          if (tif === 'good_till_canceled' && created.status === 'resting') {
-            this.journal.append('gtc_resting', { orderId: created.orderId, requested: decision.chunkSize });
-            this.log('info', 'gtc_order_resting_exit', { orderId: created.orderId, priceDollars: decision.priceDollars });
-            break;
-          }
-
-          const reconciled = await this.reconcileOrder(created);
-          const filled = Math.max(0, Math.min(decision.chunkSize, reconciled.filledCount));
-          this.status.filledTotal += filled;
-          this.status.remaining = Math.max(0, this.status.remaining - filled);
-          if (reconciled.status === 'canceled' && filled < decision.chunkSize) {
-            this.status.canceledTotal += decision.chunkSize - filled;
-          }
-          if (reconciled.takerFeesDollars && Number.isFinite(reconciled.takerFeesDollars)) {
-            this.status.feesIncurredDollars = Number(
-              (this.status.feesIncurredDollars + reconciled.takerFeesDollars).toFixed(4),
-            );
-          }
-
-          // ── Journal: order reconciled ──────────────────────────────────────
-          this.journal.append('order_reconciled', {
-            orderId: reconciled.orderId,
-            status: reconciled.status,
-            filled,
-            requested: decision.chunkSize,
-            remainingPosition: this.status.remaining,
-          });
-
-          this.log('info', 'order_reconciled', {
-            orderId: reconciled.orderId,
-            status: reconciled.status,
-            filled,
-            requested: decision.chunkSize,
-            remainingPosition: this.status.remaining,
-          });
-
-          // ── Journal: TCA entry ─────────────────────────────────────────────
-          const executedPriceCents = decision.priceCentsExact;
-          const slippageCents = executedPriceCents - arrivalMidCents;
-          const depthTier = decision.cumulativeSizeAtPrice > 0
-            ? Math.ceil(decision.cumulativeSizeAtPrice / decision.chunkSize)
-            : 1;
-          this.journal.append('tca', {
-            jobId: this.journal.jobId,
-            ticker: this.config.marketTicker,
-            side: 'sell',
-            chunkIndex: this.status.ordersAttempted - 1,
-            arrivalMidCents,
-            executedPriceCents,
-            slippageCents,
-            chunkSize: decision.chunkSize,
-            depthTier,
-          } satisfies Omit<TcaEntry, 'kind' | 'ts'>);
-
-          if (filled === 0 && reconciled.status === 'canceled') {
-            this.log('warn', 'no_fill_on_chunk', { ordersAttempted: this.status.ordersAttempted });
-          }
-        }
-
+        const outcome = await this.runOneTick();
+        if (outcome.kind === 'break_loop') break;
         if (this.config.loopDelayMs > 0) await sleep(this.config.loopDelayMs);
       }
 
