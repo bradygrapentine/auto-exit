@@ -159,6 +159,43 @@ describe('runBacktest', () => {
     ).rejects.toThrow(/unknown strategyId/);
   });
 
+  it('s-aggressive resolves without throwing and returns a report', async () => {
+    const report = await runBacktest({
+      recordingPath,
+      strategyId: 's-aggressive',
+      params: {
+        ticker: TICKER,
+        side: 'yes',
+        action: 'sell',
+      },
+      initialPosition: { ticker: TICKER, side: 'yes', quantity: 5 },
+      fillModel: 'naive',
+    });
+
+    expect(report.strategyId).toBe('s-aggressive');
+    expect(Array.isArray(report.trace)).toBe(true);
+    expect(report.trace.length).toBeGreaterThan(0);
+  });
+
+  it('s-twap resolves without throwing and returns a report', async () => {
+    const report = await runBacktest({
+      recordingPath,
+      strategyId: 's-twap',
+      params: {
+        ticker: TICKER,
+        side: 'sell',
+        numIntervals: 2,
+        intervalMinutes: 1,
+      },
+      initialPosition: { ticker: TICKER, side: 'yes', quantity: 10 },
+      fillModel: 'naive',
+    });
+
+    expect(report.strategyId).toBe('s-twap');
+    expect(Array.isArray(report.trace)).toBe(true);
+    expect(report.trace.length).toBeGreaterThan(0);
+  });
+
   it('empty recording (no snapshots) returns zero trace', async () => {
     const emptyPath = path.join(dir, 'empty.ndjson');
     fs.writeFileSync(emptyPath, '', 'utf-8');
