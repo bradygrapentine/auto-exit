@@ -23,6 +23,7 @@ import type { RegisterArgs } from '../../synthetics/types.js';
 import type { ReplayKalshiClient } from '../replayClient.js';
 import type { StrategyAdapter } from '../harness.js';
 import type { KalshiClientLike, WatcherConfig } from '../../types.js';
+import { buildSTrailArgs } from '../../strategies/sTrail.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -109,4 +110,97 @@ export function makeWatcherAdapter(
       return `watcher: continue (armed=${result.armedCount})`;
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Concrete strategy factories (SH-BACKTEST-PHASE-D Task 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * s-trail adapter — wraps the trailing_stop synthetic via buildSTrailArgs.
+ * STrailOpts requires: ticker, side, positionSize, trailCents.
+ */
+export function makeSTrailWatcherAdapter(params: Record<string, unknown>): StrategyAdapter {
+  return makeWatcherAdapter((p) => {
+    const ticker = (p['ticker'] as string | undefined) ?? '';
+    const side = (p['side'] as 'yes' | 'no' | undefined) ?? 'yes';
+    const positionSize = (p['size'] as number | undefined) ?? 0;
+    const trailCents = (p['trailCents'] as number | undefined) ?? 5;
+    const floorPriceCents = p['floorPriceCents'] as number | undefined;
+    const autoCancelOnZeroPosition = p['autoCancelOnZeroPosition'] as boolean | undefined;
+    return buildSTrailArgs({ ticker, side, positionSize, trailCents, floorPriceCents, autoCancelOnZeroPosition });
+  }, params);
+}
+
+/**
+ * trailing_stop adapter — registers a trailing_stop synthetic directly.
+ * params: { ticker, side, size, trailCents, executionStrategy?, floorPriceCents? }
+ */
+export function makeTrailingStopAdapter(params: Record<string, unknown>): StrategyAdapter {
+  return makeWatcherAdapter((p) => ({
+    kind: 'trailing_stop',
+    ticker: (p['ticker'] as string | undefined) ?? '',
+    side: (p['side'] as 'yes' | 'no' | undefined) ?? 'yes',
+    positionSize: (p['size'] as number | undefined) ?? 0,
+    params: {
+      trailCents: (p['trailCents'] as number | undefined) ?? 5,
+      executionStrategy: p['executionStrategy'] as 'losing_exit' | 'aggressive' | undefined,
+      floorPriceCents: p['floorPriceCents'] as number | undefined,
+    },
+  }), params);
+}
+
+/**
+ * take_profit adapter — registers a take_profit synthetic.
+ * params: { ticker, side, size, triggerPriceCents?, executionStrategy? }
+ */
+export function makeTakeProfitAdapter(params: Record<string, unknown>): StrategyAdapter {
+  return makeWatcherAdapter((p) => ({
+    kind: 'take_profit',
+    ticker: (p['ticker'] as string | undefined) ?? '',
+    side: (p['side'] as 'yes' | 'no' | undefined) ?? 'yes',
+    positionSize: (p['size'] as number | undefined) ?? 0,
+    params: {
+      triggerPriceCents: (p['triggerPriceCents'] as number | undefined) ?? 75,
+      executionStrategy: p['executionStrategy'] as 'scale_out' | 'passive' | 'aggressive' | undefined,
+    },
+  }), params);
+}
+
+/**
+ * oco adapter — registers an OCO (one-cancels-other) composite synthetic.
+ * Leg 1: take_profit at targetPriceCents; Leg 2: stop_loss at stopPriceCents.
+ * params: { ticker, side, size, targetPriceCents?, stopPriceCents? }
+ */
+export function makeOcoAdapter(params: Record<string, unknown>): StrategyAdapter {
+  return makeWatcherAdapter((p) => ({
+    kind: 'oco',
+    ticker: (p['ticker'] as string | undefined) ?? '',
+    side: (p['side'] as 'yes' | 'no' | undefined) ?? 'yes',
+    positionSize: (p['size'] as number | undefined) ?? 0,
+    params: {
+      legs: [
+        { kind: 'take_profit', params: { triggerPriceCents: (p['targetPriceCents'] as number | undefined) ?? 75 } },
+        { kind: 'stop_loss',   params: { triggerPriceCents: (p['stopPriceCents']  as number | undefined) ?? 30 } },
+      ],
+    },
+  }), params);
+}
+
+/**
+ * bracket adapter — registers a bracket composite synthetic.
+ * Fires take_profit at takeProfitCents, stop_loss at stopLossCents.
+ * params: { ticker, side, size, takeProfitCents?, stopLossCents? }
+ */
+export function makeBracketAdapter(params: Record<string, unknown>): StrategyAdapter {
+  return makeWatcherAdapter((p) => ({
+    kind: 'bracket',
+    ticker: (p['ticker'] as string | undefined) ?? '',
+    side: (p['side'] as 'yes' | 'no' | undefined) ?? 'yes',
+    positionSize: (p['size'] as number | undefined) ?? 0,
+    params: {
+      takeProfitCents: (p['takeProfitCents'] as number | undefined) ?? 75,
+      stopLossCents:   (p['stopLossCents']   as number | undefined) ?? 30,
+    },
+  }), params);
 }

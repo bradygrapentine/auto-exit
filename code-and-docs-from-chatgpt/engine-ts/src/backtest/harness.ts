@@ -32,6 +32,13 @@ import type {
 import { makePassiveAdapter } from './adapters/passiveAdapter.js';
 import { makeAggressiveAdapter } from './adapters/aggressiveAdapter.js';
 import { makeTwapAdapter } from './adapters/twapAdapter.js';
+import {
+  makeSTrailWatcherAdapter,
+  makeTrailingStopAdapter,
+  makeTakeProfitAdapter,
+  makeOcoAdapter,
+  makeBracketAdapter,
+} from './adapters/watcherAdapter.js';
 
 // ---------------------------------------------------------------------------
 // §8 fidelity caveats — appended to every report
@@ -54,7 +61,7 @@ const FIDELITY_CAVEATS: string[] = [
  * Real strategy runners (ExitRunner, BuyRunner) plug in via thin adapter wrappers.
  * Phase 2 wired: s-passive (passiveAdapter.ts), s-aggressive (aggressiveAdapter.ts),
  * s-twap (twapAdapter.ts).
- * TODO(SH-BACKTEST Phase D): wire s-trail (Watcher-based) and synthetics.
+ * Phase D wired: s-trail, trailing_stop, take_profit, oco, bracket (watcherAdapter.ts).
  */
 export interface StrategyAdapter {
   /**
@@ -143,13 +150,26 @@ function resolveAdapter(
     case 's-twap':
       // Phase 2: STwapRunner.runOneTick() — one interval per harness tick.
       return makeTwapAdapter(params);
-    // TODO(SH-BACKTEST Phase D): wire 's-trail' (Watcher-based, separate refactor)
-    //   and synthetics ('trailing_stop', 'take_profit', 'oco', 'bracket')
+    case 's-trail':
+      // Phase D: Watcher-based trailing stop via buildSTrailArgs.
+      return makeSTrailWatcherAdapter(params);
+    case 'trailing_stop':
+      // Phase D: trailing_stop synthetic via Watcher.
+      return makeTrailingStopAdapter(params);
+    case 'take_profit':
+      // Phase D: take_profit synthetic via Watcher.
+      return makeTakeProfitAdapter(params);
+    case 'oco':
+      // Phase D: OCO composite synthetic via Watcher (auto-expands to two child legs).
+      return makeOcoAdapter(params);
+    case 'bracket':
+      // Phase D: bracket composite synthetic via Watcher (take_profit + stop_loss legs).
+      return makeBracketAdapter(params);
     default:
       throw new Error(
         `runBacktest: unknown strategyId '${strategyId}'. ` +
-          `Wired: stop_loss, stub, s-passive, s-aggressive, s-twap. ` +
-          `Synthetics + s-trail pending Phase D.`,
+          `Wired: stop_loss, stub, s-passive, s-aggressive, s-twap, s-trail, trailing_stop, take_profit, oco, bracket. ` +
+          `None pending.`,
       );
   }
 }
