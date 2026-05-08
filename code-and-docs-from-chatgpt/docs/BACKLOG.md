@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-08 (SH-FILL-SIM-DIRECTIONAL shipped in PR #132; SH-PASSIVE-SELL-LIMIT demoted to naming-cleanup since fill-sim fix resolved the functional bug)
+Last `/backlog-sync`: 2026-05-08 (SH-FILL-SIM-DIRECTIONAL shipped #132; SH-PASSIVE-SELL-LIMIT demoted to cleanup; SH-PASSIVE-SPREAD-LOGIC filed from KXINXU validation)
 
 | Status | Count |
 |--------|-------|
@@ -8,7 +8,7 @@ Last `/backlog-sync`: 2026-05-08 (SH-FILL-SIM-DIRECTIONAL shipped in PR #132; SH
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 4 |
+| 🧊 Tooling ecosystem (SH) | 5 |
 | 🧊 Surface parity (SP1–SP4) | 3 |
 | 🧊 Other deferred (off-sequence) | 5 |
 | ✅ Shipped (this log) | 68 |
@@ -479,6 +479,52 @@ math works in both contexts.
 
 **Dependency:** SH-FILL-SIM-DIRECTIONAL (otherwise the new limit math
 still won't fill in backtest).
+
+### 🧊 SH-PASSIVE-SPREAD-LOGIC — passive break_loops on one-sided / skewed books
+**Tags:** engine [shared]
+
+**Trigger:** discovered 2026-05-08 during the post-PR-#132 validation
+re-run on the KXINXU 5566-snapshot recording (S&P 500 hourly). Passive's
+`runOneTickBacktest` computes `bestBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : 1`.
+When the no-side is empty or thin, this synthesized bid collapses against
+`bestAskCents` (lowest yes level) and the spread check at line 466 fires
+with reason `spread_too_tight` on tick 1 — passive never posts a single
+order despite a healthy yes-side book (e.g. KXINXU at 00:00:02 had
+`yes = [14, 34, 35, 37, 47, 48, 50, 51, 52, 55]` with 22–112 qty per
+level). Aggressive-style strategies fill on the same recording, so the
+issue is squarely in passive's spread-check, not the harness.
+
+**Concrete observation:** instrumented `passiveAdapter.tick()` with a
+debug log on outcome — first tick returned
+`{kind:'break_loop', reason:'spread_too_tight'}` with `state.remaining=100`
+and `pendingOrderId=undefined`. No order was ever posted on tick 1, and
+since the adapter sets `stopped=true` on break_loop, no orders post on
+subsequent ticks either — fill_count = 0 across the entire 5566-snapshot
+run.
+
+**Proposed fix paths (decide after seeing more recordings):**
+- (a) When no-side is empty or below a depth threshold, fall back to
+  using the highest yes-side level as the implicit bid reference
+  (sort yes desc, take `[0]`) rather than the constant `1`. Spread
+  becomes `highestYesLevel - lowestYesLevel`, which is positive on
+  any non-degenerate book.
+- (b) Add a `minSpreadCents = 0` config knob with `walkStepCents = 0`
+  override for skewed-book recordings, accepting that passive may
+  post at the same price level repeatedly.
+- (c) Skip the spread check entirely on the FIRST tick (before any
+  order has been posted) — only enforce it as a stop-loop guard
+  after at least one order has rested.
+
+Pick after running the comparison sweep across multiple recordings —
+if the failure mode is universal, (a) is right; if it's KXINXU-specific,
+(b) is right; if passive should always at least try once, (c) is right.
+
+**Cost:** ~3-4h (1 calc change + 4-6 unit tests covering one-sided +
+skewed-book fixtures + re-run validation on KXINXU).
+
+**Dependency:** none. SH-FILL-SIM-DIRECTIONAL already shipped (PR #132)
+so the directional sweep semantics are correct; this is a passive-side
+gating issue.
 
 ### 🧊 SH-SCANNER-WS — WebSocket transport for the multi-ticker scanner
 **Tags:** shared [engine, ops]
