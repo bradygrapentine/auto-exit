@@ -85,8 +85,15 @@ function makeBacktestPassiveInvoke(client: KalshiClientLike): PassiveInvokeFn {
         kalshiSide,
         roundCents,
       });
-    } catch {
-      // Ignore errors in backtest passive invoke — return partial result
+    } catch (err) {
+      // Log + return partial result. The runOneTick path can fail on
+      // malformed orderbooks or replay-client misconfig; we do not propagate
+      // because TWAP's outer schedule should still advance the next interval.
+      // But silent swallow would mask config bugs.
+      console.error(
+        '[twapAdapter.passiveInvoke] passive.runOneTick threw — interval continues with partial fill state:',
+        err instanceof Error ? err.message : String(err),
+      );
     } finally {
       try { fs.rmSync(invTmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
@@ -110,7 +117,6 @@ function makeBacktestPassiveInvoke(client: KalshiClientLike): PassiveInvokeFn {
 function buildSTwapConfig(
   params: Record<string, unknown>,
   size: number,
-  client: KalshiClientLike,
 ): STwapConfig {
   return {
     ticker: (params['ticker'] as string | undefined) ?? '',
@@ -122,8 +128,8 @@ function buildSTwapConfig(
     maxParticipationRate: params['maxParticipationRate'] as number | undefined,
     // No sleep in backtest — inter-interval timing is controlled by harness cursor.
     sleepMs: async () => { /* no-op */ },
-    // Inject backtest passiveInvoke
-    passiveInvoke: makeBacktestPassiveInvoke(client),
+    // passiveInvoke is supplied at runOneTick call time (closes over the live
+    // replay client per-tick), so we leave it unset here.
   };
 }
 
@@ -157,7 +163,7 @@ export function makeTwapAdapter(params: Record<string, unknown>): StrategyAdapte
         const { journal, tmpDir: td } = makeTmpJournal(jobId);
         tmpDir = td;
 
-        const config = buildSTwapConfig(params, remainingQty, kalshiClient);
+        const config = buildSTwapConfig(params, remainingQty);
         runner = new STwapRunner(config, journal);
 
         const numIntervals = config.numIntervals;

@@ -80,9 +80,10 @@ export function makeAggressiveAdapter(params: Record<string, unknown>): Strategy
         );
       }
 
-      // Aggressive is always single-shot — mark done regardless of outcome.
-      done = true;
       const outcome = await runner.runOneTick();
+      // Aggressive is always single-shot — mark done after a successful outcome.
+      // (If runOneTick throws, the error propagates and the harness terminates.)
+      done = true;
 
       // Clean up tmp dir
       if (tmpDir) {

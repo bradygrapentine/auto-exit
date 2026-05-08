@@ -134,7 +134,8 @@ function resolveAdapter(
     case 'stub':
       return STUB_ADAPTER;
     case 's-passive':
-      // Phase 2: real passive.runOneTick() driver (dryRun=true for harness).
+      // Phase 2: real passive.runOneTick() driver. Adapter uses dryRun=false
+      // so createOrder calls flow into the replay client's fill log.
       return makePassiveAdapter(params);
     case 's-aggressive':
       // Phase 2: AggressiveRunner.runOneTick() — single-shot IoC sweep.
