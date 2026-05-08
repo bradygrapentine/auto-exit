@@ -23,7 +23,7 @@ import * as path from 'node:path';
 import { STwapRunner, computeSliceSizes } from '../../strategies/sTwap.js';
 import type { STwapConfig, STwapTickState, PassiveInvokeFn } from '../../strategies/sTwap.js';
 import { Journal, generateJobId } from '../../journal.js';
-import { runOneTick as passiveRunOneTick } from '../../passive.js';
+import { runOneTickBacktest as passiveRunOneTick } from '../../passive.js';
 import type { PassiveConfig, PassiveRunState } from '../../passive.js';
 import type { ReplayKalshiClient } from '../replayClient.js';
 import type { StrategyAdapter } from '../harness.js';
@@ -42,9 +42,13 @@ function makeTmpJournal(jobId: string): { journal: Journal; tmpDir: string } {
 const roundCents = (c: number): number => Math.round(c * 10_000) / 10_000;
 
 /**
- * Build a passiveInvoke that uses passive.runOneTick (dryRun) against the
- * live replay client for the current tick. This avoids sleeping and gives
- * realistic fill simulation via the harness fill model.
+ * Build a passiveInvoke that calls passive.runOneTick against the live replay
+ * client for the current tick. SH-TWAP-CADENCE: this previously passed
+ * `dryRun: true`, which made passive simulate fills internally without
+ * calling client.createOrder — the replay client's fillLog never saw the
+ * fills, the harness reported 0 fills for s-twap on every recording. With
+ * dryRun=false, passive's createOrder hits the replay client and the
+ * simulator records fills normally.
  *
  * The function signature matches PassiveInvokeFn: (cfg, journal?) => Promise<PassiveResult>
  */
@@ -75,7 +79,7 @@ function makeBacktestPassiveInvoke(client: KalshiClientLike): PassiveInvokeFn {
     try {
       await passiveRunOneTick(state, {
         client,
-        config: { ...cfg, dryRun: true },
+        config: { ...cfg, dryRun: false },
         journal: invJournal,
         chunkSize: Math.min(chunkSize, cfg.size),
         passiveTimeboxMs: 0,
