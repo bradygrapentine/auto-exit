@@ -71,6 +71,43 @@ function makeStubClient(opts: {
 }
 
 /**
+ * Mutable stub client — yesBid can be changed between ticks to simulate price movement.
+ */
+function makeMutableStubClient(initialYesBid: number, positionQty = 10) {
+  const orders: OrderPayload[] = [];
+  let yesBid = initialYesBid;
+  return {
+    setYesBid(bid: number) { yesBid = bid; },
+    async getOrderbook(_ticker: string, _depth: number) {
+      return {
+        yes: [{ priceCents: yesBid, size: 100 }],
+        no: [{ priceCents: 100 - yesBid, size: 100 }],
+      };
+    },
+    async getPosition(_ticker: string) {
+      return { ticker: TICKER, side: 'yes' as const, quantity: positionQty };
+    },
+    async createOrder(payload: OrderPayload): Promise<OrderResult> {
+      orders.push(payload);
+      return { orderId: `mock-mut-${orders.length}`, status: 'filled', filledCount: payload.count, remainingCount: 0 };
+    },
+    async cancelOrder(orderId: string): Promise<OrderResult> {
+      return { orderId, status: 'canceled', filledCount: 0, remainingCount: 0 };
+    },
+    async getOrder(orderId: string): Promise<OrderResult> {
+      return { orderId, status: 'unknown', filledCount: 0, remainingCount: 0 };
+    },
+    async getRestingOrderCount() { return 0; },
+    async findOrderByClientOrderId() { return null; },
+    advance() { return true; },
+    currentTimestamp() { return new Date().toISOString(); },
+    getFillLog() { return []; },
+    getOrders() { return orders; },
+    getOrderPayloads() { return orders; },
+  };
+}
+
+/**
  * buildArgs factory: registers a stop_loss synthetic with the given triggerPriceCents.
  */
 function makeStopLossBuilder(triggerPriceCents: number): (params: Record<string, unknown>) => RegisterArgs {
@@ -220,13 +257,17 @@ describe('makeTakeProfitAdapter', () => {
     expect(typeof adapter.tick).toBe('function');
   });
 
-  it('fires when best bid meets take_profit trigger', async () => {
-    // take_profit fires when best yes bid >= triggerPriceCents
-    // triggerPriceCents=70, yesBid=80 → should fire
+  it('fires when best bid meets take_profit trigger (after upward cross)', async () => {
+    // take_profit fires when best yes bid crosses up through triggerPriceCents=70
+    // Tick 1: bid=60 (below) → arms; Tick 2: bid=80 (above) → fires
     const adapter = makeTakeProfitAdapter({
       ticker: TICKER, side: 'yes', size: 1, triggerPriceCents: 70,
     });
-    const client = makeStubClient({ yesBid: 80 });
+    const client = makeMutableStubClient(60);
+    const r1 = await adapter.tick(client as any, 1);
+    expect(r1).toMatch(/watcher: continue/);
+
+    client.setYesBid(80);
     const result = await adapter.tick(client as any, 1);
     expect(result).toMatch(/watcher: fired/);
     expect(client.getOrderPayloads()).toHaveLength(1);
@@ -265,14 +306,18 @@ describe('makeOcoAdapter', () => {
     expect(client.getOrderPayloads()).toHaveLength(1);
   });
 
-  it('fires via take_profit leg when bid meets target', async () => {
-    // OCO: take_profit leg fires when bid >= targetPriceCents (75)
-    // bid=80 → take_profit fires
+  it('fires via take_profit leg when bid crosses up through target', async () => {
+    // OCO: take_profit leg fires when bid crosses up through targetPriceCents (75)
+    // Tick 1: bid=60 → arms; Tick 2: bid=80 → fires
     const adapter = makeOcoAdapter({
       ticker: TICKER, side: 'yes', size: 1,
       targetPriceCents: 75, stopPriceCents: 30,
     });
-    const client = makeStubClient({ yesBid: 80 });
+    const client = makeMutableStubClient(60);
+    const r1 = await adapter.tick(client as any, 1);
+    expect(r1).toMatch(/watcher: continue/);
+
+    client.setYesBid(80);
     const result = await adapter.tick(client as any, 1);
     expect(result).toMatch(/watcher: fired/);
   });
@@ -311,12 +356,17 @@ describe('makeBracketAdapter', () => {
     expect(client.getOrderPayloads()).toHaveLength(1);
   });
 
-  it('fires via take_profit leg when bid meets takeProfitCents', async () => {
+  it('fires via take_profit leg when bid crosses up through takeProfitCents', async () => {
+    // Tick 1: bid=60 (below 75) → arms TP; Tick 2: bid=80 → TP fires
     const adapter = makeBracketAdapter({
       ticker: TICKER, side: 'yes', size: 1,
       takeProfitCents: 75, stopLossCents: 30,
     });
-    const client = makeStubClient({ yesBid: 80 });
+    const client = makeMutableStubClient(60);
+    const r1 = await adapter.tick(client as any, 1);
+    expect(r1).toMatch(/watcher: continue/);
+
+    client.setYesBid(80);
     const result = await adapter.tick(client as any, 1);
     expect(result).toMatch(/watcher: fired/);
   });
