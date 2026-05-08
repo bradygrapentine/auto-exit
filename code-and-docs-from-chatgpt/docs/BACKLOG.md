@@ -480,7 +480,14 @@ math works in both contexts.
 **Dependency:** SH-FILL-SIM-DIRECTIONAL (otherwise the new limit math
 still won't fill in backtest).
 
-### 🧊 SH-TWAP-CADENCE — `s-twap` returns 0 fills in backtest because it uses dryRun mode
+### ✅ SH-TWAP-CADENCE — shipped 2026-05-08
+**Tags:** engine [backtest]
+
+Two fixes in the same PR: (1) drop `dryRun: true` from twap's passiveInvoke so passive's createOrder hits the replay client, (2) swap the import from `passive.runOneTick` to `passive.runOneTickBacktest` so twap uses the bid-quoted-aware spread logic from PR #141. End-to-end: s-twap fills on all 3 sweep recordings (+5282¢ / +1314¢ / +700¢).
+
+(Original ticket below for history.)
+
+### 🧊 SH-TWAP-CADENCE-original — `s-twap` returns 0 fills in backtest because it uses dryRun mode
 **Tags:** engine [backtest]
 
 **Trigger:** strategy comparison sweep v1 + v2 + v3 all showed `s-twap` with 0 fills across all recordings, even after passive fills correctly post-SH-PASSIVE-STILL-NO-FILLS.
