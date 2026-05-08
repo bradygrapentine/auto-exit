@@ -40,7 +40,7 @@ describe('makeAutoAdapter', () => {
     expect(adapter.chosenStrategy).toBe('stop_loss');
   });
 
-  it('picks s-passive on a sideways window', async () => {
+  it('picks s-passive-slow on a sideways window', async () => {
     const adapter = makeAutoAdapter({ ticker: 'KX-TEST', warmupTicks: 3 });
     const books = [
       { yes: 45, no: 45 }, { yes: 47, no: 43 }, { yes: 46, no: 44 },  // mids 50, 52, 51 — sideways
@@ -48,7 +48,18 @@ describe('makeAutoAdapter', () => {
     ];
     const client = fakeClient(books);
     while (client.advance()) await adapter.tick(client as never, 100);
-    expect(adapter.chosenStrategy).toBe('s-passive');
+    expect(adapter.chosenStrategy).toBe('s-passive-slow');
+  });
+
+  it('SH-SLOW-EXECUTION-STRATEGY: sideways regime labels chosenStrategy as s-passive-slow', async () => {
+    const adapter = makeAutoAdapter({ ticker: 'KX-TEST', warmupTicks: 3 });
+    const books = [
+      { yes: 45, no: 45 }, { yes: 47, no: 43 }, { yes: 46, no: 44 },  // mids 50, 52, 51 — sideways
+      { yes: 47, no: 43 },
+    ];
+    const client = fakeClient(books);
+    while (client.advance()) await adapter.tick(client as never, 100);
+    expect(adapter.chosenStrategy).toBe('s-passive-slow');
   });
 
   it('falls through to s-aggressive on dead window', async () => {
