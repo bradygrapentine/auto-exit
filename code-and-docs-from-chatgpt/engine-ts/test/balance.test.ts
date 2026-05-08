@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { getPortfolioNAVDollars, _resetBalanceCache } from '../src/balance.js';
 
 describe('getPortfolioNAVDollars', () => {
   beforeEach(() => { _resetBalanceCache(); vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
 
   it('calls fetchBalanceDollars on first call and caches result for 10s', async () => {
     const fetcher = { fetchBalanceDollars: vi.fn().mockResolvedValue(123.45) };

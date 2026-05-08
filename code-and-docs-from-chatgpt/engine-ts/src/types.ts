@@ -200,8 +200,8 @@ export interface KalshiClientLike {
   /** List events, optionally filtered by series_ticker, status, close time window, etc.
    *  Pass with_nested_markets=true to include child markets on each event. */
   listEvents(opts?: { series_ticker?: string; status?: 'open' | 'closed' | 'settled'; with_nested_markets?: boolean; min_close_ts?: number; max_close_ts?: number; cursor?: string; limit?: number }): Promise<{ events: Array<{ event_ticker: string; series_ticker?: string; title?: string; markets?: Array<{ ticker: string; volume_24h_fp?: number; last_price_dollars?: number; close_time?: string; status?: string }> }>; cursor?: string }>;
-  /** Fetch portfolio balance in dollars. Optional — existing test mocks that omit it will
-   *  cause getPortfolioNAVDollars to catch TypeError and return 0 (safe fallback). */
+  /** Fetch portfolio balance in dollars. Optional — existing test mocks that omit it
+   *  cause getPortfolioNAVDollars to return 0 via the typeof guard (safe fallback). */
   fetchBalanceDollars?(): Promise<number>;
 }
 
