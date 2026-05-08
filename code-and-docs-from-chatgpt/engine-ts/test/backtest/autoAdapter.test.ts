@@ -60,4 +60,54 @@ describe('makeAutoAdapter', () => {
     while (client.advance()) await adapter.tick(client as never, 100);
     expect(adapter.chosenStrategy).toBe('s-aggressive');
   });
+
+  // ── SH-AUTO-ROLLING-RECLASSIFY ─────────────────────────────────────────────
+  describe('rolling re-classification', () => {
+    it('reclassifyInterval=0 keeps v5 single-shot behavior (no switch)', async () => {
+      const adapter = makeAutoAdapter({ ticker: 'KX-TEST', warmupTicks: 3, reclassifyInterval: 0 });
+      // 3 dead snapshots (warmup) → s-aggressive. Then strong rise — auto should NOT switch.
+      const books = [
+        { yes: 50, no: 50 }, { yes: 50, no: 50 }, { yes: 50, no: 50 },
+        { yes: 70, no: 30 }, { yes: 75, no: 25 }, { yes: 80, no: 20 }, { yes: 85, no: 15 },
+      ];
+      const client = fakeClient(books);
+      while (client.advance()) await adapter.tick(client as never, 100);
+      expect(adapter.chosenStrategy).toBe('s-aggressive');
+      expect(adapter.switchCount).toBe(0);
+    });
+
+    it('switches inner adapter when regime changes after hysteresis satisfied', async () => {
+      const adapter = makeAutoAdapter({
+        ticker: 'KX-TEST', warmupTicks: 3, reclassifyInterval: 1, hysteresisTicks: 2,
+      });
+      // First 3 ticks dead → aggressive. Then 4 ticks strongly rising — at least 2
+      // consecutive re-classifications produce 'rising', so hysteresis triggers a switch.
+      // (The exact switch tick depends on rolling window content; we just assert switch happened.)
+      const books = [
+        { yes: 50, no: 50 }, { yes: 50, no: 50 }, { yes: 50, no: 50 }, // warmup → dead
+        { yes: 60, no: 40 }, { yes: 65, no: 35 }, { yes: 70, no: 30 }, { yes: 75, no: 25 },
+      ];
+      const client = fakeClient(books);
+      while (client.advance()) await adapter.tick(client as never, 100);
+      expect(adapter.switchCount).toBeGreaterThan(0);
+      expect(adapter.chosenStrategy).not.toBe('s-aggressive');
+    });
+
+    it('hysteresis prevents single-tick flip', async () => {
+      const adapter = makeAutoAdapter({
+        ticker: 'KX-TEST', warmupTicks: 3, reclassifyInterval: 1, hysteresisTicks: 5,
+      });
+      // 3 dead warmup → aggressive. Then ONE rising-classifying tick — hysteresis=5 means no switch.
+      // Then back to dead — pendingStreak resets.
+      const books = [
+        { yes: 50, no: 50 }, { yes: 50, no: 50 }, { yes: 50, no: 50 },
+        { yes: 70, no: 30 },                      // single rising tick
+        { yes: 50, no: 50 }, { yes: 50, no: 50 }, // back to dead
+      ];
+      const client = fakeClient(books);
+      while (client.advance()) await adapter.tick(client as never, 100);
+      expect(adapter.switchCount).toBe(0);
+      expect(adapter.chosenStrategy).toBe('s-aggressive');
+    });
+  });
 });
