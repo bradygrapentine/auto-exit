@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { getPortfolioNAVDollars, _resetBalanceCache } from '../src/balance.js';
 
 describe('getPortfolioNAVDollars', () => {
   beforeEach(() => { _resetBalanceCache(); vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
 
   it('calls fetchBalanceDollars on first call and caches result for 10s', async () => {
     const fetcher = { fetchBalanceDollars: vi.fn().mockResolvedValue(123.45) };
@@ -29,6 +30,39 @@ describe('getPortfolioNAVDollars', () => {
     const result = await getPortfolioNAVDollars(fetcher as any);
     expect(result).toBe(0);
     expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  // Defense in depth: malformed values must NOT propagate into the SH-2
+  // concentration check. safety.ts:222 gates on `portfolioNAVDollars > 0`,
+  // and `NaN > 0` is false → check would silently skip.
+  for (const [label, value] of [
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['-Infinity', Number.NEGATIVE_INFINITY],
+    ['negative', -100],
+    ['string', '1000' as unknown as number],
+    ['null', null as unknown as number],
+    ['undefined', undefined as unknown as number],
+  ] as const) {
+    it(`returns 0 and logs when fetcher resolves with ${label}`, async () => {
+      const fetcher = { fetchBalanceDollars: vi.fn().mockResolvedValue(value) };
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const result = await getPortfolioNAVDollars(fetcher as any);
+      expect(result).toBe(0);
+      expect(errSpy).toHaveBeenCalled();
+      errSpy.mockRestore();
+    });
+  }
+
+  it('does not cache invalid values — next call re-fetches', async () => {
+    const fetcher = { fetchBalanceDollars: vi.fn()
+      .mockResolvedValueOnce(Number.NaN)
+      .mockResolvedValueOnce(500) };
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await getPortfolioNAVDollars(fetcher as any)).toBe(0);
+    expect(await getPortfolioNAVDollars(fetcher as any)).toBe(500);
+    expect(fetcher.fetchBalanceDollars).toHaveBeenCalledTimes(2);
     errSpy.mockRestore();
   });
 });

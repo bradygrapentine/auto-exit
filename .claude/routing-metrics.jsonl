@@ -9,3 +9,39 @@
 {"ts":"2026-05-01T20:34:28Z","model":"sonnet","prompt_chars":track B issues 3113,"description":"Fix"}
 {"ts":"2026-05-01T20:34:44Z","model":"sonnet","prompt_chars":track C issues 3404,"description":"Fix"}
 {"ts":"2026-05-01T20:35:02Z","model":"sonnet","prompt_chars":track D issues 2910,"description":"Fix"}
+{"ts":"2026-05-07T04:30:41Z","model":"sonnet","prompt_chars":TUI strategy picker tab 2894,"description":"SP2.2"}
+{"ts":"2026-05-07T04:31:05Z","model":"sonnet","prompt_chars":Extension strategy picker 4044,"description":"SP2.3"}
+{"ts":"2026-05-07T05:17:40Z","model":"sonnet","prompt_chars":summary card 3106,"description":"SP1.5"}
+{"ts":"2026-05-07T05:18:10Z","model":"sonnet","prompt_chars":profile + safety 4685,"description":"SP1.7+SP1.8"}
+{"ts":"2026-05-07T05:51:49Z","model":"sonnet","prompt_chars":engine + journal 3796,"description":"Workflow"}
+{"ts":"2026-05-07T05:52:03Z","model":"sonnet","prompt_chars":policy engine 2655,"description":"Default"}
+{"ts":"2026-05-07T06:05:55Z","model":"sonnet","prompt_chars":C: templates + surfaces 3226,"description":"Phase"}
+{"ts":"2026-05-07T06:21:32Z","model":"sonnet","prompt_chars":Almgren-Chriss optimizer 2677,"description":"W4.2"}
+{"ts":"2026-05-07T06:21:54Z","model":"sonnet","prompt_chars":market-making runner 3441,"description":"S12"}
+{"ts":"2026-05-07T06:29:37Z","model":"sonnet","prompt_chars":B: S12 surface wiring 3120,"description":"Phase"}
+{"ts":"2026-05-07T08:26:50Z","model":"sonnet","prompt_chars":TUI Reports tab 2418,"description":"SP4.2"}
+{"ts":"2026-05-07T08:27:00Z","model":"sonnet","prompt_chars":Extension Reports panel 2245,"description":"SP4.3"}
+{"ts":"2026-05-07T08:40:28Z","model":"sonnet","prompt_chars":Phase A engine analytics 5107,"description":"SH-EDGE"}
+{"ts":"2026-05-07T08:51:36Z","model":"sonnet","prompt_chars":Phase B CLI 2545,"description":"SH-EDGE"}
+{"ts":"2026-05-07T08:51:48Z","model":"sonnet","prompt_chars":Phase B MCP 2235,"description":"SH-EDGE"}
+{"ts":"2026-05-07T08:52:02Z","model":"sonnet","prompt_chars":Phase B TUI 2559,"description":"SH-EDGE"}
+{"ts":"2026-05-07T09:03:42Z","model":"sonnet","prompt_chars":Phase A recorder 4742,"description":"SH-BACKTEST"}
+{"ts":"2026-05-07T09:13:11Z","model":"sonnet","prompt_chars":Phase B1 replay engine 5925,"description":"SH-BACKTEST"}
+{"ts":"2026-05-07T09:23:25Z","model":"sonnet","prompt_chars":Phase B2 harness 6682,"description":"SH-BACKTEST"}
+{"ts":"2026-05-07T10:39:34Z","model":"sonnet","prompt_chars":engine — CLI + multi-ticker 5426,"description":"Scanner"}
+{"ts":"2026-05-07T10:40:02Z","model":"sonnet","prompt_chars":ops — Fly.io deploy 5170,"description":"Scanner"}
+{"ts":"2026-05-07T14:55:12Z","model":"opus","prompt_chars":discovery debug — Opus advisor 4607,"description":"Kalshi"}
+{"ts":"2026-05-07T14:57:51Z","model":"sonnet","prompt_chars":rewrite — events+series API 9622,"description":"Discover"}
+{"ts":"2026-05-07T22:24:08Z","model":"sonnet","prompt_chars":— Dockerfile auto-discover 2833,"description":"SH-SCANNER-BOOTSTRAP"}
+{"ts":"2026-05-07T22:24:39Z","model":"sonnet","prompt_chars":— token bucket + 429 5253,"description":"SH-SCANNER-RATELIMIT"}
+{"ts":"2026-05-07T22:25:11Z","model":"sonnet","prompt_chars":— tar-pipe sync 5454,"description":"SH-SCANNER-SYNC-FIX"}
+{"ts":"2026-05-07T22:40:52Z","model":"sonnet","prompt_chars":W3.1 POV adoption in S3 + S4 3704,"description":"A1:"}
+{"ts":"2026-05-07T22:41:20Z","model":"sonnet","prompt_chars":SH-EDGE synthetic_fired augment 5101,"description":"A2:"}
+{"ts":"2026-05-07T22:41:42Z","model":"sonnet","prompt_chars":backtest CLI surface 4093,"description":"A3:"}
+{"ts":"2026-05-07T22:42:10Z","model":"sonnet","prompt_chars":ExitRunner adapter for S1 4944,"description":"A4:"}
+{"ts":"2026-05-08T01:21:00Z","model":"sonnet","prompt_chars":1: SH-EDGE-PHASE-B implementer 6709,"description":"Task"}
+{"ts":"2026-05-08T01:23:46Z","model":"sonnet","prompt_chars":1 spec compliance review 3906,"description":"Task"}
+{"ts":"2026-05-08T01:24:56Z","model":"sonnet","prompt_chars":1 code quality review 2226,"description":"Task"}
+{"ts":"2026-05-08T01:30:00Z","model":"sonnet","prompt_chars":2: ENGINE-NAV-WIRE implementer 10117,"description":"Task"}
+{"ts":"2026-05-08T01:33:55Z","model":"sonnet","prompt_chars":2 spec compliance review 4061,"description":"Task"}
+{"ts":"2026-05-08T01:35:20Z","model":"sonnet","prompt_chars":2 code quality review 3382,"description":"Task"}
