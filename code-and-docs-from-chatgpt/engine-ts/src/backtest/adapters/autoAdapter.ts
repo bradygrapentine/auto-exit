@@ -39,7 +39,8 @@ function makeInnerForRegime(
     case 'falling':
       return { inner: makeStopLossAdapter({ ...params, stopPriceCents: 50, size: remainingQty }), label: 'stop_loss' };
     case 'sideways':
-      return { inner: makePassiveAdapter({ ...params, chunkSize: 100, walkStepCents: 1 }), label: 's-passive' };
+      // SH-SLOW-EXECUTION-STRATEGY: tiny chunks force the GTC walk to span hundreds of ticks, giving rolling re-classify room to fire.
+      return { inner: makePassiveAdapter({ ...params, chunkSize: 2, walkStepCents: 1 }), label: 's-passive-slow' };
     case 'dead':
     default:
       return { inner: makeAggressiveAdapter({ ...params }), label: 's-aggressive' };
