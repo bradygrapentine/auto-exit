@@ -187,6 +187,25 @@ export class KalshiClient implements KalshiClientLike {
   }
 
   /**
+   * Fetch the operator's portfolio balance in dollars.
+   * Kalshi returns `balance` in cents; convert to whole dollars.
+   * Used by the SH-2 pre-trade risk gate (concentration check).
+   */
+  async fetchBalanceDollars(): Promise<number> {
+    return withRetry(async () => {
+      const path = '/portfolio/balance';
+      const res = await fetchChecked(
+        this.fetchFn,
+        this.config.baseUrl + path,
+        { headers: this.authHeaders('GET', path) },
+      );
+      const json = (await res.json()) as { balance?: number };
+      const cents = json.balance ?? 0;
+      return cents / 100;
+    });
+  }
+
+  /**
    * Search for an order by client_order_id via GET /portfolio/orders?client_order_id=<id>.
    * Returns the OrderResult if found, null otherwise.
    * Used during crash-safe resume to reconcile orders whose order_intent was written

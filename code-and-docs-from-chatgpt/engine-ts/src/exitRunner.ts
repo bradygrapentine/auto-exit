@@ -4,6 +4,7 @@ import { KalshiClient } from './kalshiClient.js';
 import { Journal, generateJobId } from './journal.js';
 import { buildSellPayload, centsFloatToDollarString, decideLosingExitOrder, normalizeLevels, oneTickBelowCents, projectFullExit } from './pricing.js';
 import { mergeIntoExitConfig, getSafety, checkPreTradeRisk, appendRealizedLoss } from './safety.js';
+import { getPortfolioNAVDollars } from './balance.js';
 import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, Position, TcaEntry } from './types.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -369,10 +370,11 @@ export class ExitRunner {
       // Use a fallback price of 0.5 ($0.50) when no live price is available.
       const fallbackPriceCents = 50;
       const sizeDollars = this.config.positionSize * (fallbackPriceCents / 100);
+      const navDollars = await getPortfolioNAVDollars(this.client);
       await checkPreTradeRisk({
         ticker: this.config.marketTicker,
         sizeDollars,
-        portfolioNAVDollars: 0, // TODO: pass real NAV when fetchBalance is available
+        portfolioNAVDollars: navDollars,
         safety: safetySnapshot,
       });
 
