@@ -37,6 +37,18 @@ For general-purpose exit on losing yes-side positions, use **`trailing_stop` wit
 
 Override per-call via the engine's strategy parameter; this is a recommendation, not a hardcoded default.
 
+### When to opt into `auto`
+
+The `auto` strategy (regime-aware, with optional rolling re-classification) was evaluated against the same recording set + synthesized multi-regime variants. Findings:
+
+- **Average lift over `trailing_stop trailCents=10`: +0.6%** — within noise. Not worth choosing as a default.
+- **+6.7% lift on rising→falling and rising→sideways→falling** synthetic recordings, where auto's first-tick classification picks `s-passive` (sideways) and captures slow upward drift before the reversal.
+- **Rolling re-classification (`reclassifyInterval > 0`) currently adds zero** — the chosen inner strategies fill before mid-recording switching can take effect. Rolling machinery is preserved for future scenarios with slow-execution strategies (see SH-SLOW-EXECUTION-STRATEGY).
+
+**Use `auto` when:** you expect the position's first ~200 ticks to be a slow upward drift that will reverse later. The agent's choice; not the default.
+
+**Use `trailing_stop trailCents=10` otherwise.** This is the engine's recommended baseline.
+
 ## Quick start
 
 ```bash
