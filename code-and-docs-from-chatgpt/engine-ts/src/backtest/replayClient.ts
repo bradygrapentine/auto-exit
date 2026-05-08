@@ -199,6 +199,7 @@ export function createReplayClient(opts: ReplayClientOptions): ReplayKalshiClien
         const limitCents = resolveLimitPriceCents(resting.payload);
         const simOrder: SimOrder = {
           side: resting.payload.side,
+          action: resting.payload.action,
           type: 'limit',
           size: resting.remainingSize,
           limitPriceCents: limitCents,
@@ -292,6 +293,7 @@ export function createReplayClient(opts: ReplayClientOptions): ReplayKalshiClien
 
       const simOrder: SimOrder = {
         side: payload.side,
+        action: payload.action,
         type: payload.type as 'limit' | 'market',
         size: payload.count,
         limitPriceCents: limitCents,

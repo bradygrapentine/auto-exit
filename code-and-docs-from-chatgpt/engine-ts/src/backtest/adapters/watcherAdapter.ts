@@ -88,7 +88,7 @@ export function makeWatcherAdapter(
             time_in_force: 'immediate_or_cancel',
             reduce_only: true,
             client_order_id: `bt-watcher-${Date.now()}`,
-            ...(s.side === 'yes' ? { yes_price: 99 } : { no_price: 99 }),
+            ...(s.side === 'yes' ? { yes_price: 1 } : { no_price: 1 }),
           });
           fired = true;
         });
