@@ -63,6 +63,7 @@ import {
   getTemplate,
 } from './workflows/index.js';
 import { joinFires } from './edge/lifecycle.js';
+import { loadAllJournalEntries } from './edge/pipeline.js';
 import {
   groupByStrategy,
   groupByMarket,
@@ -1454,23 +1455,7 @@ async function cmdPolicy(subcommand: string | undefined, rest: string[], _flags:
 
 // ── edge command ─────────────────────────────────────────────────────────────
 
-function loadAllJournalEntries(since: Date): ReturnType<typeof import('./journal.js').Journal.prototype.readAll> {
-  const home = process.env['KEA_HOME'] ?? path.join(os.homedir(), '.kalshi-exit-assistant');
-  const jobsDir = path.join(home, 'jobs');
-  if (!fs.existsSync(jobsDir)) return [];
-  const files = fs.readdirSync(jobsDir).filter((f) => f.endsWith('.jsonl'));
-  const allEntries: ReturnType<typeof import('./journal.js').Journal.prototype.readAll> = [];
-  for (const file of files) {
-    const jobId = file.replace(/\.jsonl$/, '');
-    const j = new Journal(jobId, home);
-    const entries = j.readAll();
-    // Include entries on or after `since`
-    for (const e of entries) {
-      if (new Date(e.ts) >= since) allEntries.push(e);
-    }
-  }
-  return allEntries;
-}
+// loadAllJournalEntries is provided by ./edge/pipeline.ts (shared with MCP/TUI).
 
 function fmtSign(n: number): string {
   return (n >= 0 ? '+' : '') + fmtDollars(n);
