@@ -514,6 +514,7 @@ export class ExitRunner {
       side: this.config.heldSide,
       dryRun: this.config.dryRun,
       remaining: this.status.remaining,
+      strategy: 'exit-runner',
     });
     this.log('info', 'exit_loop_started', { ticker: this.config.marketTicker, side: this.config.heldSide, dryRun: this.config.dryRun });
 

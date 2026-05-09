@@ -63,7 +63,7 @@ import {
   getTemplate,
 } from './workflows/index.js';
 import { joinFires } from './edge/lifecycle.js';
-import { loadAllJournalEntries } from './edge/pipeline.js';
+import { loadAllJournalEntries, findDryRunJobIds } from './edge/pipeline.js';
 import {
   groupByStrategy,
   groupByMarket,
@@ -1468,11 +1468,18 @@ function cmdEdge(flags: Record<string, string>): void {
     ? new Date(sinceFlag)
     : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
+  const includeMock = flags['include-mock'] !== undefined;
   const entries = loadAllJournalEntries(sinceDate);
-  const allFires = joinFires(entries).filter((f) => {
+  let allFires = joinFires(entries).filter((f) => {
     const totalSize = f.entryFills.reduce((s, x) => s + x.size, 0);
     return totalSize * (f.entryFills[0]?.priceCents ?? 0) / 100 >= minNotional;
   });
+  if (!includeMock) {
+    const dryRunJobs = findDryRunJobIds(entries);
+    allFires = allFires.filter(
+      (f) => !f.ticker.startsWith('KXTEST') && !dryRunJobs.has(f.jobId),
+    );
+  }
 
   const out = process.stdout.write.bind(process.stdout);
 

@@ -93,6 +93,30 @@ export interface GenerateSnapshotOpts {
   resolutionFetcher?: MarketResolutionFetcher;
   /** Optional minimum notional ($) below which fires are filtered out. */
   minNotionalDollars?: number;
+  /**
+   * If true, include mock/dryRun fires (ticker prefix `KXTEST` or any
+   * loop_started with `dryRun=true`). Default false: real fires only.
+   */
+  includeMock?: boolean;
+}
+
+/** Tickers prefixed with this are treated as local mock-test journals. */
+const MOCK_TICKER_PREFIX = 'KXTEST';
+
+/**
+ * Detect dryRun jobs by scanning loop_started entries; returns the set of
+ * jobIds that should be excluded.
+ */
+export function findDryRunJobIds(entries: JournalEntry[]): Set<string> {
+  const out = new Set<string>();
+  for (const e of entries) {
+    if (e.kind !== 'loop_started' && e.kind !== 'buy_loop_started') continue;
+    const d = e.data as Record<string, unknown> | null;
+    if (!d || d['dryRun'] !== true) continue;
+    const jobId = typeof d['jobId'] === 'string' ? d['jobId'] : undefined;
+    if (jobId) out.add(jobId);
+  }
+  return out;
 }
 
 /**
@@ -105,6 +129,13 @@ export async function generateSnapshot(opts: GenerateSnapshotOpts): Promise<Edge
   const entries = loadAllJournalEntries(opts.since, home);
 
   let fires = joinFires(entries);
+
+  if (!opts.includeMock) {
+    const dryRunJobs = findDryRunJobIds(entries);
+    fires = fires.filter(
+      (f) => !f.ticker.startsWith(MOCK_TICKER_PREFIX) && !dryRunJobs.has(f.jobId),
+    );
+  }
 
   if (opts.minNotionalDollars !== undefined) {
     const min = opts.minNotionalDollars;
