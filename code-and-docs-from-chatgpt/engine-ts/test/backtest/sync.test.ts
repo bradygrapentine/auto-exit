@@ -83,7 +83,7 @@ describe('syncRecordings', () => {
     });
   });
 
-  it('happy path — both exit 0 → returns non-negative file count', async () => {
+  it('happy path — both exit 0 with bytes piped → returns non-negative file count', async () => {
     const promise = syncRecordings({
       flyApp: 'auto-exit-scanner',
       remotePath: '/data/recordings',
@@ -93,6 +93,8 @@ describe('syncRecordings', () => {
     // Push verbose tar lines; use setImmediate so stream data events fire
     // before the close events are emitted (streams are async in Node).
     await new Promise<void>((res) => setImmediate(res));
+    flyProc.stdout.push(Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00]));
+    flyProc.stdout.push(null);
     tarProc.stderr.push('recordings/a.ndjson\n');
     tarProc.stderr.push('recordings/b.ndjson\n');
     tarProc.stderr.push(null);
@@ -107,14 +109,18 @@ describe('syncRecordings', () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 
-  it('zero verbose lines → filesTransferred is 0', async () => {
+  it('zero verbose lines but bytes piped → filesTransferred is 0 (legitimate empty-archive case)', async () => {
     const promise = syncRecordings({
       flyApp: 'auto-exit-scanner',
       remotePath: '/data/recordings',
       localDir: '/tmp/local',
     });
 
+    // Even an empty tar archive emits a gzip header on stdout.
+    flyProc.stdout.push(Buffer.from([0x1f, 0x8b]));
+    flyProc.stdout.push(null);
     tarProc.stderr.push(null);
+    await new Promise<void>((res) => setImmediate(res));
     flyProc.emit('close', 0);
     tarProc.emit('close', 0);
 
@@ -142,6 +148,10 @@ describe('syncRecordings', () => {
       localDir: '/tmp/local',
     });
 
+    // Push bytes so we get past the empty-stream check and reach the tar-code check.
+    flyProc.stdout.push(Buffer.from([0x1f, 0x8b]));
+    flyProc.stdout.push(null);
+    await new Promise<void>((res) => setImmediate(res));
     flyProc.emit('close', 0);
     tarProc.emit('close', 2);
 
@@ -170,6 +180,68 @@ describe('syncRecordings', () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
+  it('SH-SCANNER-SYNC-FIX-2: fly exits 0 but emits zero stdout bytes → throws (silent failure detection)', async () => {
+    const promise = syncRecordings({
+      flyApp: 'auto-exit-scanner',
+      remotePath: '/data/recordings',
+      localDir: '/tmp/local',
+    });
+
+    // Simulate the silent-failure mode: fly emits something on stderr (e.g.
+    // "Connecting to fdaa:...") then exits 0 without writing a single byte
+    // to stdout. tar then exits 0 too (empty input is benign).
+    flyProc.stderr.push('Connecting to fdaa:73:ef1d:a7b:71d:7e83:c28c:2\n');
+    flyProc.stderr.push(null);
+    // No flyProc.stdout.push(...) — that's the bug.
+    flyProc.stdout.push(null);
+    await new Promise<void>((res) => setImmediate(res));
+    flyProc.emit('close', 0);
+    tarProc.emit('close', 0);
+
+    await expect(promise).rejects.toThrow(/no data piped from remote tar|Connecting to fdaa/);
+  });
+
+  it('SH-SCANNER-SYNC-FIX-2: non-zero fly exit surfaces captured stderr in error', async () => {
+    const promise = syncRecordings({
+      flyApp: 'auto-exit-scanner',
+      remotePath: '/data/recordings',
+      localDir: '/tmp/local',
+    });
+
+    flyProc.stderr.push('Error: app auto-exit-scanner not found\n');
+    flyProc.stderr.push(null);
+    flyProc.stdout.push(null);
+    await new Promise<void>((res) => setImmediate(res));
+    flyProc.emit('close', 2);
+    tarProc.emit('close', 0);
+
+    await expect(promise).rejects.toThrow(/code 2.*app auto-exit-scanner not found|app auto-exit-scanner not found.*code 2/s);
+  });
+
+  it('SH-SCANNER-SYNC-FIX-2: happy path with bytes piped passes the empty-stream check', async () => {
+    const promise = syncRecordings({
+      flyApp: 'auto-exit-scanner',
+      remotePath: '/data/recordings',
+      localDir: '/tmp/local',
+    });
+
+    // Simulate at least one byte of tar gzip header on stdout
+    flyProc.stdout.push(Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
+    flyProc.stdout.push(null);
+    flyProc.stderr.push('Connecting to fdaa:...\n');
+    flyProc.stderr.push(null);
+    tarProc.stderr.push('recordings/x.ndjson\n');
+    tarProc.stderr.push(null);
+
+    await new Promise<void>((res) => setImmediate(res));
+    flyProc.emit('close', 0);
+    tarProc.emit('close', 0);
+
+    const result = await promise;
+    expect(result.filesTransferred).toBe(1);
+    expect(result.bytesTransferred).toBe(4);
+  });
+
   it('path parsing — trailing slash normalised in remote tar command', async () => {
     const promise = syncRecordings({
       flyApp: 'auto-exit-scanner',
@@ -177,6 +249,9 @@ describe('syncRecordings', () => {
       localDir: '/tmp/local',
     });
 
+    flyProc.stdout.push(Buffer.from([0x1f, 0x8b]));
+    flyProc.stdout.push(null);
+    await new Promise<void>((res) => setImmediate(res));
     flyProc.emit('close', 0);
     tarProc.emit('close', 0);
     await promise;
