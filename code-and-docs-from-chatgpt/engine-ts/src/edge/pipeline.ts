@@ -44,7 +44,15 @@ export function loadAllJournalEntries(since: Date, home?: string): JournalEntry[
     const jobId = file.replace(/\.jsonl$/, '');
     const j = new Journal(jobId, root);
     for (const e of j.readAll()) {
-      if (new Date(e.ts) >= since) all.push(e);
+      if (new Date(e.ts) < since) continue;
+      // Inject jobId into entry data when missing — joinFires groups on data.jobId
+      // but engine-written entries identify the job via filename, not payload.
+      const d = e.data as Record<string, unknown> | null;
+      if (d && typeof d === 'object' && typeof d['jobId'] !== 'string') {
+        all.push({ ...e, data: { ...d, jobId } });
+      } else {
+        all.push(e);
+      }
     }
   }
   return all;

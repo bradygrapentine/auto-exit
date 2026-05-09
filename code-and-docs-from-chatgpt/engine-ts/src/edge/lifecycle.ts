@@ -171,6 +171,7 @@ export function joinFires(entries: JournalEntry[]): Fire[] {
       const priceCents = (d['executedPriceCents'] as number | undefined) ??
         (d['priceCents'] as number | undefined) ?? 0;
       const size = (d['filledCount'] as number | undefined) ??
+        (d['filled'] as number | undefined) ??
         (d['count'] as number | undefined) ?? 0;
       const action = (d['action'] as string | undefined) ??
         ((d['payload'] as Record<string, unknown> | undefined)?.['action'] as string | undefined);

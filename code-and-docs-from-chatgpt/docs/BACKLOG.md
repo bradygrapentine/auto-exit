@@ -586,6 +586,38 @@ fill 3000 (not 10000). Cost: ~1h.
 
 **Dependency:** none.
 
+### 🧊 SH-EDGE-LOOP-STRATEGY-FIELD — `loop_started` journal entries omit `strategy`
+**Tags:** engine [edge]
+
+**Trigger:** smoke validation of `kea edge` on 2026-05-09 against ~5k fires
+showed every fire bucketed as `strategy: 'unknown'`. Inspection of recent
+journals confirms `loop_started.data` doesn't carry a `strategy` field —
+exitRunner / aggressive / etc. start their loops without identifying
+themselves to the journal. SH-EDGE-2 (lifecycle) reads `data.strategy` and
+falls back to `'unknown'` when absent; that fallback dominates real usage.
+
+**Proposed:** runners (passive, aggressive, twap, watcher) emit their
+strategy name in `loop_started.data.strategy` (e.g. `'s-passive'`,
+`'s-aggressive'`, `'s-trail'`, `'s-twap'`). One-line addition per runner.
+Plus a regression test that loads a journal slice and asserts no
+`strategy: 'unknown'` rows. Cost: ~1h.
+
+**Dependency:** none. Lights up SH-EDGE per-strategy aggregation.
+
+### 🧊 SH-EDGE-FILTER-MOCK-JOURNALS — `kea edge` flooded by `KXTEST` / dryRun journals
+**Tags:** engine [edge]
+
+**Trigger:** same smoke pass — 5,233 fires found, almost all `KXTEST`
+mock-test journals from local development (avg fill 5¢ vs mid 50¢ →
+nonsense -$53k ExitEdge). Real fires are buried.
+
+**Proposed:** `kea edge` and the underlying pipeline default-skip fires
+where ticker matches `^KXTEST` or where any `loop_started.data.dryRun`
+along the lifecycle is `true`. Add `--include-mock` flag for explicit
+inclusion. ~30min.
+
+**Dependency:** none.
+
 ### ✅ SH-FILL-SIM-DIRECTIONAL — shipped 2026-05-08 in PR #132
 **Tags:** engine [backtest]
 
