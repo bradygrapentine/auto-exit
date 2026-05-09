@@ -104,8 +104,8 @@ export class AggressiveRunner {
       type: 'limit',
       time_in_force: 'immediate_or_cancel',
       count: this.config.size,
-      yes_price: this.config.side === 'yes' ? limitPriceCents : undefined,
-      no_price: this.config.side === 'no' ? limitPriceCents : undefined,
+      yes_price: this.config.side === 'yes' ? Math.round(limitPriceCents) : undefined,
+      no_price: this.config.side === 'no' ? Math.round(limitPriceCents) : undefined,
       reduce_only: true,
       client_order_id: `kea-aggressive-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     };

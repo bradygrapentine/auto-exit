@@ -412,6 +412,180 @@ violated. Cost: ~1-2h.
 
 _SH-BACKTEST-PHASE-D shipped 2026-05-08 — see §7._
 
+### 🧊 SH-DEPTH-WALK-STALE-SNAPSHOT — top-of-book can fully evaporate between projection and execution
+**Tags:** engine [pricing-model] [critical]
+**Severity:** high — projections used a snapshot whose top-of-book vanished 5 min before execution; produced a $3,201 cash miss on a real-money trade 2026-05-09.
+
+**Trigger:** 2026-05-09 partial harvest of 8,891 NO contracts on
+KXMOVVAREDISTRICT-26APR21-YES-P4. Projection from a static-snapshot
+depth-walk + the live `kea_orderbook` query showed 12,336 contracts at
+93.8¢ NO bid + 1,142 at 93.9¢, projecting avg fill 93.81¢ NO. Actual
+fill: avg 58.67¢ NO, walking from 91.1¢ down to 35¢. Zero fills at
+93+¢.
+
+**Investigation (post-hoc analysis of 31,185-snapshot recording
+covering the trade):** the 93+¢ depth was REAL and persistent for
+14+ hours straight, then ALL of it disappeared at exactly
+15:04:55.661 UTC — **5 minutes 18 seconds before our trade**. Top of
+book collapsed from 93.9¢ → 91.1¢ in one snapshot, never recovered
+during the next 6 hours of recording. This was independent of our
+order (we hadn't even authorized yet at that moment, and the API
+doesn't broadcast read activity).
+
+**Conclusion:** the bid was NOT phantom HFT liquidity. It was a
+genuine market-maker quote that got pulled (risk threshold,
+quote-refresh, signal we're not privy to) shortly before our IoC
+arrived. The projection's flaw is structural, not detection-of-fakes:
+**a single live-book snapshot is stale within minutes for thin/
+concentrated top-of-book depth.**
+
+The same pattern is happening continuously: as of 21:30 UTC the same
+day, current book has a fat 9,737-contract bid at 88¢ — same MM
+behavior, different price. Any projection targeting that bid faces
+identical staleness risk.
+
+**Empirical reconciliation (2026-05-09 trade):**
+| | |
+|---|---:|
+| Projected avg fill | 93.81¢ NO |
+| Actual avg fill | 58.67¢ NO |
+| Projected sale proceeds | $8,340.77 |
+| Actual sale proceeds | $5,216.24 |
+| Projected net cash | $8,294.06 |
+| Actual net cash | $5,093.01 |
+| Cash miss | $3,201.05 (38% short) |
+| Top-of-book bid that vanished | 12,336 @ 93.8¢, pulled at 15:04:55 |
+| Time from pull to our order | 5m 18s |
+
+**Proposed:**
+1. **Pre-trade liveness check:** immediately before submitting an
+   order whose projection depends on top-of-book depth, query the
+   orderbook one more time and compare to the projection's
+   assumptions. If top-of-book has shifted by more than X (e.g. 1¢
+   or N% size), reject and re-project.
+2. **Take-or-fail with sub-projections:** for large orders, split
+   into smaller IoCs sized to "hit the top of book" only (e.g.
+   1,000 contracts at a time). Monitor each fill; if VWAP falls
+   below threshold, halt the rest. Trade off: more fees, less
+   slippage risk per chunk.
+3. **Use recording-based "patient" estimates as the floor.** The 18h
+   MOVVA recording's "patient passive @ 94¢" result (96.33%, 26,956
+   fills) is what really happened; the static-snapshot "skim @
+   93.81¢" was an outlier. For the operator-facing projection, the
+   recording-based number should be the conservative anchor and the
+   snapshot-based number the upper bound.
+4. **Document the pattern in the operator-facing harvest-planner
+   output.** If a projection depends on a single fat top-of-book
+   bid (e.g. >5x the avg level size), surface that as a risk note:
+   "Projection assumes 12,336-contract bid at 93.8¢ persists to
+   execution; this depth may be pulled with no warning."
+5. **Wire empirical fill-rate** from the per-strategy edge ledger
+   (SH-EDGE) once that ships — N recent live IoCs of size K against
+   markets with similar depth structure tells us the true expected
+   slippage.
+
+**Cost:** ~3-6h for (1) and (4); rest depends on broader infrastructure
+(SH-EDGE, recording analysis automation). No immediate fix that
+fully solves the problem — the underlying issue (book volatility) is
+intrinsic.
+
+**Dependency:** none for the staleness-check + risk-note in (1)+(4).
+SH-EDGE for (5).
+
+### 🧊 SH-AGGRESSIVE-CLI-FLAG-PARSING — `--one-tick-in true` may not be parsed correctly
+**Tags:** engine [cli]
+
+**Trigger:** during the 2026-05-09 live aggressive call with
+`--one-tick-in true`, the engine submitted `no_price=6.000000000000001`
+(top YES bid, NOT top YES bid − 1). Suggests `oneTickIn` resolved
+to `false` despite the CLI flag being present.
+
+**Suspected cause:** `cli.ts:808`:
+```ts
+oneTickIn: flags['one-tick-in'] === 'true',
+```
+If `parseFlags` treats `--one-tick-in true` as a boolean flag (key
+present with no value), `flags['one-tick-in']` may be `''` or `true`
+(boolean, not string), making the strict `=== 'true'` (string)
+comparison fail. Other CLI sites have the same pattern (e.g.
+`stealth`, `s-twap`).
+
+**Note:** in the 2026-05-09 trade this didn't matter operationally —
+the IoC at limit=6¢ deeply crossed all reasonable NO bids and filled
+at top-of-book anyway. But the silent flag-drop is a foot-gun for
+strategies where the 1¢ headroom matters.
+
+**Proposed:** audit `parseFlags`; for boolean flags either accept
+`--flag` (presence-only, value `true`) consistently OR require
+`--flag=true|false` and reject `--flag true`. Update all `=== 'true'`
+sites to match. Add tests covering `--flag`, `--flag=true`,
+`--flag true`, `--flag false`, absent.
+
+**Cost:** ~1-2h.
+**Dependency:** none.
+
+### 🧊 SH-AGGRESSIVE-FLOAT-CENTS — live `kea strategy aggressive` rejected by Kalshi for non-integer cents
+**Tags:** engine [live-execution]
+
+**Trigger:** discovered 2026-05-09 attempting a live partial harvest on
+KXMOVVAREDISTRICT-26APR21-YES-P4. The aggressive runner pulled
+`topBid = 6` from the YES book; due to IEEE-754 the value carried as
+`6.000000000000001`, was assigned directly to `OrderPayload.no_price`,
+and Kalshi's API rejected with `cannot unmarshal number
+6.000000000000001 into Go struct field CreateOrderRequest.no_price of
+type int`.
+
+**Root cause:** `src/aggressive.ts:107-108` assigns `limitPriceCents`
+(a float read from `book.yes[i].priceCents`) directly to the integer
+`yes_price` / `no_price` fields without rounding.
+
+**Proposed (immediate):** wrap the assignment with `Math.round(...)`.
+Handles the tiny-imprecision case (e.g. 6.000...001 → 6) which is the
+common scenario in integer-cent-tick markets.
+
+**Proposed (broader):** for SELL, prefer `Math.floor(limitPriceCents)`;
+for BUY, prefer `Math.ceil(limitPriceCents)`. This way, on true 0.1¢-tick
+markets, we round toward the more-permissive direction so the IoC still
+crosses. Pair with a Kalshi-side check on what `no_price` actually accepts
+for sub-cent-tick markets (may need a different field or scaled int).
+
+**Workaround used:** patched `Math.round` inline + retried; trade landed
+at expected VWAP. Patch belongs in a proper fix PR with tests.
+
+**Cost:** ~30min for the round-fix + 1 regression test. ~2-3h for the
+broader sub-cent-tick handling + research on Kalshi schema.
+
+**Dependency:** none for the immediate fix; broader fix may depend on
+clarifying Kalshi's price-unit conventions.
+
+### 🧊 SH-AGGRESSIVE-PARTIAL-SIZE — `s-aggressive` backtest adapter ignores `params.size`
+**Tags:** engine [backtest]
+
+**Trigger:** discovered 2026-05-09 while backtesting a partial-harvest of an
+8,891-contract slice from a 47,493-contract MOVVA position. Two variants
+(`oneTickIn=false` vs `true`) returned identical results matching a full
+"dump all 47,493" run — fill_count=1, pnl_cents=1160502 — because the
+adapter overrides the requested size with the initial-position quantity.
+
+**Root cause:** `src/backtest/adapters/aggressiveAdapter.ts:75`:
+```ts
+const config = buildAggressiveConfig(params, remainingQty);
+```
+`buildAggressiveConfig` then sets `size: remainingQty` (the full position),
+silently dropping any user-supplied `params.size`. The live `AggressiveRunner`
+respects `config.size` directly — only the backtest adapter has this quirk.
+
+**Workaround used:** custom depth-walk simulator
+(`scripts/backtest-movva.mjs`) that bypasses the strategy adapter entirely.
+Confirmed the projected $8,294.06 / 93.81¢ VWAP outcome to within $0.13.
+
+**Proposed:** in the backtest adapter, prefer `params.size` when supplied
+and fall back to `remainingQty` only when absent. Add a regression test:
+backtest with `initialPosition.qty=10000` + `params.size=3000` should
+fill 3000 (not 10000). Cost: ~1h.
+
+**Dependency:** none.
+
 ### ✅ SH-FILL-SIM-DIRECTIONAL — shipped 2026-05-08 in PR #132
 **Tags:** engine [backtest]
 

@@ -168,6 +168,68 @@ describe('AggressiveRunner — oneTickIn', () => {
   });
 });
 
+// ── 4b. Float-imprecision rounding (SH-AGGRESSIVE-FLOAT-CENTS) ────────────────
+
+describe('AggressiveRunner — float-cents rounding', () => {
+  it('rounds IEEE-754 imprecise prices to integer for sell side', async () => {
+    // Top YES bid arrives as 6.000000000000001 (e.g. orderbook math artifact).
+    // Without rounding, Kalshi rejects: "cannot unmarshal number into Go int".
+    const client = makeClient({ yesBid: 6.000000000000001, noBid: 25 });
+    const config: AggressiveConfig = {
+      ticker: 'TICKER-YES',
+      side: 'yes',
+      action: 'sell',
+      size: 10,
+      confirmedAggressive: true,
+    };
+    const runner = new AggressiveRunner(client, config);
+    await runner.run();
+
+    const payload = (client.createOrder as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(Number.isInteger(payload.yes_price)).toBe(true);
+    expect(payload.yes_price).toBe(6);
+  });
+
+  it('rounds IEEE-754 imprecise prices to integer for buy side', async () => {
+    // Top NO bid arrives as 25.000000000000004 → implied YES ask = 74.999...
+    // Math.round → 75 (integer).
+    const client = makeClient({ yesBid: 6, noBid: 25.000000000000004 });
+    const config: AggressiveConfig = {
+      ticker: 'TICKER-YES',
+      side: 'yes',
+      action: 'buy',
+      size: 10,
+      confirmedAggressive: true,
+    };
+    const runner = new AggressiveRunner(client, config);
+    await runner.run();
+
+    const payload = (client.createOrder as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(Number.isInteger(payload.yes_price)).toBe(true);
+    expect(payload.yes_price).toBe(75);
+  });
+
+  it('rounds price for side=no orders (no_price field)', async () => {
+    // Sell-NO action: limit pulled from top YES bid (6.0000...001), assigned
+    // to no_price field. Must be integer.
+    const client = makeClient({ yesBid: 6.000000000000001, noBid: 25 });
+    const config: AggressiveConfig = {
+      ticker: 'TICKER-NO',
+      side: 'no',
+      action: 'sell',
+      size: 10,
+      confirmedAggressive: true,
+    };
+    const runner = new AggressiveRunner(client, config);
+    await runner.run();
+
+    const payload = (client.createOrder as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(Number.isInteger(payload.no_price)).toBe(true);
+    expect(payload.no_price).toBe(6);
+    expect(payload.yes_price).toBeUndefined();
+  });
+});
+
 // ── 5. Empty book throws ──────────────────────────────────────────────────────
 
 describe('AggressiveRunner — empty book guard', () => {
