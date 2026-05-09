@@ -73,6 +73,7 @@ import {
 import { validateWorkflow } from './workflows/validate.js';
 import type { Policy } from './workflows/policies.js';
 import { createMultiTickerRecorder } from './backtest/multiTickerRecorder.js';
+import { createWsRecorder } from './backtest/wsRecorder.js';
 import { discoverTickers, writeTickerFile, readTickerFile } from './backtest/discover.js';
 import { syncRecordings } from './backtest/sync.js';
 import { runBacktest } from './backtest/harness.js';
@@ -1774,8 +1775,18 @@ async function cmdRecord(
       const stdCount = tickers.length - hotCount;
       process.stderr.write(`[scanner] tracking ${tickers.length} tickers (${hotCount} hot, ${stdCount} standard)\n`);
 
-      const client = new KalshiClient(makeMinimalConfig('KX_PLACEHOLDER'));
-      const recorder = createMultiTickerRecorder({ tickers, dir: recordingsDir, client });
+      const transport = (flags['transport'] ?? 'rest').toLowerCase();
+      let recorder;
+      if (transport === 'ws') {
+        const active = loadActive();
+        const apiKey = active.keyId;
+        const privateKey = fs.readFileSync(active.keyPath, 'utf8');
+        process.stderr.write('[scanner] transport=ws (Kalshi orderbook_delta WebSocket)\n');
+        recorder = createWsRecorder({ tickers, dir: recordingsDir, apiKey, privateKey });
+      } else {
+        const client = new KalshiClient(makeMinimalConfig('KX_PLACEHOLDER'));
+        recorder = createMultiTickerRecorder({ tickers, dir: recordingsDir, client });
+      }
       recorder.start();
 
       // Log stats every 60 s
