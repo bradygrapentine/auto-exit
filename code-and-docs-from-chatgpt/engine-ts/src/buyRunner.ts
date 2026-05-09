@@ -201,6 +201,7 @@ export class BuyRunner {
       size: this.config.size,
       dryRun: this.config.dryRun,
       remaining: this.remaining,
+      strategy: 'buy-runner',
     });
     this.log('info', 'buy_loop_started', {
       ticker: this.config.ticker,
