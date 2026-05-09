@@ -12,6 +12,7 @@
 
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
+import { PassThrough } from 'node:stream';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -66,9 +67,12 @@ export async function syncRecordings(opts: SyncOptions): Promise<SyncResult> {
   const startMs = Date.now();
 
   return new Promise<SyncResult>((resolve, reject) => {
-    // fly ssh console produces gzipped tar on stdout
+    // fly ssh console produces gzipped tar on stdout. We capture stderr too
+    // (instead of inheriting) so we can surface remote-side errors and detect
+    // the silent-failure mode described in SH-SCANNER-SYNC-FIX-2 — fly exits 0
+    // with no stdout bytes, leaving the local tar with an empty input.
     const flyProc = spawn('fly', ['ssh', 'console', '-a', flyApp, '-C', remoteCmd], {
-      stdio: ['ignore', 'pipe', 'inherit'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     // local tar extracts verbose to stderr, which we capture for file count
@@ -76,8 +80,18 @@ export async function syncRecordings(opts: SyncOptions): Promise<SyncResult> {
       stdio: ['pipe', 'inherit', 'pipe'],
     });
 
-    // pipe fly stdout → tar stdin
-    flyProc.stdout.pipe(tarProc.stdin);
+    // Count bytes piped from fly stdout to detect silent-failure mode where
+    // fly exits cleanly without ever writing tar output. Use a PassThrough so
+    // .pipe() handles backpressure for large transfers.
+    let bytesPiped = 0;
+    const counter = new PassThrough();
+    counter.on('data', (chunk: Buffer) => { bytesPiped += chunk.length; });
+    flyProc.stdout.pipe(counter).pipe(tarProc.stdin);
+
+    // capture fly stderr — connection-banner messages are normal but errors
+    // (auth, missing app, machine stopped) also flow here.
+    const flyStderr: string[] = [];
+    flyProc.stderr.on('data', (chunk: Buffer) => flyStderr.push(chunk.toString()));
 
     // capture tar verbose lines (goes to stderr with -v on some platforms)
     const tarVerbose: string[] = [];
@@ -99,8 +113,15 @@ export async function syncRecordings(opts: SyncOptions): Promise<SyncResult> {
         reject(new Error(`local tar failed to start: ${tarError.message}`));
         return;
       }
+      const stderrText = flyStderr.join('').trim();
       if (flyCode !== 0) {
-        reject(new Error(`fly ssh console exited with code ${flyCode}`));
+        const detail = stderrText ? ` — fly stderr: ${stderrText}` : '';
+        reject(new Error(`fly ssh console exited with code ${flyCode}${detail}`));
+        return;
+      }
+      if (bytesPiped === 0) {
+        const detail = stderrText ? ` — fly stderr: ${stderrText}` : '';
+        reject(new Error(`no data piped from remote tar (fly exited 0 but stdout was empty)${detail}`));
         return;
       }
       if (tarCode !== 0) {
@@ -111,6 +132,7 @@ export async function syncRecordings(opts: SyncOptions): Promise<SyncResult> {
       const verboseText = tarVerbose.join('');
       resolve({
         filesTransferred: countVerboseLines(verboseText),
+        bytesTransferred: bytesPiped,
         durationMs: Date.now() - startMs,
       });
     }
@@ -129,8 +151,6 @@ export async function syncRecordings(opts: SyncOptions): Promise<SyncResult> {
 
     flyProc.on('close', (code) => {
       flyCode = code ?? -1;
-      // Signal EOF to tar once fly is done
-      tarProc.stdin.end();
       trySettle();
     });
 
