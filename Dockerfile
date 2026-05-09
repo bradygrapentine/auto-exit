@@ -38,7 +38,14 @@ RUN printf '%s\n' \
   '  node dist/cli.js record discover --out /data/tickers.json' \
   '  echo "[bootstrap] discover complete."' \
   'fi' \
-  'exec node dist/cli.js record start --tickers-file /data/tickers.json --recordings-dir /data/recordings' \
+  'TRANSPORT_FLAG=""' \
+  'if [ "${KEA_SCANNER_TRANSPORT:-rest}" = "ws" ]; then' \
+  '  TRANSPORT_FLAG="--transport ws"' \
+  '  echo "[bootstrap] transport=ws (Kalshi orderbook_delta WebSocket)"' \
+  'else' \
+  '  echo "[bootstrap] transport=rest (default REST polling)"' \
+  'fi' \
+  'exec node dist/cli.js record start --tickers-file /data/tickers.json --recordings-dir /data/recordings $TRANSPORT_FLAG' \
   > /usr/local/bin/scanner-entrypoint.sh \
   && chmod +x /usr/local/bin/scanner-entrypoint.sh
 
