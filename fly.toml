@@ -4,7 +4,10 @@ primary_region = "iad"
 [build]
 
 [[mounts]]
-source = "scanner_data"
+# Volume name matches the live machine's attached volume.
+# An unattached `scanner_data` (5GB) volume exists from earlier setup —
+# safe to delete via `flyctl volumes destroy vol_42klox1olpg2pk04` when convenient.
+source = "data"
 destination = "/data"
 
 [[vm]]
