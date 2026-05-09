@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-08 (SH-PASSIVE-STILL-NO-FILLS shipped — passive fills on all 3 sweep recordings; SH-TWAP-CADENCE filed — dryRun-mode invisible to simulator)
+Last `/backlog-sync`: 2026-05-09 (SH-EDGE Tasks 7+8+12 shipped + 2 follow-ups; SP3 path-b shipped; SH-SCANNER-WS shipped to Fly prod; SH-AGGRESSIVE-FLOAT-CENTS + SH-SCANNER-SYNC-FIX-2 promoted to ✅)
 
 | Status | Count |
 |--------|-------|
@@ -8,10 +8,10 @@ Last `/backlog-sync`: 2026-05-08 (SH-PASSIVE-STILL-NO-FILLS shipped — passive 
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 6 |
-| 🧊 Surface parity (SP1–SP4) | 3 |
+| 🧊 Tooling ecosystem (SH) | 4 |
+| 🧊 Surface parity (SP1–SP4) | 0 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 68 |
+| ✅ Shipped (this log) | 75 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -386,6 +386,14 @@ _SH-BACKTEST-RUNTICK shipped 2026-05-08 — see §7._
 
 _ENGINE-NAV-WIRE shipped 2026-05-08 — see §7._
 
+### ✅ SH-SCANNER-SYNC-FIX-2 — shipped 2026-05-08 (PR #154)
+
+`record sync` now captures fly's stderr via PassThrough and rejects loudly
+when fly exits 0 with 0 bytes transferred. 14/14 sync tests + 2 live e2e
+runs verified.
+
+(Original ticket below for history.)
+
 ### 🧊 SH-SCANNER-SYNC-FIX-2 — `kea record sync` silently exits without transferring
 **Tags:** engine [ops]
 
@@ -524,6 +532,14 @@ sites to match. Add tests covering `--flag`, `--flag=true`,
 **Cost:** ~1-2h.
 **Dependency:** none.
 
+### ✅ SH-AGGRESSIVE-FLOAT-CENTS — shipped 2026-05-09 (PR #155)
+
+`Math.round` applied to limit price before assignment to yes_price/no_price
+in src/aggressive.ts. 3 regression tests added covering sell/buy/no-side
+float rounding paths.
+
+(Original ticket below for history.)
+
 ### 🧊 SH-AGGRESSIVE-FLOAT-CENTS — live `kea strategy aggressive` rejected by Kalshi for non-integer cents
 **Tags:** engine [live-execution]
 
@@ -586,6 +602,14 @@ fill 3000 (not 10000). Cost: ~1h.
 
 **Dependency:** none.
 
+### ✅ SH-EDGE-LOOP-STRATEGY-FIELD — shipped 2026-05-09 (PR #157)
+
+ExitRunner emits `strategy: 'exit-runner'`, BuyRunner emits `'buy-runner'`
+in their loop_started entries. `joinFires` now buckets these correctly;
+smoke confirmed 19 fires attribute to exit-runner.
+
+(Original ticket below for history.)
+
 ### 🧊 SH-EDGE-LOOP-STRATEGY-FIELD — `loop_started` journal entries omit `strategy`
 **Tags:** engine [edge]
 
@@ -603,6 +627,15 @@ Plus a regression test that loads a journal slice and asserts no
 `strategy: 'unknown'` rows. Cost: ~1h.
 
 **Dependency:** none. Lights up SH-EDGE per-strategy aggregation.
+
+### ✅ SH-EDGE-FILTER-MOCK-JOURNALS — shipped 2026-05-09 (PR #157)
+
+`generateSnapshot` and `cmdEdge` default-skip `KXTEST*` tickers and any
+fire whose loop_started had `dryRun=true`. New `--include-mock` flag
+opts back in. Smoke confirmed default fire count dropped 5,233 → 6
+(real fires only).
+
+(Original ticket below for history.)
 
 ### 🧊 SH-EDGE-FILTER-MOCK-JOURNALS — `kea edge` flooded by `KXTEST` / dryRun journals
 **Tags:** engine [edge]
@@ -887,6 +920,14 @@ category X drops below Y, fire strategy Z") is needed later, file as a
 new ticket — design on top of synthetic CRUD via a generator concept,
 not a parallel persistence layer.
 
+### ✅ SP3.2 — shipped 2026-05-09 (PR #158, path-b)
+
+Existing SyntheticsTab covers list/cancel/wizard-create. Added `t` as the
+primary tab key (was `6`, kept as alias) and relabeled the nav item to
+"triggers" so the SP3 surface is findable by name.
+
+(Original ticket below for history.)
+
 ### 🧊 SP3.2 — TUI: triggers tab
 **Tags:** tui-mcp
 
@@ -900,6 +941,16 @@ the tab as they happen.
 **Cost:** ~1 day.
 
 **Dependency:** consumes the existing `kea_synthetic_*` MCP tools (SH-WATCH).
+
+### ✅ SP3.3 — shipped 2026-05-09 (PR #158)
+
+Extension popup `SyntheticsView` gains an inline "+ New trigger" form
+(stop_loss / take_profit / trailing_stop). New `getActiveTabTicker`
+helper auto-prefills the ticker from the current Kalshi tab via
+chrome.tabs + the existing ticker-detector. New `registerSynthetic`
+API helper. 8 new tests.
+
+(Original ticket below for history.)
 
 ### 🧊 SP3.3 — Extension: triggers panel
 **Tags:** ext [tui-mcp]
