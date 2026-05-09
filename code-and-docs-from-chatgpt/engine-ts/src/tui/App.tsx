@@ -64,7 +64,7 @@ export function App() {
       else if (input === '3') setTab('book');
       else if (input === '4') setTab('journal');
       else if (input === 'a' || input === 'A') setTab('account');
-      else if (input === '6') setTab('synthetics');
+      else if (input === '6' || input === 't' || input === 'T') setTab('synthetics');
       else if (input === '5') setTab('safety');
       else if (input === '7') setTab('strategies');
       else if (input === '8') setTab('reports');
@@ -146,7 +146,7 @@ function TabBar({ tab }: { tab: Tab }) {
       {item('3', 'book', 'book')}<Text> </Text>
       {item('4', 'journal', 'journal')}<Text> </Text>
       {item('a', 'account', 'account')}<Text> </Text>
-      {item('6', 'synthetics', 'synthetics')}<Text> </Text>
+      {item('t', 'triggers', 'synthetics')}<Text> </Text>
       {item('5', 'safety', 'safety')}<Text> </Text>
       {item('7', 'strategies', 'strategies')}<Text> </Text>
       {item('8', 'reports', 'reports')}<Text> </Text>
