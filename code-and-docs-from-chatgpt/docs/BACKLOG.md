@@ -754,6 +754,22 @@ skewed-book fixtures + re-run validation on KXINXU).
 so the directional sweep semantics are correct; this is a passive-side
 gating issue.
 
+### ✅ SH-SCANNER-WS — shipped 2026-05-09 (PRs #159 #160 #161 #162)
+
+Spike (#159) verified Kalshi WS auth + delta shape; impl (#160) added
+`wsClient.ts` + `wsBookTracker.ts` + `wsRecorder.ts` behind a
+`--transport ws` flag (REST default); deploy plumbing (#161) wired
+`KEA_SCANNER_TRANSPORT=ws` into the Fly entrypoint; #162 fixed a
+pre-existing fly.toml volume-mount drift that was blocking ALL deploys.
+Cutover on 2026-05-09 23:34 UTC; first 60s post-cutover showed 239 snaps
+on hot tickers / 59 on standard, ZERO HTTP 429s (REST mode had been
+emitting them constantly).
+
+Rollback: `flyctl secrets unset KEA_SCANNER_TRANSPORT -a auto-exit-scanner`.
+See `engine-ts/docs/runbooks/2026-05-09-ws-deployment.md`.
+
+(Original ticket below for history.)
+
 ### 🧊 SH-SCANNER-WS — WebSocket transport for the multi-ticker scanner
 **Tags:** shared [engine, ops]
 
