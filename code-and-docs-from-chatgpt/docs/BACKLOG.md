@@ -847,21 +847,29 @@ _SP2.3 Extension strategy picker shipped 2026-05-06 — see §7._
 Once the trigger layer exists, every surface needs CRUD over trigger
 rules.
 
-### 🧊 SP3.1 — MCP: trigger CRUD tools
+### ✅ SP3.1 — MCP: trigger CRUD tools — collapsed to existing synthetic CRUD (2026-05-09)
 **Tags:** tui-mcp [shared]
 
-**Trigger:** the W4.1 trigger layer is policy. Policy lives best where
-the agent can read and edit it. Without MCP coverage, the agent can't
-participate in the same trigger machinery a human edits via TUI.
+**Decision (2026-05-09):** SH-WATCH (shipped 2026-05-06) already provides
+the full trigger CRUD surface via the synthetic-watcher MCP tools.
+Building a parallel `kea_trigger_*` layer would double the design
+surface for unclear v1 value. SP3 v1 reuses the existing surface; SP3.2
+and SP3.3 are views over `kea_synthetic_*`.
 
-**Proposed:** five tools: `kea_trigger_list`, `kea_trigger_get`,
-`kea_trigger_add`, `kea_trigger_update`, `kea_trigger_remove`. Triggers
-persist alongside `safety.json` (`triggers.json`, same atomic-write
-pattern). Each mutation appends to the audit log.
+| BACKLOG name (v1 design) | Existing equivalent |
+|---|---|
+| `kea_trigger_list` | `kea_synthetic_list` |
+| `kea_trigger_get` | `kea_synthetic_get` |
+| `kea_trigger_add` | `kea_synthetic_register` |
+| `kea_trigger_update` | cancel + register (acceptable for v1) |
+| `kea_trigger_remove` | `kea_synthetic_cancel` |
+| (bonus) preview | `kea_synthetic_preview` |
+| (bonus) history | `kea_synthetic_history` |
 
-**Cost:** ~1 day after W4.1 lands.
-
-**Dependency:** W4.1 trigger layer.
+If a true long-lived "policy" layer (e.g. "whenever any market in
+category X drops below Y, fire strategy Z") is needed later, file as a
+new ticket — design on top of synthetic CRUD via a generator concept,
+not a parallel persistence layer.
 
 ### 🧊 SP3.2 — TUI: triggers tab
 **Tags:** tui-mcp
@@ -875,7 +883,7 @@ the tab as they happen.
 
 **Cost:** ~1 day.
 
-**Dependency:** SP3.1, W4.1.
+**Dependency:** consumes the existing `kea_synthetic_*` MCP tools (SH-WATCH).
 
 ### 🧊 SP3.3 — Extension: triggers panel
 **Tags:** ext [tui-mcp]
@@ -889,7 +897,7 @@ the current market ticker. Lists triggers with active/paused state.
 
 **Cost:** ~1.5 days.
 
-**Dependency:** SP3.1, W4.1.
+**Dependency:** consumes the existing `kea_synthetic_*` MCP tools (SH-WATCH).
 
 ---
 
