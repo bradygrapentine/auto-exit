@@ -2,13 +2,24 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: `superpowers:executing-plans`. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Prevent the Kalshi $0.01-per-fill minimum-fee tax from ballooning the effective fee rate to ~100% on cheap-market dust trades. Add a `minChunkValueDollars` config field; refuse to emit any chunk whose `chunk_size × decision.priceCentsExact / 100` falls below it.
+**Goal:** Prevent the Kalshi $0.01-per-fill minimum-fee tax from ballooning the effective fee rate to ~100% on cheap-market dust trades. Add a `minChunkValueDollars` config field; refuse to emit any chunk whose `chunk_size × decision.priceCentsExact / 100` falls below it. Make sure the runner cleanly skips zero-chunk decisions instead of submitting `count: 0` to Kalshi.
 
-**Architecture:** One field on `ExitConfig`, one guard in `decideLosingExitOrder` (`pricing.ts`), one new journal kind for observability (`chunk_too_small_for_fee_threshold`). No changes to runners — the existing `loop_finished` exit path on a no-op decision already handles the "engine returns 0-chunk decision" case via the `tailSweepThreshold` semantic.
+**Architecture:**
+1. One field on `ExitConfig` (`minChunkValueDollars?: number`).
+2. One guard in `decideLosingExitOrder` (`pricing.ts`) that returns `chunkSize: 0` with a stable `reason` constant when the threshold trips.
+3. **One runner-side change** in `exitRunner.ts` to skip the `buildSellPayload`/`createOrder` path when `decision.chunkSize === 0`, journal the skip, and break the loop. Verified during plan review (2026-05-09): `exitRunner.ts:351–388` currently does NOT branch on chunk size; without the runner change, a zero-chunk decision becomes a `count: 0` createOrder call that Kalshi rejects.
+
+No journal-kind union changes — the existing `order_decision`/`loop_finished` entries already carry the decision's `reason` field.
 
 **Tech stack:** TypeScript engine + vitest. No new dependencies.
 
-**Why this is non-trivial despite small surface:** the guard has to fire *after* the chunk size has been chosen and *before* the decision is returned, otherwise the operator gets a misleading `priceDecision` in the journal. It also needs to play nicely with `tailSweepThreshold` — both are "stop emitting" guards but for different reasons. The decision shape `chunkSize: 0` doesn't currently exist in the type; we'd have to change the return shape OR introduce a new sentinel `reason`.
+**Why this is non-trivial despite small surface:** the guard has to fire *after* the chunk size has been chosen and the price has been picked, otherwise the operator gets a misleading `priceDecision` in the journal. It also has to (a) play nicely with `tailSweepThreshold`, which is its own "stop emitting" branch with different intent, and (b) interact correctly with `chooseChunkSize`'s pre-existing ability to return zero when `remaining = 0` — that's a different cause and shouldn't be re-attributed to the new reason.
+
+**Pre-flight verification (already done during plan review, do NOT repeat):**
+
+- `types.ts:111` — `PriceDecision.reason` is typed as `string`, NOT a literal union. Adding a new sentinel value does not require any type-union update; just use a `const`.
+- `exitRunner.ts:351–388` — calls `decideLosingExitOrder` then unconditionally builds + creates an order. There is NO existing zero-chunk early return.
+- `test/pricing.test.ts:8` — uses a single hand-built `cfg: ExitConfig` fixture; there is NO `makePricingConfig` helper. New tests must either reuse `cfg` (overriding fields per case) or introduce a small inline `withCfg(...)` helper at the top of the new describe block.
 
 ---
 
@@ -26,28 +37,25 @@ The runner consumes `PriceDecision` and calls `buildSellPayload(config, decision
 
 ## Decision: how does the guard signal "skip"?
 
-Three options:
+Two real options:
 
-1. **Add a `chunk_too_small` reason.** Return `chunkSize: 0, priceCents: floorPriceCents, reason: 'chunk_too_small_for_fee_threshold'`. Runners already check `chunkSize <= 0` in some paths (`pricing.ts:68`).
+1. **Return `chunkSize: 0` with a stable `reason` string.** Aligned with the existing decision shape; the runner has to learn to short-circuit on zero. Runner change is small (~10 LOC + one test) and is in scope for this plan.
 
-2. **Throw.** Crashy, doesn't let the runner journal the skip cleanly.
+2. **Throw an `EngineSkip` exception.** More Pythonic but invasive — every runner has to learn a new exception class. Skipping.
 
-3. **Return `chunkSize: 0` with a stable existing reason like `final_tail_sweep`.** Wrong — masks the actual cause and pollutes the tail-sweep stats.
-
-**Choose option 1.** Aligns with existing `reason` enum, runners can branch on `decision.reason` to journal `chunk_too_small_for_fee_threshold` and break the loop.
-
-The runner change is *not* in scope for this plan — but Task 2.5 verifies the existing exit-runner already handles `chunkSize <= 0` gracefully (it does, at `exitRunner.ts` near "decision.chunkSize <= 0 break"). If verification finds it doesn't, file a follow-up rather than expanding this plan.
+**Choose option 1.** Use the constant `CHUNK_TOO_SMALL_REASON = 'chunk_too_small_for_fee_threshold'` exported from `pricing.ts`; the runner imports it and branches on equality.
 
 ---
 
 ## File structure
 
-- Modify: `code-and-docs-from-chatgpt/engine-ts/src/types.ts` (1 field on `ExitConfig`, 1 entry in the `reason` union).
-- Modify: `code-and-docs-from-chatgpt/engine-ts/src/pricing.ts` (the guard).
-- Modify: `code-and-docs-from-chatgpt/engine-ts/test/pricing.test.ts` (new tests).
-- Add (optional): `code-and-docs-from-chatgpt/engine-ts/src/types.ts` JournalKind union — new kind `chunk_too_small_for_fee_threshold` (only if verifying Task 2.5 shows the runner needs to journal it via existing `loop_finished`-with-reason patterns; otherwise no journal change).
+- Modify: `code-and-docs-from-chatgpt/engine-ts/src/types.ts` — 1 field on `ExitConfig`. (`PriceDecision.reason` is already `string`; no union to touch.)
+- Modify: `code-and-docs-from-chatgpt/engine-ts/src/pricing.ts` — export `CHUNK_TOO_SMALL_REASON` constant + add the guard.
+- Modify: `code-and-docs-from-chatgpt/engine-ts/src/exitRunner.ts` — short-circuit on `decision.chunkSize === 0` before `buildSellPayload`/`createOrder`; journal `chunk_skipped` with the reason; break the loop with status `complete`.
+- Modify: `code-and-docs-from-chatgpt/engine-ts/test/pricing.test.ts` — new pricing-side tests (reuse existing `cfg` fixture).
+- Modify: `code-and-docs-from-chatgpt/engine-ts/test/exitRunner.test.ts` (or wherever ExitRunner integration tests live; identify in Task 2.4) — one new test asserting zero-chunk decisions short-circuit.
 
-Nothing new in CLI, MCP, or backtest harness — guard sits in pricing where every consumer already routes through.
+Nothing new in CLI, MCP, or backtest harness.
 
 ---
 
@@ -56,65 +64,84 @@ Nothing new in CLI, MCP, or backtest harness — guard sits in pricing where eve
 **Files:**
 - Test: `test/pricing.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1:** At the top of a new `describe('SH-MIN-CHUNK')` block, add an inline helper that overrides the existing `cfg` fixture (which is hand-built at line 8) per case:
+
   ```ts
-  it('refuses chunks below minChunkValueDollars (SH-MIN-CHUNK)', () => {
-    const config = makePricingConfig({
-      chunkSize: 1,                    // 1 contract
-      minChunkValueDollars: 0.15,      // standard default
-      heldSide: 'yes',
-    });
-    // Top yes-bid at 1¢ → chunk value = 1 × 0.01 = $0.01 ≪ $0.15.
-    const book: Orderbook = {
-      yes: [{ priceCents: 1, size: 100 }],
-      no: [{ priceCents: 99, size: 100 }],
-    };
-    const decision = decideLosingExitOrder(book, 1, config);
-    expect(decision.chunkSize).toBe(0);
-    expect(decision.reason).toBe('chunk_too_small_for_fee_threshold');
-    // priceCents must still be a sensible scalar so journal serialization doesn't blow up.
-    expect(Number.isFinite(decision.priceCents)).toBe(true);
-  });
+  // Reuse the existing top-of-file `cfg: ExitConfig`. Override per case.
+  function withCfg(overrides: Partial<ExitConfig>): ExitConfig {
+    return { ...cfg, ...overrides };
+  }
+  ```
 
-  it('does NOT fire when chunk value is comfortably above threshold', () => {
-    const config = makePricingConfig({
-      chunkSize: 100,
-      minChunkValueDollars: 0.15,
-      heldSide: 'yes',
-    });
-    const book: Orderbook = { yes: [{ priceCents: 50, size: 200 }], no: [] };
-    const decision = decideLosingExitOrder(book, 100, config);
-    expect(decision.chunkSize).toBe(100); // 100 × 0.50 = $50.00 ≫ threshold
-    expect(decision.reason).not.toBe('chunk_too_small_for_fee_threshold');
-  });
+- [ ] **Step 2: Write the failing tests**
+  ```ts
+  import { CHUNK_TOO_SMALL_REASON } from '../src/pricing.js';
 
-  it('uses default minChunkValueDollars=0.15 when unset', () => {
-    const config = makePricingConfig({ chunkSize: 1, heldSide: 'yes' });
-    expect(config.minChunkValueDollars).toBeUndefined();
-    const book: Orderbook = { yes: [{ priceCents: 5, size: 100 }], no: [] };
-    // 1 × $0.05 = $0.05 < default 0.15 → guard fires.
-    const decision = decideLosingExitOrder(book, 1, config);
-    expect(decision.reason).toBe('chunk_too_small_for_fee_threshold');
-  });
-
-  it('does not fire on tail-sweep path — tail-sweep uses floor price by design', () => {
-    // When remaining <= tailSweepThreshold, the tail-sweep branch returns first
-    // with reason 'final_tail_sweep' BEFORE the chunk-value guard runs. This
-    // is intentional: the tail-sweep is the operator's last-ditch dust-clear,
-    // and they've explicitly accepted the fee math by setting the threshold.
-    const config = makePricingConfig({
-      chunkSize: 1,
-      tailSweepThreshold: 5,
-      minChunkValueDollars: 0.15,
-      heldSide: 'yes',
+  describe('SH-MIN-CHUNK — minChunkValueDollars guard', () => {
+    it('refuses chunks below minChunkValueDollars', () => {
+      const config = withCfg({ chunkSize: 1, minChunkValueDollars: 0.15, heldSide: 'yes' });
+      // Top yes-bid at 1¢ → chunk value = 1 × 0.01 = $0.01 ≪ $0.15.
+      const book: Orderbook = {
+        yes: [{ priceCents: 1, size: 100 }],
+        no: [{ priceCents: 99, size: 100 }],
+      };
+      const decision = decideLosingExitOrder(book, 1, config);
+      expect(decision.chunkSize).toBe(0);
+      expect(decision.reason).toBe(CHUNK_TOO_SMALL_REASON);
+      expect(Number.isFinite(decision.priceCents)).toBe(true);
     });
-    const book: Orderbook = { yes: [{ priceCents: 1, size: 100 }], no: [] };
-    const decision = decideLosingExitOrder(book, 3, config); // remaining < threshold
-    expect(decision.reason).toBe('final_tail_sweep');
+
+    it('does NOT fire when chunk value is comfortably above threshold', () => {
+      const config = withCfg({ chunkSize: 100, minChunkValueDollars: 0.15, heldSide: 'yes' });
+      const book: Orderbook = { yes: [{ priceCents: 50, size: 200 }], no: [] };
+      const decision = decideLosingExitOrder(book, 100, config);
+      expect(decision.chunkSize).toBe(100); // 100 × 0.50 = $50.00 ≫ threshold
+      expect(decision.reason).not.toBe(CHUNK_TOO_SMALL_REASON);
+    });
+
+    it('uses default minChunkValueDollars=0.15 when unset', () => {
+      const config = withCfg({ chunkSize: 1, heldSide: 'yes' });
+      // minChunkValueDollars left undefined; engine defaults to 0.15.
+      const book: Orderbook = { yes: [{ priceCents: 5, size: 100 }], no: [] };
+      // 1 × $0.05 = $0.05 < default 0.15 → guard fires.
+      const decision = decideLosingExitOrder(book, 1, config);
+      expect(decision.reason).toBe(CHUNK_TOO_SMALL_REASON);
+    });
+
+    it('disables when minChunkValueDollars=0', () => {
+      const config = withCfg({ chunkSize: 1, minChunkValueDollars: 0, heldSide: 'yes' });
+      const book: Orderbook = { yes: [{ priceCents: 5, size: 100 }], no: [] };
+      const decision = decideLosingExitOrder(book, 1, config);
+      expect(decision.chunkSize).toBe(1);
+      expect(decision.reason).not.toBe(CHUNK_TOO_SMALL_REASON);
+    });
+
+    it('does not fire on tail-sweep path — tail-sweep uses floor price by design', () => {
+      // When remaining <= tailSweepThreshold, the tail-sweep branch returns
+      // first with reason 'final_tail_sweep' BEFORE the new guard runs.
+      const config = withCfg({
+        chunkSize: 1, tailSweepThreshold: 5, minChunkValueDollars: 0.15, heldSide: 'yes',
+      });
+      const book: Orderbook = { yes: [{ priceCents: 1, size: 100 }], no: [] };
+      const decision = decideLosingExitOrder(book, 3, config); // remaining < threshold
+      expect(decision.reason).toBe('final_tail_sweep');
+    });
+
+    it('does NOT mis-attribute when chooseChunkSize returns 0 (remaining=0)', () => {
+      // chooseChunkSize → Math.min(config.chunkSize, remaining=0) = 0.
+      // Guard precondition `chunkSize > 0` MUST prevent re-attributing to
+      // CHUNK_TOO_SMALL_REASON. The decision should keep whatever reason
+      // the existing path produces (verify via assertion that the new
+      // reason is NOT used).
+      const config = withCfg({ chunkSize: 100, minChunkValueDollars: 0.15, heldSide: 'yes' });
+      const book: Orderbook = { yes: [{ priceCents: 50, size: 200 }], no: [] };
+      const decision = decideLosingExitOrder(book, 0, config);
+      expect(decision.reason).not.toBe(CHUNK_TOO_SMALL_REASON);
+    });
   });
   ```
 
-- [ ] **Step 2: Run — confirm 4 failing tests** (`expected 0, got 1` etc).
+- [ ] **Step 3: Run — expect 5 failing tests** (one passes — the "comfortably above" case — once chooseChunkSize returns 100 with a healthy book; that's fine, it's a regression-pin).
 
   ```sh
   npx vitest run test/pricing.test.ts
@@ -138,96 +165,156 @@ Nothing new in CLI, MCP, or backtest harness — guard sits in pricing where eve
   minChunkValueDollars?: number;
   ```
 
-- [ ] **Step 2: Add to `PriceDecision.reason` union** (`types.ts`, search for the existing `reason` union — likely around the `PriceDecision` interface):
+- [ ] **Step 2: tsc clean** — `npx tsc --noEmit`. `PriceDecision.reason` is already typed as `string` (`types.ts:111`), so no further type changes are needed. Tests will fail until pricing.ts is updated; that's Task 2.3.
 
-  ```ts
-  reason: ... | 'chunk_too_small_for_fee_threshold' | ...;
-  ```
-
-- [ ] **Step 3: tsc — `npx tsc --noEmit`** must remain clean. Existing callsites that pattern-match on `reason` won't fail because `chunk_too_small...` is a NEW arm.
-
-## Task 2.3 — Implement the guard (~20 min)
+## Task 2.3 — Implement the guard in pricing.ts (~25 min)
 
 **Files:**
 - Modify: `src/pricing.ts`
 
-- [ ] **Step 1: Define the default constant near the top of the file**
+- [ ] **Step 1: Export the constant + default at the top of the file**
   ```ts
+  export const CHUNK_TOO_SMALL_REASON = 'chunk_too_small_for_fee_threshold';
   const DEFAULT_MIN_CHUNK_VALUE_DOLLARS = 0.15;
   ```
 
-- [ ] **Step 2: Add the guard immediately AFTER `selectExecutablePrice` returns** (`pricing.ts:198–199`), so the price has already been chosen:
+- [ ] **Step 2: Add the guard with a `chunkSize > 0` precondition.** Insert immediately AFTER `selectExecutablePrice` returns (`pricing.ts:198–199`), so the price has already been chosen:
 
   ```ts
   const price = selectExecutablePrice(sideLevels, chunkSize, config.floorPriceCents, config.minLevelSize);
-  const minChunkValue = config.minChunkValueDollars ?? DEFAULT_MIN_CHUNK_VALUE_DOLLARS;
-  if (minChunkValue > 0) {
-    const chunkValueDollars = chunkSize * price.priceCentsExact / 100;
-    if (chunkValueDollars < minChunkValue) {
-      return {
-        chunkSize: 0,
-        priceCents: price.priceCents,
-        priceCentsExact: price.priceCentsExact,
-        priceDollars: price.priceDollars,
-        reason: 'chunk_too_small_for_fee_threshold',
-        cumulativeSizeAtPrice: price.cumulativeSizeAtPrice,
-      };
+
+  // Re-attribute only when the chunk is genuinely above zero. chooseChunkSize
+  // can produce zero (remaining=0) for unrelated reasons; that case keeps
+  // its existing reason rather than getting masked by CHUNK_TOO_SMALL_REASON.
+  if (chunkSize > 0) {
+    const minChunkValue = config.minChunkValueDollars ?? DEFAULT_MIN_CHUNK_VALUE_DOLLARS;
+    if (minChunkValue > 0) {
+      const chunkValueDollars = chunkSize * price.priceCentsExact / 100;
+      if (chunkValueDollars < minChunkValue) {
+        return {
+          chunkSize: 0,
+          priceCents: price.priceCents,
+          priceCentsExact: price.priceCentsExact,
+          priceDollars: price.priceDollars,
+          reason: CHUNK_TOO_SMALL_REASON,
+          cumulativeSizeAtPrice: price.cumulativeSizeAtPrice,
+        };
+      }
     }
   }
+
   return { chunkSize, ...price };
   ```
 
   Note: keeping `priceCents` populated (rather than zeroing it) preserves journal-trace usefulness — the operator can see what the engine would have priced at and judge whether to lower the threshold.
 
-- [ ] **Step 3: Order matters.** The tail-sweep branch (lines 187–195) returns *before* `selectExecutablePrice`, so the guard correctly does NOT apply there — verified by Task 2.1's fourth test case.
+- [ ] **Step 3: Verify the spread.** `selectExecutablePrice`'s return type — confirm it includes `priceCents`, `priceCentsExact`, `priceDollars`, `cumulativeSizeAtPrice` (and only those, else the `...price` spread duplicates work in Step 2). One quick read of `pricing.ts:165` (the function signature near `selectExecutablePrice`) before pasting.
 
-## Task 2.4 — Run tests, fix any regressions (~15 min)
+- [ ] **Step 4: Order matters.** The tail-sweep branch (`pricing.ts:187–195`) returns *before* `selectExecutablePrice`, so the guard correctly does NOT apply there — verified by Task 2.1's tail-sweep test.
 
-- [ ] **Step 1: All four new tests pass**
+## Task 2.4 — Run pricing tests; check for fixture breakage (~15 min)
+
+- [ ] **Step 1: All 5 new tests pass**
   ```sh
   npx vitest run test/pricing.test.ts
   ```
 
-- [ ] **Step 2: Full suite remains green**
-  ```sh
-  npx vitest run
-  ```
-  Expected: pre-existing test count + 4 new tests, all green.
-
-- [ ] **Step 3: tsc clean**
+- [ ] **Step 2: tsc clean**
   ```sh
   npx tsc --noEmit
   ```
 
-- [ ] **Step 4: If any existing test breaks**, the most likely cause is a pre-existing fixture that expected a non-zero chunk on a low-price book. Decide per case: tighten the fixture's price or set `minChunkValueDollars: 0` on that fixture (the guard becomes opt-out for any test that doesn't care).
+- [ ] **Step 3: If any existing test breaks**, the most likely cause is a pre-existing fixture that expected a non-zero chunk on a low-price book. Decide per case: tighten the fixture's price or set `minChunkValueDollars: 0` on that fixture (the guard becomes opt-out for any test that doesn't care).
 
-## Task 2.5 — Verify runner already handles `chunkSize: 0` (~10 min)
+## Task 2.5 — Add the runner short-circuit (~30 min)
 
-**Files:** read-only — `src/exitRunner.ts`, `src/passive.ts`, `src/aggressive.ts`.
+**Files:**
+- Modify: `src/exitRunner.ts`
+- Modify: `test/exitRunner.test.ts` (or whichever file contains existing ExitRunner integration tests; identify with `grep -l "new ExitRunner\|ExitRunner.run" test/`)
 
-- [ ] **Step 1: Search**
-  ```sh
-  grep -n "chunkSize <= 0\|decision.reason\|chunkSize === 0" code-and-docs-from-chatgpt/engine-ts/src/exitRunner.ts code-and-docs-from-chatgpt/engine-ts/src/passive.ts code-and-docs-from-chatgpt/engine-ts/src/aggressive.ts
+- [ ] **Step 1: Locate the call site.** `exitRunner.ts:351` calls `decideLosingExitOrder`; `352` calls `buildSellPayload`; `388` calls `createOrder`. The short-circuit must land between 351 and 352.
+
+- [ ] **Step 2: Add the short-circuit**
+  ```ts
+  import { CHUNK_TOO_SMALL_REASON } from './pricing.js';
+  // ...
+  const decision = decideLosingExitOrder(orderbook, this.status.remaining, this.config);
+  if (decision.chunkSize === 0) {
+    this.journal.append('chunk_skipped', {
+      reason: decision.reason,
+      remaining: this.status.remaining,
+      priceCentsExact: decision.priceCentsExact,
+    });
+    // CHUNK_TOO_SMALL_REASON is a structural skip — break loop with status
+    // 'complete' so the runner doesn't bang against the same dust forever.
+    if (decision.reason === CHUNK_TOO_SMALL_REASON) {
+      this.status.terminationReason = 'chunk_too_small_for_fee_threshold';
+      break;
+    }
+    // Defensive: any other zero-chunk return path also breaks. (Today there
+    // is none, but a future addition shouldn't accidentally infinite-loop.)
+    this.status.terminationReason = decision.reason;
+    break;
+  }
+  const payload = buildSellPayload(this.config, decision);
   ```
-  Expected: ExitRunner has a branch that breaks the loop on `decision.chunkSize <= 0`.
 
-- [ ] **Step 2: If absent — file a follow-up, do NOT expand this plan.** A 0-chunk decision returned to a runner that doesn't handle it would just produce a 0-share createOrder, which Kalshi would reject. Filing a follow-up keeps Track 2 to its specced cost.
+  **Verify before pasting:**
+  - `this.status.terminationReason` exists on the runner status type. If not, look at how other early-exit branches (e.g. the safety-cap break at line ~367) set termination state and match that pattern.
+  - `'chunk_skipped'` is acceptable as a journal kind. `JournalKind` is a union (`types.ts:246`); it does not currently include this string. Either:
+    - (a) add `'chunk_skipped'` to the union (preferred — small, clean), or
+    - (b) reuse an existing kind like `'loop_finished'` with a richer `data` payload.
+    Default to (a). Update the union in `types.ts:246–274` and the entry will typecheck.
+
+- [ ] **Step 3: Add an integration test**
+  ```ts
+  it('SH-MIN-CHUNK: zero-chunk decision breaks the loop without calling createOrder', async () => {
+    // Fixture: 1¢ top bid, chunkSize 1, minChunkValueDollars 0.15.
+    // Pricing layer returns chunkSize=0 + CHUNK_TOO_SMALL_REASON; runner
+    // must NOT call createOrder, must journal chunk_skipped, must terminate
+    // with status 'complete' (not 'failed').
+    const client = makeMockClient({ /* book with 1¢ yes bid */ });
+    const runner = new ExitRunner(client, makeConfig({
+      chunkSize: 1, minChunkValueDollars: 0.15, /* etc */
+    }));
+    const result = await runner.run();
+    expect(client.createOrder).not.toHaveBeenCalled();
+    expect(result.terminationReason).toBe('chunk_too_small_for_fee_threshold');
+    // Journal contains the chunk_skipped entry.
+    const journal = readTestJournal(runner.jobId);
+    expect(journal.some((e) => e.kind === 'chunk_skipped')).toBe(true);
+  });
+  ```
+
+  Adapt to whatever mock client / journal-read helper the existing exitRunner tests use.
+
+- [ ] **Step 4: Run**
+  ```sh
+  npx vitest run test/exitRunner.test.ts
+  npx vitest run    # full suite
+  ```
 
 ## Task 2.6 — Commit + PR (~10 min)
 
 - [ ] **Step 1: Stage + commit**
   ```sh
-  git commit -m "feat(pricing/SH-MIN-CHUNK): minChunkValueDollars guard
+  git commit -m "feat(engine/SH-MIN-CHUNK): minChunkValueDollars guard + runner skip
 
-  Refuse to emit any chunk whose value (chunkSize × priceCentsExact /
-  100) falls below minChunkValueDollars. Default \$0.15 — covers the
-  Kalshi \$0.01-per-fill minimum fee threshold where the effective fee
-  rate would otherwise spike to ~100% on cheap-market dust.
+  pricing.ts: refuse chunks where chunkSize × priceCentsExact / 100 falls
+  below minChunkValueDollars. Default \$0.15 covers Kalshi's \$0.01-per-fill
+  minimum-fee tax where effective rate spikes to ~100% on cheap-market
+  dust. Returns a stable PriceDecision with chunkSize=0 and reason=
+  CHUNK_TOO_SMALL_REASON. chooseChunkSize-returns-0 (remaining=0) is NOT
+  re-attributed via a chunkSize > 0 precondition.
 
-  Returns a stable PriceDecision with chunkSize=0 and reason=
-  'chunk_too_small_for_fee_threshold' so the runner's existing 0-chunk
-  break path triggers cleanly. Tail-sweep path returns earlier and is
-  unaffected by design — operator opt-in to dust-clear math.
+  exitRunner.ts: short-circuit on decision.chunkSize === 0 BEFORE
+  buildSellPayload/createOrder. Journals 'chunk_skipped' with the
+  decision reason and breaks the loop with status complete. Without
+  this, a zero-chunk decision becomes a count: 0 createOrder rejected
+  by Kalshi.
+
+  Tail-sweep path (final_tail_sweep) returns earlier and is unaffected
+  — operator opt-in to dust-clear math.
 
   Default 0.15 is operator-overridable via config; set to 0 to disable."
   ```
@@ -253,4 +340,4 @@ Nothing new in CLI, MCP, or backtest harness — guard sits in pricing where eve
 - ✅ The "tail-sweep takes priority" decision is captured in a test.
 - ✅ Runner-side compatibility verified before claiming the change is safe (Task 2.5).
 - ⚠️ The plan does NOT modify any existing test fixtures preemptively. If Task 2.4 finds breakage, that's the signal the chosen default conflicts with existing behavior — investigate at that point rather than touching fixtures up front.
-- ⚠️ Total cost estimate: ~90 min if no surprises. Skew up to 2.5h if the runner doesn't already handle 0-chunk gracefully (Task 2.5 follow-up).
+- ⚠️ Total cost estimate (revised after plan review): ~2.5h. Pricing-side ~90 min (Tasks 2.1–2.4). Runner-side ~30 min (Task 2.5). PR/merge ~30 min. The runner-side change is now in scope, not deferred — the original plan's "verify the runner already handles it" was wrong; verification during plan review showed `exitRunner.ts:351–388` does NOT short-circuit on zero chunks.

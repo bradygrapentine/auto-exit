@@ -40,98 +40,159 @@ Nothing in `src/edge/` changes. The aggregation modules already return plain ser
 
 ---
 
-## Decisions to lock now
+## Decisions locked (verified during plan review 2026-05-09)
 
-1. **JSON shape.** One envelope, mode-tagged:
+1. **No-mode default is its OWN path,** not a fallthrough to `--strategy`. `cli.ts:1751–1771` renders an "Edge Summary" table grouped by strategy via `groupByStrategy(allFires)`, with a 9-column header (`Strategy / Fires / TotalPnL / Avg/Fire / Sharpe / EntryEdge / ExitEdge / Drift / Slip`). The `--strategy` mode at lines ~1720–1748 is a separate per-strategy drill-in. Task 3.5 targets the default at line 1751, NOT the `--strategy` block.
+
+2. **JSON shape — versioned envelope.** Lock in `version: 1` now so the next consumer to depend on the shape can't be silently broken by a v2 reshape:
 
    ```ts
-   interface EdgeJsonOutput {
+   interface EdgeJsonEnvelope {
+     version: 1;
      mode: 'summary' | 'strategy' | 'trigger' | 'param' | 'market';
      since: string;          // ISO
-     filters: { strategy?, trigger?, market?, param?, ticker?, minNotional, includeMock };
-     totals: { fireCount: number, totalEdgeDollars: number };
-     rows: unknown[];        // mode-specific row shape
+     filters: {
+       strategy?: string;
+       trigger?: string;
+       market?: string;
+       param?: string;
+       ticker?: string;
+       minNotional: number;
+       includeMock: boolean;
+     };
+     totals: { fireCount: number; totalEdgeDollars: number };
+     rows: unknown[];        // mode-specific row shape; document each in code comments
    }
    ```
 
-   This keeps each mode independent (rows are mode-specific) but gives every consumer a stable `mode + filters + totals` envelope they can branch on.
+   Convention (locked): no mode flag ⇒ `mode: 'summary'`. Tests in 3.2 must pin this.
 
-2. **`--ticker` filter scope.** Applies to ALL modes (summary, strategy, trigger, param, market). Filtering in `cmdEdge` BEFORE mode dispatch is one line and avoids per-mode duplication.
+3. **`--ticker` filter scope.** Applies to ALL modes. Filtering in `cmdEdge` BEFORE mode dispatch is one line and avoids per-mode duplication. Test 3.2 must include a `--ticker × --strategy` intersection case (not just `--ticker` alone).
 
-3. **Default summary.** Currently the no-mode-flag path falls into the `--strategy` summary (per `cli.ts` reading). Confirm by reading `cmdEdge` — if true, the default is fine, just needs a header line with the totals + filter context. If false, decide what no-mode prints.
-
-   **Action item before Task 3.1:** read `cmdEdge` for the no-mode default path. The plan as written assumes it's the per-strategy summary; if it's something else, adjust Task 3.5 accordingly.
+4. **`cmdEdge` is currently un-exported.** `cli.ts:1627` is `function cmdEdge` (no `export`). The test scaffold needs it exported — Task 3.2 makes that an explicit step, not a parenthetical.
 
 ---
 
-## Task 3.1 — Read & confirm (~15 min, read-only)
+## Task 3.1 — Verify aggregator return shapes (~10 min, read-only)
 
-**Files:** none — read-only.
+**Files:** none — read-only. (Plan-review already mapped existing branches and confirmed the no-mode default at `cli.ts:1751`.)
 
-- [ ] **Step 1: Map every existing branch in `cmdEdge`.**
+- [ ] **Step 1: Verify aggregator return shapes are JSON-serializable.**
   ```sh
-  grep -n "flags\['" code-and-docs-from-chatgpt/engine-ts/src/cli.ts | sed -n '/cmdEdge/,/^}/p' | head -40
+  grep -nA 5 "interface.*Row\|interface.*Histogram\|export function groupByStrategy\|export function triggerHistogram\|export function paramSensitivity\|export function groupByMarket" code-and-docs-from-chatgpt/engine-ts/src/edge/aggregate.ts code-and-docs-from-chatgpt/engine-ts/src/edge/snapshot.ts
   ```
-  Note which flag triggers which path. Confirm or correct the assumption that `--ticker` doesn't already exist.
+  If any contain `Date` objects, `BigInt`, or non-plain class instances, plan to coerce at serialization time (ISO string for dates). Document any coercions inline in the relevant emit-helper.
 
-- [ ] **Step 2: Verify aggregator return shapes are JSON-serializable.**
-  ```sh
-  grep -nA 5 "interface.*Row\|interface.*Histogram" code-and-docs-from-chatgpt/engine-ts/src/edge/aggregate.ts code-and-docs-from-chatgpt/engine-ts/src/edge/snapshot.ts
-  ```
-  If any contain `Date` objects or `BigInt`, plan to coerce at serialization time (ISO string for dates).
+- [ ] **Step 2: Confirm `Fire.ticker` is a plain string** so `--ticker` equality filtering works as written. (`src/edge/lifecycle.ts` — should be obvious; one grep suffices.)
 
-- [ ] **Step 3: Identify the no-mode default branch in `cmdEdge`.** Update Task 3.5 below if its assumption is wrong.
-
-## Task 3.2 — Test scaffold (~30 min)
+## Task 3.2 — Test scaffold (~75 min — realistic with fixture wiring)
 
 **Files:**
+- Modify: `src/cli.ts` — add `export` to `function cmdEdge` (one keyword).
 - Create: `test/cli/edge.test.ts`
 
-- [ ] **Step 1: Write failing tests for the four new behaviors**
+- [ ] **Step 1: Export `cmdEdge`.** In `cli.ts:1627`, change `function cmdEdge` → `export function cmdEdge`. tsc clean. No callsite refactor needed since the existing dispatch in `runCli` doesn't need an import.
+
+- [ ] **Step 2: Build a journal fixture helper.** New file `test/cli/edge.test.ts`:
 
   ```ts
-  import { describe, it, expect, afterEach, vi } from 'vitest';
+  import { describe, it, expect, afterEach, beforeEach } from 'vitest';
   import * as fs from 'node:fs';
   import * as os from 'node:os';
   import * as path from 'node:path';
-  // Import cmdEdge transitively via runCli — it's not exported. Either:
-  //   (a) export cmdEdge from cli.ts (small surface change, OK), or
-  //   (b) drive the test via spawning the built CLI (heavier).
-  // Prefer (a): add `export` to the function.
-  import { runCli } from '../../src/cli.js';
+  import { cmdEdge } from '../../src/cli.js';
 
-  describe('kea edge — JSON output (SH-EDGE-POLISH)', () => {
-    let stdout = '';
-    const origWrite = process.stdout.write.bind(process.stdout);
-    afterEach(() => { stdout = ''; (process.stdout as { write: unknown }).write = origWrite; });
+  // Fixture: write a minimal journal under a temp KEA_HOME so cmdEdge ->
+  // loadAllJournalEntries(since) returns deterministic Fires.
+  function seedJournal(home: string, jobId: string, ticker: string, strategy: string): void {
+    const dir = path.join(home, 'jobs', jobId);
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString();
+    const lines = [
+      { ts, kind: 'loop_started', data: { jobId, ticker, strategy, side: 'yes' } },
+      { ts, kind: 'order_intent',  data: { jobId, ticker, payload: { ticker, side: 'yes' }, arrivalMidCents: 50 } },
+      { ts, kind: 'order_placed',  data: { jobId, ticker, orderId: `${jobId}-1` } },
+      { ts, kind: 'order_reconciled', data: { jobId, ticker, orderId: `${jobId}-1`, filledCount: 10, priceCents: 50 } },
+    ];
+    fs.writeFileSync(path.join(dir, 'journal.ndjson'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  }
 
-    function captureStdout(): void {
-      stdout = '';
-      (process.stdout as { write: unknown }).write = (chunk: string) => { stdout += chunk; return true; };
-    }
+  let home = '';
+  let stdout = '';
+  const origWrite = process.stdout.write.bind(process.stdout);
 
-    it('emits a stable JSON envelope when --json is set', async () => {
-      // Set KEA_HOME to a fixture journal with N known fires; run cmdEdge('--json')
-      // Assert: JSON.parse(stdout) has { mode, since, filters, totals, rows }.
-      // ... (full fixture wiring)
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'edge-test-'));
+    process.env['KEA_HOME'] = home;
+    stdout = '';
+    (process.stdout as { write: unknown }).write = (chunk: string) => { stdout += chunk; return true; };
+  });
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+    delete process.env['KEA_HOME'];
+    (process.stdout as { write: unknown }).write = origWrite;
+  });
+  ```
+
+  **Risk:** the exact journal-entry shape that `joinFires` accepts is not documented here. Read `src/edge/lifecycle.ts:joinFires` once before pasting fixtures so the test seeds entries that actually produce a Fire (not an empty array). If joinFires needs more fields or a TCA entry to compute edge dollars, add them.
+
+- [ ] **Step 3: Write failing tests**
+
+  ```ts
+  describe('kea edge — JSON envelope (SH-EDGE-POLISH)', () => {
+    it('emits a versioned envelope with mode=summary when no mode flag is set', () => {
+      seedJournal(home, 'j1', 'KXA-26', 's-passive');
+      cmdEdge({ json: '', since: '2026-04-01', 'min-notional': '0', 'include-mock': '' });
+      const env = JSON.parse(stdout);
+      expect(env.version).toBe(1);
+      expect(env.mode).toBe('summary');
+      expect(typeof env.since).toBe('string');
+      expect(env.totals.fireCount).toBeGreaterThanOrEqual(1);
+      expect(Array.isArray(env.rows)).toBe(true);
     });
 
-    it('--ticker filters fires across all modes', async () => {
-      // Two fires, distinct tickers. cmdEdge('--ticker KX-A --json') returns 1 fire.
+    it('emits mode=strategy when --strategy is set', () => {
+      seedJournal(home, 'j1', 'KXA-26', 's-passive');
+      cmdEdge({ json: '', strategy: 's-passive', since: '2026-04-01', 'min-notional': '0', 'include-mock': '' });
+      const env = JSON.parse(stdout);
+      expect(env.mode).toBe('strategy');
+      expect(env.filters.strategy).toBe('s-passive');
+    });
+  });
+
+  describe('kea edge — --ticker filter (SH-EDGE-POLISH)', () => {
+    it('filters fires across modes', () => {
+      seedJournal(home, 'j1', 'KXA-26', 's-passive');
+      seedJournal(home, 'j2', 'KXB-26', 's-passive');
+      cmdEdge({ json: '', ticker: 'KXA-26', since: '2026-04-01', 'min-notional': '0', 'include-mock': '' });
+      const env = JSON.parse(stdout);
+      expect(env.totals.fireCount).toBe(1);
+      expect(env.filters.ticker).toBe('KXA-26');
     });
 
-    it('summary mode prints a one-line header with totals and filter context', async () => {
-      captureStdout();
-      // Assert stdout contains "X fires across Y strategies; total edge $Z.ZZ"
+    it('--ticker × --strategy is an intersection, not a union', () => {
+      seedJournal(home, 'j1', 'KXA-26', 's-passive');
+      seedJournal(home, 'j2', 'KXA-26', 's-aggressive');
+      seedJournal(home, 'j3', 'KXB-26', 's-passive');
+      cmdEdge({ json: '', ticker: 'KXA-26', strategy: 's-passive', since: '2026-04-01', 'min-notional': '0', 'include-mock': '' });
+      const env = JSON.parse(stdout);
+      // Only j1 satisfies both ticker=KXA-26 AND strategy=s-passive.
+      expect(env.totals.fireCount).toBe(1);
     });
+  });
 
-    it('--ticker + --strategy compose (intersection, not union)', async () => {
-      // ...
+  describe('kea edge — default summary header (SH-EDGE-POLISH)', () => {
+    it('prints a one-line header above the strategy table with filter context + totals', () => {
+      seedJournal(home, 'j1', 'KXA-26', 's-passive');
+      cmdEdge({ since: '2026-04-01', 'min-notional': '0', 'include-mock': '' });
+      // Header should mention since-date AND fire count BEFORE the strategy table.
+      expect(stdout).toMatch(/Edge Summary/);
+      expect(stdout).toMatch(/1 fire|fires/);
     });
   });
   ```
 
-- [ ] **Step 2: Run — confirm 4 failing tests.**
+- [ ] **Step 4: Run — expect failures.** Some tests may pass accidentally (the existing default already prints "Edge Summary"); that's fine — they pin existing behavior. The `--ticker`, `--json`, and `mode=summary` envelope assertions must fail.
 
 ## Task 3.3 — Add `--ticker` filter (~20 min)
 
@@ -160,6 +221,7 @@ Nothing in `src/edge/` changes. The aggregation modules already return plain ser
 
   ```ts
   interface EdgeJsonEnvelope {
+    version: 1;
     mode: 'summary' | 'strategy' | 'trigger' | 'param' | 'market';
     since: string;
     filters: Record<string, unknown>;
@@ -202,23 +264,34 @@ Nothing in `src/edge/` changes. The aggregation modules already return plain ser
 
 - [ ] **Step 4:** Same refactor for `param`, `market`, `strategy`, and the no-mode default path. **Each path is one new branch — do NOT collapse them.** A premature unification here would re-introduce the per-mode tangle this plan is trying to avoid.
 
-## Task 3.5 — Improve default summary (~20 min)
+## Task 3.5 — Improve default summary header (~25 min)
 
 **Files:**
-- Modify: `src/cli.ts:cmdEdge`
+- Modify: `src/cli.ts:cmdEdge` — the no-mode default branch at lines 1751–1771.
 
-(Adjust this task per Task 3.1's findings if the no-mode default isn't what's assumed.)
-
-- [ ] **Step 1: Add a header line** at the top of the no-mode (default) text path:
+- [ ] **Step 1: Locate the existing header.** `cli.ts:1759–1764` already prints:
 
   ```ts
-  out(`\nEdge summary — ${filterContextSentence(filters)}\n`);
-  out(`${allFires.length} fires; total edge ${fmtSign(totalEdge)}\n\n`);
+  out(`\nEdge Summary — since ${sinceStr}\n`);
+  // ...header row + separator...
   ```
 
-  Where `filterContextSentence` returns `"all fires since 2026-04-09"` or `"KXBTC fires only, since today"`, etc.
+  The change extends this header with totals and filter context. Replace the single `out` line at 1759 with:
 
-- [ ] **Step 2: Update `cmdHelp`** to mention the new ticker / JSON flags.
+  ```ts
+  const totalEdge = groups.reduce((s, g) => s + g.totalRealizedPnLDollars, 0);
+  const filterBits: string[] = [];
+  if (flags['ticker']) filterBits.push(`ticker=${flags['ticker']}`);
+  if (flags['strategy']) filterBits.push(`strategy=${flags['strategy']}`);
+  if (flags['market']) filterBits.push(`market=${flags['market']}`);
+  const filterStr = filterBits.length > 0 ? ` (filtered: ${filterBits.join(', ')})` : '';
+  out(`\nEdge Summary — since ${sinceStr}${filterStr}\n`);
+  out(`${allFires.length} fires across ${groups.length} strategies; total edge ${fmtSign(totalEdge)}\n`);
+  ```
+
+  Place BEFORE the existing `header = ...` line.
+
+- [ ] **Step 2: Update `cmdHelp`** (`cli.ts:cmdHelp`, search for the existing `edge` block around line 668–671) to mention `--ticker`, `--json`, and `--include-mock` (the third was already shipped but undocumented; while we're here, document it).
 
 ## Task 3.6 — Run full suite + tsc (~15 min)
 
@@ -267,7 +340,7 @@ Nothing in `src/edge/` changes. The aggregation modules already return plain ser
 - **CSV output.** JSON covers the agent / script case; CSV is for spreadsheets specifically — file when an operator actually asks.
 - **Streaming / live mode.** `kea edge --watch` would be a new architecture.
 - **Sparkline rendering or color in default text mode.** Color is environment-sensitive (CI logs, etc.); skip until requested.
-- **`kea edge --diff <since1> <since2>`** comparison mode. Worth doing once the JSON envelope is stable.
+- **`kea edge --diff <since1> <since2>`** comparison mode. The v1 envelope is now stable enough to consume from a diff implementation; build when actually needed.
 
 ## Self-review
 
@@ -275,5 +348,6 @@ Nothing in `src/edge/` changes. The aggregation modules already return plain ser
 - ✅ Tests written before implementation (Task 3.2 before 3.3 / 3.4 / 3.5).
 - ✅ Refactor is conservative — new conditional per mode, not a unification rewrite.
 - ✅ JSON envelope shape is decided up front (Task pre-amble), not designed mid-implementation.
-- ⚠️ Task 3.1 (read-only) gates the rest. If the no-mode default path turns out to be different from what's assumed, Task 3.5 needs a rewrite — surface that AT 3.1, don't power through.
-- ⚠️ Total estimated cost: ~2.5h. If `cmdEdge` turns out to be more tangled than expected and a real refactor is needed, file a follow-up rather than expanding the scope of this plan.
+- ⚠️ Total estimated cost (revised after plan review): ~3.5–4h. Test scaffold (Task 3.2) is 60–75 min once journal-fixture wiring is real; the JSON refactor across 5 mode paths is another 60+ min; the rest is incremental. Plan-review's original 2.5h estimate was light.
+- ⚠️ The journal-fixture helper in Task 3.2 has to produce entries that `joinFires` actually accepts. Read `src/edge/lifecycle.ts:joinFires` once before pasting fixtures so the test seeds entries that produce a Fire (not an empty array). If `joinFires` requires more fields than the four entries listed (e.g. a `tca` entry to compute realized PnL), add them — don't guess.
+- ⚠️ The envelope's `version: 1` field is a one-way commit. Any future shape break has to bump to 2 and document the migration. That's the right tradeoff but worth noting up front.

@@ -4,7 +4,10 @@
 
 **Goal:** Bring `code-and-docs-from-chatgpt/docs/BACKLOG.md` back in sync with what's actually merged on `main`. The §0 status board's counts are wrong; three story rows are 🧊 (open) but the work has shipped.
 
-**Architecture:** Pure file edits to `BACKLOG.md`. Each affected story keeps its 🧊 body intact for cross-references but flips the heading to ✅ with a one-line shipped summary. The §0 status board is recounted from the resulting state.
+**Architecture:** Pure file edits to `BACKLOG.md`. Each affected story:
+1. Gets a new inline `### ✅` shipped block above its existing 🧊 body (mirrors the established pattern at `BACKLOG.md` line ~535 / ~605 / ~631 / ~722).
+2. Gets a corresponding `- **YYYY-MM-DD — STORY-ID — one-line summary.**` bullet in §7 (the chronological shipped log starting at `BACKLOG.md:1134`).
+3. The §0 status-board "Shipped (this log)" count maps to §7 bullets, NOT to inline ✅ headings — verified during plan review by counting (10 inline ✅ headings vs 65 §7 bullets vs §0 board says 75; the 75 derives from §7 bullet count + un-bulletted prior promotions). The recount in Task 1.5 derives from the actual post-edit §7 bullet count.
 
 **Tech stack:** Markdown only.
 
@@ -25,14 +28,18 @@ The §0 status board currently reads:
 | ✅ Shipped (this log)     | 75 |
 ```
 
+**Counting convention (locked during plan review):**
+- "🧊 Tooling ecosystem (SH)" counts SH-tagged rows in §1–§6 whose heading starts with `### 🧊` AND that don't have a corresponding `### ✅` heading immediately above them. 🟢 rows like `SH-MICRO-LIVE-SMOKE` (added in `chore/sh-micro-followup`) are NOT counted in 🧊 — they roll into a separate "Ready" line if the board has one, or are visible-but-untallied otherwise. (Inspect §0 to confirm before relying on this; if the board has no Ready line, leave SH-MICRO-LIVE-SMOKE out of the 🧊 count and add a one-time note in the "Last sync" comment.)
+- "✅ Shipped (this log)" counts §7 bullets (the chronological shipped log).
+
 After this reconciliation:
 
 ```
-| 🧊 Tooling ecosystem (SH) | 1 |   (drops by 3)
-| ✅ Shipped (this log)     | 78 |  (rises by 3)
+| 🧊 Tooling ecosystem (SH) | 1 |   (drops by 3 — DEPTH-WALK + AGGRESSIVE-CLI + AGGRESSIVE-PARTIAL all promoted)
+| ✅ Shipped (this log)     | 78 |  (rises by 3 — three new §7 bullets added)
 ```
 
-(The remaining open SH row is `SH-MICRO-LIVE-SMOKE`, which is 🟢 ready, not 🧊 deferred — verify what categorization the §0 board actually uses for ready vs deferred. If 🟢 doesn't roll into the SH count, the new count is 0; if it does, 1.)
+The remaining 1 open 🧊 SH row is the `SH-PASSIVE-SPREAD-LOGIC` engine-side passive bug (line ~744), which is the only SH 🧊 row not already shipped. (Spot-check by re-grepping §1–§6 for `^### 🧊 SH` headings and excluding any that have `^### ✅ ` immediately above.)
 
 ---
 
@@ -130,24 +137,55 @@ If any of these *don't* match expectations, STOP — the reconciliation is wrong
   (Original ticket below for history.)
   ```
 
-## Task 1.5 — Recount the §0 status board (~5 min)
+## Task 1.5 — Add §7 shipped-log bullets (~10 min)
+
+**Files:**
+- Modify: `code-and-docs-from-chatgpt/docs/BACKLOG.md` (insertion point: top of §7, after the `# ✅ Shipped` heading at line ~1134, before the existing `2026-05-08 — SH-BACKTEST-PHASE-D` bullet).
+
+§7 is chronological (newest first). Insert three new bullets at the top — these are what the §0 "Shipped (this log)" count actually counts.
+
+- [ ] **Step 1: Insert the bullets.** Match the existing format (date — story-id — one-line summary, optionally with PR links):
+
+  ```markdown
+  - **2026-05-09 — SH-DEPTH-WALK-STALE-SNAPSHOT — pre-trade liveness check + planner risk notes (PR #164).**
+    Pure `checkLiveness` primitive (`src/preTradeLiveness.ts`); AggressiveRunner gate that re-fetches book between projection and submission for trades >= 100 contracts and aborts with `liveness_rejected:<reason>`; harvest-planner `riskNotes` for fat top-of-book (>5× topSize/meanRest). MOVVA-replay test confirms the runner aborts before `createOrder` when the projected level vanishes.
+
+  - **2026-05-09 — SH-AGGRESSIVE-CLI-FLAG-PARSING — boolean flag forms unified (PR #163).**
+    `parseFlags` now correctly handles `--flag`, `--flag=value`, `--flag value`. New `boolFlag(flags, key, default)` helper accepts `true|false|1|0|yes|no` (case-insensitive). Five callsites migrated. 18-test pin in `test/cli/flagParsing.test.ts`.
+
+  - **2026-05-09 — SH-AGGRESSIVE-PARTIAL-SIZE — backtest adapter respects params.size (PR #163).**
+    `aggressiveAdapter` now reads `params.size` and caps at `remainingQty`: `effectiveSize = Math.min(requested, remainingQty)`. Three regression tests in `test/backtest/aggressiveAdapter.test.ts`.
+  ```
+
+## Task 1.6 — Recount the §0 status board (~5 min)
 
 **Files:**
 - Modify: `code-and-docs-from-chatgpt/docs/BACKLOG.md` (lines 4–14 region).
 
-- [ ] **Step 1: Recount.** Grep for current state on the *post-edits* file:
+- [ ] **Step 1: Recount on the post-edits file.**
   ```sh
-  grep -cE "^### 🧊 SH-" code-and-docs-from-chatgpt/docs/BACKLOG.md   # remaining open SH stories (count duplicates of "_-original" tickets)
-  grep -cE "^### ✅ " code-and-docs-from-chatgpt/docs/BACKLOG.md       # shipped headings
+  # SH 🧊 rows in §1-§6 (exclude the §7 shipped bullet "(SH-X)" mentions if any).
+  awk '/^# ✅ Shipped/{exit} /^### 🧊 SH/{print}' code-and-docs-from-chatgpt/docs/BACKLOG.md | wc -l
+
+  # §7 bullets (anything starting with "- **YYYY-MM-DD" after the §7 heading).
+  awk '/^# ✅ Shipped/{flag=1; next} flag && /^- \*\*[0-9]{4}-/{n++} END{print n}' code-and-docs-from-chatgpt/docs/BACKLOG.md
   ```
 
-- [ ] **Step 2: Update the table.** Replace the "🧊 Tooling ecosystem (SH)" and "✅ Shipped" counts with the actual numbers from Step 1. Replace the "Last `/backlog-sync`:" line with today's date and a one-line summary:
+  The first awk gives the new "🧊 Tooling ecosystem (SH)" count. The second gives the new "Shipped (this log)" count.
+
+  **However:** if the second number doesn't equal the previous 75 + 3 = 78, the §0 count was *already* drifted before this PR — DON'T silently fix it as part of Track 1; flag it in the PR description and let the operator decide. (The first awk is the source of truth; the second is what the §0 board claims to display.)
+
+- [ ] **Step 2: Update the §0 table** with the awk-derived numbers.
+
+- [ ] **Step 3: Replace the "Last `/backlog-sync`:" line at `BACKLOG.md:3`** entirely (replace, not append — the line is a single-source-of-truth pointer to the most recent reconciliation, not a log). The new line:
 
   ```markdown
-  Last `/backlog-sync`: 2026-05-09 (SH-DEPTH-WALK liveness gate shipped + SH-MICRO-EXECUTION-LOOP shipped + SH-AGGRESSIVE-CLI-FLAG-PARSING / SH-AGGRESSIVE-PARTIAL-SIZE promoted to ✅)
+  Last `/backlog-sync`: 2026-05-09 (SH-MICRO-EXECUTION-LOOP shipped (#165); SH-DEPTH-WALK-STALE-SNAPSHOT (#164), SH-AGGRESSIVE-CLI-FLAG-PARSING + SH-AGGRESSIVE-PARTIAL-SIZE (#163) promoted to ✅; SH-MICRO-LIVE-SMOKE filed as 🟢 ready)
   ```
 
-## Task 1.6 — Commit + PR (~5 min)
+  Prior promotions referenced in the previous "Last sync" line are NOT lost — their ✅ headings + §7 bullets remain in the file. The Last-sync line just records what happened in the most recent reconciliation pass.
+
+## Task 1.7 — Commit + PR (~5 min)
 
 - [ ] **Step 1: Verify diff is docs-only**
   ```sh
@@ -161,19 +199,28 @@ If any of these *don't* match expectations, STOP — the reconciliation is wrong
 
   Promote SH-DEPTH-WALK-STALE-SNAPSHOT (#164),
   SH-AGGRESSIVE-CLI-FLAG-PARSING (#163), and
-  SH-AGGRESSIVE-PARTIAL-SIZE (#163) to ✅.
-
-  Recount §0 status board: SH 4→1, Shipped 75→78."
+  SH-AGGRESSIVE-PARTIAL-SIZE (#163) to ✅. Adds
+  matching §7 shipped-log bullets and recounts §0
+  status board (SH 4→1, Shipped 75→78)."
   ```
 
 - [ ] **Step 3: PR + auto-merge** following the standard project flow. No CI risk — docs-only.
+
+## Sequencing note
+
+**This Track 1 PR must merge AFTER Tracks 2 and 3** if those are also being shipped today. Tracks 2 and 3 each ship their own story which will need its own promotion + §7 bullet — Track 1's recount would be stale within the hour otherwise. Order: Track 2 → Track 3 → Track 1.
+
+If Tracks 2 and 3 are deferred, Track 1 is safe to ship standalone today.
 
 ---
 
 ## Self-review
 
 - ✅ Each promotion preserves the original 🧊 body for cross-references (matches the established pattern at line ~535 / ~605 / ~631 / ~722).
-- ✅ The §0 board update derives from a recount of the post-edit file, not from speculation.
-- ✅ Date in the "Last sync" line is current.
+- ✅ Each promotion adds a matching §7 bullet — the actual source of the §0 "Shipped" count.
+- ✅ The §0 board update derives from awk recount of the post-edit file, not speculation.
+- ✅ Replace-vs-append for the "Last sync" line is locked: replace.
+- ✅ Drift-detection: Task 1.6 Step 1 explicitly checks whether the §0 count was already wrong before this PR, surfaces it rather than silently fixing.
 - ⚠️ Line numbers shift after Task 1.2 — every later task re-greps to find its target. Don't hardcode line numbers.
 - ⚠️ Track 1's PR must NOT touch any other file. If a CI check fails on a docs-only diff, something is wrong with the PR pipeline — escalate, don't paper over.
+- ⚠️ Sequencing: ship AFTER Tracks 2 and 3 if those land same-day, else this PR's recount is stale within an hour.
