@@ -121,12 +121,15 @@ export function makePassiveAdapter(params: Record<string, unknown>): StrategyAda
 
       const book = await client.getOrderbook(state.ticker, 20);
 
-      // Derive best ask / best bid (mirrors passive.ts §1)
+      // Derive decision ask / bid (mirrors passive.ts §1 — SH-PASSIVE-SELL-LIMIT).
+      // Cross-quoted assumption: yes-side[0] = best yes ask, no-side[0] inverted
+      // = best yes bid. This adapter doesn't do the bid-quoted yes-depth fallback;
+      // counterparty-empty short-circuits before the spread math.
       const yesAsks = book.yes.filter((l) => l.size > 0).sort((a, b) => a.priceCents - b.priceCents);
       const noAsks = book.no.filter((l) => l.size > 0).sort((a, b) => a.priceCents - b.priceCents);
 
-      const bestAskCents = yesAsks[0]?.priceCents ?? 99;
-      const bestBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : 1;
+      const decisionAskCents = yesAsks[0]?.priceCents ?? 99;
+      const decisionBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : 1;
 
       // One-sided book guard
       const counterpartyEmpty =
@@ -136,7 +139,7 @@ export function makePassiveAdapter(params: Record<string, unknown>): StrategyAda
       }
 
       // Spread check
-      const spreadCents = bestAskCents - bestBidCents;
+      const spreadCents = decisionAskCents - decisionBidCents;
       if (spreadCents < state.walkStepCents) {
         return `s-passive: skip tick — spread ${spreadCents}c < walkStep ${state.walkStepCents}c`;
       }
@@ -145,8 +148,8 @@ export function makePassiveAdapter(params: Record<string, unknown>): StrategyAda
       if (state.iterPrice === null) {
         state.iterPrice = roundCents(
           state.side === 'sell'
-            ? bestAskCents - state.walkStepCents
-            : bestBidCents + state.walkStepCents,
+            ? decisionAskCents - state.walkStepCents
+            : decisionBidCents + state.walkStepCents,
         );
       } else {
         // Walk one tick in passive direction each tick where prior order may not have filled
