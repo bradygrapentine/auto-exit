@@ -426,6 +426,13 @@ async function cmdPlan(ticker: string | undefined, flags: Record<string, string>
   out(`\n`);
 
   out(`Suggested strategies: ${plan.suggestedStrategies.join(', ')}\n`);
+
+  if (plan.riskNotes.length > 0) {
+    out(`\nRisk notes\n`);
+    for (const note of plan.riskNotes) {
+      out(`  ⚠ ${note}\n`);
+    }
+  }
 }
 
 // ── report command ────────────────────────────────────────────────────────────

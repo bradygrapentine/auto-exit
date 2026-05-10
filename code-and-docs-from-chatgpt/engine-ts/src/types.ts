@@ -377,6 +377,12 @@ export interface HarvestPlannerOutput {
     gammaProxy: number;       // bid-ask spread × visible book depth (proxy for convexity)
   };
   suggestedStrategies: string[];  // e.g. ["S1 passive", "S7 scale-out"]
+  /**
+   * SH-DEPTH-WALK-STALE-SNAPSHOT (§4): operator-facing warnings about
+   * fragile assumptions in the projection — e.g. a fat top-of-book bid
+   * that may be pulled before execution. Empty when none apply.
+   */
+  riskNotes: string[];
 }
 
 // ============================================================

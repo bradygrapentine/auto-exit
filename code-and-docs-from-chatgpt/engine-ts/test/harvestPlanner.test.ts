@@ -177,3 +177,44 @@ describe('computeHarvestPlan — edge cases', () => {
     expect(plan.evHold).toBeCloseTo(400, 10);
   });
 });
+
+describe('computeHarvestPlan — riskNotes (SH-DEPTH-WALK-STALE-SNAPSHOT §4)', () => {
+  it('flags fat top-of-book when topSize / meanRest > 5', () => {
+    // Top: 12,000@93¢. Next 3 levels avg ~167. Ratio ~72× → flag.
+    const fatTop: Orderbook = {
+      yes: [
+        { priceCents: 93, size: 12_000 },
+        { priceCents: 92, size: 200 },
+        { priceCents: 91, size: 150 },
+        { priceCents: 90, size: 150 },
+      ],
+      no: [{ priceCents: 7, size: 100 }],
+    };
+    const plan = computeHarvestPlan(BASE_INPUT, fatTop);
+    expect(plan.riskNotes.length).toBeGreaterThan(0);
+    expect(plan.riskNotes[0]).toMatch(/12000-contract bid at 93¢/);
+    expect(plan.riskNotes[0]).toMatch(/SH-DEPTH-WALK-STALE-SNAPSHOT/);
+  });
+
+  it('does NOT flag when depth is even', () => {
+    // 200 / mean(150,100) = 200/125 = 1.6× — not fat.
+    const plan = computeHarvestPlan(BASE_INPUT, BASE_ORDERBOOK);
+    expect(plan.riskNotes).toEqual([]);
+  });
+
+  it('flags when only one bid level is visible', () => {
+    const oneLevel: Orderbook = {
+      yes: [{ priceCents: 93, size: 5_000 }],
+      no: [{ priceCents: 7, size: 100 }],
+    };
+    const plan = computeHarvestPlan(BASE_INPUT, oneLevel);
+    expect(plan.riskNotes.length).toBeGreaterThan(0);
+    expect(plan.riskNotes[0]).toMatch(/only visible level/);
+  });
+
+  it('returns empty riskNotes when YES bid side is empty', () => {
+    const empty: Orderbook = { yes: [], no: [{ priceCents: 7, size: 100 }] };
+    const plan = computeHarvestPlan(BASE_INPUT, empty);
+    expect(plan.riskNotes).toEqual([]);
+  });
+});
