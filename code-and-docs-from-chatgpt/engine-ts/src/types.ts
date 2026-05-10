@@ -271,7 +271,9 @@ export type JournalKind =
   | 'synthetic_fired'
   | 'synthetic_fire_failed'
   | 'synthetic_canceled'
-  | 'synthetic_state_update';
+  | 'synthetic_state_update'
+  | 'micro_trial_started'
+  | 'micro_trial_finished';
 
 export interface TcaEntry {
   kind: 'tca';

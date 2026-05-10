@@ -795,7 +795,7 @@ function tryLoadBaseUrl(): string {
   catch { return process.env.KALSHI_BASE_URL ?? 'https://api.elections.kalshi.com/trade-api/v2'; }
 }
 
-function makeMinimalConfig(ticker: string): ExitConfig {
+export function makeMinimalConfig(ticker: string): ExitConfig {
   return {
     baseUrl: tryLoadBaseUrl(),
     localServerPort: 0,
@@ -1485,6 +1485,145 @@ function fmtSign(n: number): string {
   return (n >= 0 ? '+' : '') + fmtDollars(n);
 }
 
+// ── micro (SH-MICRO-EXECUTION-LOOP) ──────────────────────────────────────────
+
+async function cmdMicro(
+  subcommand: string | undefined,
+  rest: string[],
+  flags: Record<string, string>,
+): Promise<void> {
+  const { runTrial, defaultConfirm, sumDailySpent } = await import('./microHarness/runner.js');
+  const { runSweep, summarizeByCell } = await import('./microHarness/sweep.js');
+  const { newTrialId } = await import('./microHarness/trial.js');
+  const { executeStrategy } = await import('./microHarness/executors.js');
+
+  const since = new Date(Date.now() - 48 * 60 * 60 * 1000); // last 48h covers UTC day boundary
+  const computeDailySpent = async (): Promise<number> => {
+    const entries = loadAllJournalEntries(since).map((e) => ({
+      kind: e.kind,
+      data: (e.data as Record<string, unknown>) ?? {},
+    }));
+    return sumDailySpent(entries);
+  };
+
+  switch (subcommand) {
+    case 'trial': {
+      if (!flags.ticker) die('micro trial requires --ticker <T>');
+      if (!flags.side) die('micro trial requires --side yes|no');
+      if (!flags.strategy) die('micro trial requires --strategy s-passive|s-aggressive');
+      if (!flags['max-notional']) die('micro trial requires --max-notional <USD>');
+      if (!flags.intent) die('micro trial requires --intent <message>');
+
+      let params: Record<string, unknown> = {};
+      const paramsArg = flags.params;
+      if (paramsArg) {
+        const raw = paramsArg.startsWith('@')
+          ? require('node:fs').readFileSync(paramsArg.slice(1), 'utf8')
+          : paramsArg;
+        try {
+          params = JSON.parse(raw) as Record<string, unknown>;
+        } catch (err) {
+          die(`--params must be JSON or @path/to/file.json: ${(err as Error).message}`);
+        }
+      }
+
+      const config = {
+        trialId: newTrialId(),
+        ticker: flags.ticker,
+        side: flags.side as 'yes' | 'no',
+        strategy: flags.strategy as 's-passive' | 's-aggressive' | 's-trail' | 's-twap' | 's-auto',
+        maxNotionalDollars: Number(flags['max-notional']),
+        params,
+        intent: flags.intent,
+      };
+
+      const result = await runTrial(config, {
+        executeStrategy,
+        confirm: defaultConfirm,
+        dailySpentDollars: computeDailySpent,
+      });
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      if (result.status !== 'complete') process.exit(1);
+      return;
+    }
+
+    case 'sweep': {
+      const planPath = flags.plan;
+      if (!planPath) die('micro sweep requires --plan <jsonFile>');
+      const planJson = require('node:fs').readFileSync(planPath, 'utf8');
+      let plan: unknown;
+      try {
+        plan = JSON.parse(planJson);
+      } catch (err) {
+        die(`--plan must be a valid JSON file: ${(err as Error).message}`);
+      }
+      const results = await runSweep(plan as Parameters<typeof runSweep>[0], {
+        executeStrategy,
+        confirm: defaultConfirm,
+        dailySpentDollars: computeDailySpent,
+      });
+      process.stdout.write(`\nSweep complete — ${results.length} trial(s)\n\n`);
+      const summary = summarizeByCell(results);
+      process.stdout.write('| strategy      | ticker             | run | done | rejected | failed |\n');
+      process.stdout.write('|---------------|--------------------|-----|------|----------|--------|\n');
+      for (const row of summary) {
+        process.stdout.write(
+          `| ${row.strategy.padEnd(13)} | ${row.ticker.padEnd(18)} | ${String(row.trialsRun).padStart(3)} | ${String(row.completed).padStart(4)} | ${String(row.rejected).padStart(8)} | ${String(row.failed).padStart(6)} |\n`,
+        );
+      }
+      process.stdout.write(`\nFor edge attribution: \`kea edge --since today\`\n`);
+      return;
+    }
+
+    case 'status': {
+      const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000);
+      const rawEntries = loadAllJournalEntries(since48h);
+      const entries = rawEntries.map((e) => ({
+        kind: e.kind,
+        data: (e.data as Record<string, unknown>) ?? {},
+      }));
+      const today = new Date().toISOString().slice(0, 10);
+      const started = entries.filter(
+        (e) => e.kind === 'micro_trial_started' &&
+          typeof (e.data as Record<string, unknown>)['startedAt'] === 'string' &&
+          ((e.data as Record<string, unknown>)['startedAt'] as string).slice(0, 10) === today,
+      );
+      const finishedByTrial = new Map<string, Record<string, unknown>>();
+      for (const e of entries) {
+        if (e.kind !== 'micro_trial_finished') continue;
+        const d = e.data as Record<string, unknown>;
+        const tid = d['trialId'];
+        if (typeof tid === 'string') finishedByTrial.set(tid, d);
+      }
+
+      process.stdout.write(`\nMicro trials — ${today} UTC (${started.length} started)\n\n`);
+      if (started.length === 0) {
+        process.stdout.write('  none.\n');
+        process.stdout.write(`\n(spent today: $${sumDailySpent(entries).toFixed(2)})\n`);
+        return;
+      }
+      process.stdout.write('| trialId                                            | ticker             | strategy      | $cap | status   |\n');
+      process.stdout.write('|----------------------------------------------------|--------------------|---------------|------|----------|\n');
+      for (const e of started) {
+        const d = e.data as Record<string, unknown>;
+        const tid = String(d['trialId'] ?? '');
+        const fin = finishedByTrial.get(tid);
+        const status = fin ? String(fin['status'] ?? 'finished') : 'running';
+        process.stdout.write(
+          `| ${tid.padEnd(50)} | ${String(d['ticker'] ?? '').padEnd(18)} | ${String(d['strategy'] ?? '').padEnd(13)} | ${String(d['maxNotionalDollars'] ?? '').padStart(4)} | ${status.padEnd(8)} |\n`,
+        );
+      }
+      process.stdout.write(`\n(spent today: $${sumDailySpent(entries).toFixed(2)})\n`);
+      return;
+    }
+
+    default:
+      process.stderr.write(`unknown micro subcommand: ${subcommand ?? '(none)'}\n`);
+      process.stderr.write(`usage: kea micro {trial|sweep|status} [args...]\n`);
+      process.exit(1);
+  }
+}
+
 function cmdEdge(flags: Record<string, string>): void {
   const sinceFlag = flags['since'];
   const minNotional = parseFloat(flags['min-notional'] ?? '1');
@@ -1912,6 +2051,10 @@ export async function runCli(argv: string[]): Promise<void> {
       return cmdPolicy(sub, rest, flags);
     }
     case 'edge': return cmdEdge(flags);
+    case 'micro': {
+      const sub = rest.find((x) => !x.startsWith('--'));
+      return cmdMicro(sub, rest, flags);
+    }
     case 'record': {
       const sub = rest.find((x) => !x.startsWith('--'));
       return cmdRecord(sub, rest, flags);
