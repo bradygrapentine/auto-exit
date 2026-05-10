@@ -71,19 +71,21 @@ describe('MCP server — tool registration', () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
-      'kea_alert_register',
+      'kea_alert_cancel', 'kea_alert_list', 'kea_alert_register',
       'kea_balance',
       'kea_bracket_arm',
+      'kea_cancel_resting',
       'kea_edge_per_strategy', 'kea_edge_summary',
       'kea_ev',
       'kea_forbidden_add', 'kea_forbidden_list', 'kea_forbidden_remove',
       'kea_harvest_planner',
       'kea_journal_list', 'kea_journal_read',
+      'kea_micro_status',
       'kea_orderbook',
       'kea_policy_add', 'kea_policy_list', 'kea_policy_remove',
       'kea_portfolio_plan', 'kea_positions', 'kea_preview',
       'kea_recommend',
-      'kea_replay', 'kea_resting_orders',
+      'kea_replay', 'kea_resting_orders', 'kea_resume',
       'kea_safety_get', 'kea_safety_set',
       'kea_size',
       'kea_strategy_aggressive', 'kea_strategy_limit_ladder', 'kea_strategy_prepend_then_sweep',
@@ -201,6 +203,51 @@ describe('MCP server — read-only tools', () => {
   it('kea_replay isError when journal missing', async () => {
     const { client } = await connect();
     const res = await client.callTool({ name: 'kea_replay', arguments: { jobId: 'nope' } });
+    expect(res.isError).toBe(true);
+  });
+});
+
+describe('MCP server — gap-closure tools', () => {
+  it('kea_cancel_resting rejects empty orderId', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_cancel_resting', arguments: { orderId: '' } });
+    expect(res.isError).toBe(true);
+  });
+
+  it('kea_micro_status returns envelope with empty rows for fresh KEA_HOME', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_micro_status', arguments: {} });
+    const parsed = parseJsonResult(res);
+    expect(parsed.version).toBe(1);
+    expect(parsed.mode).toBe('micro_status');
+    expect(parsed.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(parsed.totals).toEqual({ trialsToday: 0, spentDollars: 0 });
+    expect(parsed.rows).toEqual([]);
+  });
+
+  it('kea_alert_list isError when watcher not initialized', async () => {
+    const { resetWatcherForTests } = await import('../src/watcherSingleton.js');
+    resetWatcherForTests();
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_alert_list', arguments: {} });
+    expect(res.isError).toBe(true);
+    expect((res.content as Array<{ text: string }>)[0].text).toMatch(/not initialized/);
+  });
+
+  it('kea_alert_cancel isError when watcher not initialized', async () => {
+    const { resetWatcherForTests } = await import('../src/watcherSingleton.js');
+    resetWatcherForTests();
+    const { client } = await connect();
+    const res = await client.callTool({ name: 'kea_alert_cancel', arguments: { id: 'syn-x' } });
+    expect(res.isError).toBe(true);
+  });
+
+  it('kea_resume isError when config missing', async () => {
+    const { client } = await connect();
+    const res = await client.callTool({
+      name: 'kea_resume',
+      arguments: { configPath: '/tmp/does-not-exist.json', jobId: 'nope' },
+    });
     expect(res.isError).toBe(true);
   });
 });

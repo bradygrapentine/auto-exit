@@ -49,6 +49,7 @@ import { getWatcher, isWatcherInitialized } from './watcherSingleton.js';
 import { evaluate } from './synthetics/index.js';
 import type { Synthetic } from './types.js';
 import { KalshiClient } from './kalshiClient.js';
+import { makeMinimalConfig } from './cli.js';
 import { buildSAggressiveOpts } from './strategies/sAggressive.js';
 import { joinFires } from './edge/lifecycle.js';
 import { groupByStrategy, groupByMarket, triggerHistogram, paramSensitivity } from './edge/aggregate.js';
@@ -191,6 +192,26 @@ export function buildMcpServer(): McpServer {
     async () => {
       try { return jsonContent(await fetchRestingOrders()); }
       catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_cancel_resting',
+    {
+      description:
+        'Cancel a single resting order by Kalshi orderId. Returns the canceled order ' +
+        'result on success. Mirrors the `kea cancel-resting --order-id <id>` CLI command.',
+      inputSchema: {
+        orderId: z.string().min(1).describe('Kalshi orderId (from kea_resting_orders)'),
+      },
+    },
+    async ({ orderId }) => {
+      try {
+        const cfg = makeMinimalConfig('KX_PLACEHOLDER');
+        const client = new KalshiClient(cfg);
+        const result = await client.cancelOrder(orderId);
+        return jsonContent({ canceled: true, orderId: result.orderId, status: result.status });
+      } catch (err) { return errorContent(err); }
     },
   );
 
@@ -1817,6 +1838,7 @@ export function buildMcpServer(): McpServer {
         since: z.string().optional().describe('ISO 8601 start date (inclusive). Default: 30 days ago.'),
         until: z.string().optional().describe('ISO 8601 end date (inclusive). Default: now.'),
         minNotional: z.number().optional().describe('Minimum notional in dollars to include a fire. Default: 0.'),
+        ticker: z.string().optional().describe('SH-MCP-EDGE-FILTERS: restrict to fires on this exact ticker symbol.'),
       },
     },
     (args) => {
@@ -1843,6 +1865,7 @@ export function buildMcpServer(): McpServer {
         const fires = joinFires(allEntries).filter((fire) => {
           const jobTs = parseInt(fire.jobId.split('-')[0] ?? '0', 10);
           if (jobTs < sinceMs || jobTs > untilMs) return false;
+          if (args.ticker && fire.ticker !== args.ticker) return false;
           const notional = (fire.entryFills.reduce((s, f) => s + (f.size ?? 0), 0) * (fire.decisionMidCents ?? 50)) / 100 / 100;
           return notional >= minNotional;
         });
@@ -1875,6 +1898,7 @@ export function buildMcpServer(): McpServer {
         strategy: z.string().min(1).describe('Strategy name (e.g. "s-trail", "s-aggressive").'),
         since: z.string().optional().describe('ISO 8601 start date (inclusive). Default: 30 days ago.'),
         paramName: z.string().optional().describe('Trigger param name for sensitivity analysis (e.g. "trailCents").'),
+        ticker: z.string().optional().describe('SH-MCP-EDGE-FILTERS: restrict to fires on this exact ticker symbol.'),
       },
     },
     (args) => {
@@ -1898,6 +1922,7 @@ export function buildMcpServer(): McpServer {
 
         const fires = joinFires(allEntries).filter((fire) => {
           if (fire.strategy !== args.strategy) return false;
+          if (args.ticker && fire.ticker !== args.ticker) return false;
           const jobTs = parseInt(fire.jobId.split('-')[0] ?? '0', 10);
           return jobTs >= sinceMs;
         });
@@ -1922,6 +1947,141 @@ export function buildMcpServer(): McpServer {
           triggerHistogram: histogram,
           ...(sensitivity ? { paramSensitivity: sensitivity } : {}),
           ...(noiseWarning ? { noiseWarning } : {}),
+        });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  // SH-MCP-MICRO-STATUS: read-only harness state. Mirrors the JSON envelope
+  // emitted by `kea micro status --json` (PR #173).
+  server.registerTool(
+    'kea_micro_status',
+    {
+      description:
+        'Read-only summary of today\'s SH-MICRO-EXECUTION-LOOP trials. Returns the same envelope shape as `kea micro status --json`: { version: 1, mode: "micro_status", date, totals: { trialsToday, spentDollars }, rows: [...] }.',
+      inputSchema: {},
+    },
+    async () => {
+      try {
+        const { sumDailySpent } = await import('./microHarness/runner.js');
+        const { loadAllJournalEntries } = await import('./edge/pipeline.js');
+        const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000);
+        const rawEntries = loadAllJournalEntries(since48h);
+        const entries = rawEntries.map((e) => ({
+          kind: e.kind,
+          data: (e.data as Record<string, unknown>) ?? {},
+        }));
+        const today = new Date().toISOString().slice(0, 10);
+        const started = entries.filter(
+          (e) => e.kind === 'micro_trial_started' &&
+            typeof e.data['startedAt'] === 'string' &&
+            (e.data['startedAt'] as string).slice(0, 10) === today,
+        );
+        const finishedByTrial = new Map<string, Record<string, unknown>>();
+        for (const e of entries) {
+          if (e.kind !== 'micro_trial_finished') continue;
+          const tid = e.data['trialId'];
+          if (typeof tid === 'string') finishedByTrial.set(tid, e.data);
+        }
+        const rows = started.map((e) => {
+          const tid = String(e.data['trialId'] ?? '');
+          const fin = finishedByTrial.get(tid);
+          return {
+            trialId: tid,
+            ticker: e.data['ticker'],
+            strategy: e.data['strategy'],
+            side: e.data['side'],
+            maxNotionalDollars: e.data['maxNotionalDollars'],
+            intent: e.data['intent'],
+            startedAt: e.data['startedAt'],
+            finishedAt: fin ? fin['finishedAt'] : null,
+            status: fin ? (fin['status'] ?? 'finished') : 'running',
+            fireId: fin ? fin['fireId'] : null,
+          };
+        });
+        return jsonContent({
+          version: 1 as const,
+          mode: 'micro_status' as const,
+          date: today,
+          totals: {
+            trialsToday: started.length,
+            spentDollars: sumDailySpent(entries),
+          },
+          rows,
+        });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  // SH-MCP-ALERTS-CRUD: list + cancel for notify-action synthetics.
+  // Register already exists as `kea_alert_register`; mirror the rest of the
+  // CRUD surface from synthetic CRUD, filtered to action='notify'.
+  server.registerTool(
+    'kea_alert_list',
+    {
+      description:
+        'List all registered alerts (notify-action synthetics) from the Watcher singleton. ' +
+        'Mirrors kea_synthetic_list filtered to action==\'notify\'.',
+      inputSchema: {},
+    },
+    () => {
+      try {
+        if (!isWatcherInitialized()) {
+          return errorContent(new Error('Watcher singleton not initialized. Call initWatcher() or setWatcherForTests() first.'));
+        }
+        const all = getWatcher().list();
+        const alerts = all.filter((s) => (s as { action?: string }).action === 'notify');
+        return jsonContent(alerts);
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  server.registerTool(
+    'kea_alert_cancel',
+    {
+      description:
+        'Cancel an armed alert by id. Returns { canceled: true } on success, false if already fired/canceled. ' +
+        'Functionally identical to kea_synthetic_cancel; provided as a convenience for the alerts CRUD surface.',
+      inputSchema: {
+        id: z.string().min(1).describe('Synthetic id to cancel (alert ids are syn-<uuid>)'),
+      },
+    },
+    ({ id }) => {
+      try {
+        if (!isWatcherInitialized()) {
+          return errorContent(new Error('Watcher singleton not initialized. Call initWatcher() or setWatcherForTests() first.'));
+        }
+        return jsonContent({ canceled: getWatcher().cancel(id) });
+      } catch (err) { return errorContent(err); }
+    },
+  );
+
+  // SH-MCP-RESUME: agent-side resume of a journaled job after crash.
+  server.registerTool(
+    'kea_resume',
+    {
+      description:
+        'Resume a journaled exit job after crash. Loads the config from `configPath`, ' +
+        'instantiates ExitRunner with `resumeFromJobId`, and runs to completion. Returns ' +
+        'the final job status. Mirrors `kea resume --config <path> --job <id>`.',
+      inputSchema: {
+        configPath: z.string().min(1).describe('Path to the exit config JSON file'),
+        jobId: z.string().min(1).describe('jobId to resume (must have a journal at $KEA_HOME/jobs/<jobId>.jsonl)'),
+      },
+    },
+    async ({ configPath, jobId }) => {
+      try {
+        const { loadConfig } = await import('./config.js');
+        const { ExitRunner } = await import('./exitRunner.js');
+        const config = loadConfig(configPath);
+        const runner = new ExitRunner(config, undefined, { resumeFromJobId: jobId });
+        const status = await runner.run();
+        return jsonContent({
+          jobId,
+          filledTotal: status.filledTotal,
+          remaining: status.remaining,
+          ordersAttempted: status.ordersAttempted,
+          ...(status.lastError ? { lastError: status.lastError } : {}),
         });
       } catch (err) { return errorContent(err); }
     },
