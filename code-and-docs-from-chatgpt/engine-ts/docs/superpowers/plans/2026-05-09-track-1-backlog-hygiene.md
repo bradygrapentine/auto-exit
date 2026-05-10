@@ -194,13 +194,19 @@ If any of these *don't* match expectations, STOP — the reconciliation is wrong
 
 - [ ] **Step 2: Commit**
   ```sh
+  # Replace <new-sh-count> and <new-shipped-count> with the awk-derived
+  # numbers from Task 1.6 Step 1 BEFORE running this commit.
   git commit -m "docs(backlog): reconcile shipped SH stories — 2026-05-09
 
   Promote SH-DEPTH-WALK-STALE-SNAPSHOT (#164),
   SH-AGGRESSIVE-CLI-FLAG-PARSING (#163), and
   SH-AGGRESSIVE-PARTIAL-SIZE (#163) to ✅. Adds
   matching §7 shipped-log bullets and recounts §0
-  status board (SH 4→1, Shipped 75→78)."
+  status board (SH <prior>→<new-sh-count>, Shipped
+  <prior>→<new-shipped-count>). Note: the prior §0
+  Shipped count of 75 disagreed with raw §7 bullet
+  count (65); this PR adopts the awk-recount as
+  source of truth."
   ```
 
 - [ ] **Step 3: PR + auto-merge** following the standard project flow. No CI risk — docs-only.
