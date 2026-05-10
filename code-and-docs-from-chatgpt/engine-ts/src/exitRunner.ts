@@ -2,14 +2,14 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { KalshiClient } from './kalshiClient.js';
 import { Journal, generateJobId } from './journal.js';
-import { buildSellPayload, centsFloatToDollarString, decideLosingExitOrder, normalizeLevels, oneTickBelowCents, projectFullExit } from './pricing.js';
+import { buildSellPayload, centsFloatToDollarString, CHUNK_TOO_SMALL_REASON, decideLosingExitOrder, normalizeLevels, oneTickBelowCents, projectFullExit } from './pricing.js';
 import { mergeIntoExitConfig, getSafety, checkPreTradeRisk, appendRealizedLoss } from './safety.js';
 import { getPortfolioNAVDollars } from './balance.js';
 import type { ExitConfig, JobStatus, KalshiClientLike, LoopEvent, OrderPayload, OrderResult, Position, TcaEntry } from './types.js';
 
 export type ExitTickOutcome =
   | { kind: 'continue' }
-  | { kind: 'break_loop'; reason: 'kill_switch' | 'max_orders' | 'safety_cap' | 'gtc_resting' | 'stop_requested' };
+  | { kind: 'break_loop'; reason: 'kill_switch' | 'max_orders' | 'safety_cap' | 'gtc_resting' | 'stop_requested' | 'chunk_too_small' };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -349,6 +349,28 @@ export class ExitRunner {
     const topYesAsk = orderbook.no[0] != null ? (100 - orderbook.no[0].priceCents) : 100;
     const arrivalMidCents = (topYesBid + topYesAsk) / 2;
     const decision = decideLosingExitOrder(orderbook, this.status.remaining, this.config);
+
+    // SH-MIN-CHUNK: skip the order entirely when the pricing layer signals the
+    // chunk would fall below the fee-floor threshold. Without this, a
+    // count: 0 createOrder would be submitted and rejected by Kalshi.
+    if (decision.chunkSize === 0) {
+      if (decision.reason === CHUNK_TOO_SMALL_REASON) {
+        this.log('info', 'chunk_too_small_for_fee_threshold', {
+          reason: decision.reason,
+          remaining: this.status.remaining,
+          priceCentsExact: decision.priceCentsExact,
+        });
+      } else {
+        // Defensive: any other zero-chunk return path (none today). Log the
+        // surprise and break — better than infinite-looping on dust.
+        this.log('warn', 'unexpected_zero_chunk', {
+          reason: decision.reason,
+          remaining: this.status.remaining,
+        });
+      }
+      return { kind: 'break_loop', reason: 'chunk_too_small' };
+    }
+
     const payload = buildSellPayload(this.config, decision);
     this.status.lastDecision = decision;
     this.status.lastPayload = payload;

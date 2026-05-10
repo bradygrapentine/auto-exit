@@ -118,4 +118,31 @@ describe('ExitRunner reconciliation', () => {
     expect(mock.events).not.toContain('createOrder');
     expect(mock.events).not.toContain('getOrder');
   });
+
+  it('SH-MIN-CHUNK: zero-chunk decision breaks the loop without calling createOrder', async () => {
+    // Cheap-market dust: top yes-bid 1¢, chunkSize 1 → 1 × $0.01 = $0.01.
+    // Default minChunkValueDollars 0.15 → guard fires; runner must NOT
+    // submit a count: 0 createOrder. Loop terminates cleanly with no fills.
+    const cheapBook: Orderbook = {
+      yes: [{ priceCents: 1, size: 100 }],
+      no: [{ priceCents: 99, size: 100 }],
+    };
+    const cfg: ExitConfig = {
+      ...baseCfg,
+      positionSize: 1,
+      chunkSize: 1,
+      minLevelSize: 1,
+      tailSweepThreshold: 0,
+      // minChunkValueDollars left undefined → engine defaults to 0.15.
+    };
+    const mock = new MockKalshiClient({
+      orderbookSnapshots: [cheapBook, cheapBook, cheapBook],
+      behaviors: [],
+    });
+    const runner = new ExitRunner(cfg, mock);
+    const status = await runner.run();
+    expect(mock.events).not.toContain('createOrder');
+    expect(status.filledTotal).toBe(0);
+    expect(status.remaining).toBe(1);
+  });
 });

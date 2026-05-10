@@ -1,6 +1,11 @@
 import crypto from 'node:crypto';
 import type { ExitConfig, Orderbook, OrderPayload, PriceDecision, PriceLevel } from './types.js';
 
+/** SH-MIN-CHUNK: stable reason emitted when chunk notional falls below
+ *  `minChunkValueDollars`. Exported so the runner can branch on equality. */
+export const CHUNK_TOO_SMALL_REASON = 'chunk_too_small_for_fee_threshold';
+const DEFAULT_MIN_CHUNK_VALUE_DOLLARS = 0.15;
+
 export function normalizeLevels(levels: PriceLevel[], minLevelSize: number): PriceLevel[] {
   return levels
     .filter((level) => Number.isFinite(level.priceCents) && Number.isFinite(level.size))
@@ -196,6 +201,21 @@ export function decideLosingExitOrder(orderbook: Orderbook, remainingPosition: n
   }
 
   const price = selectExecutablePrice(sideLevels, chunkSize, config.floorPriceCents, config.minLevelSize);
+
+  // SH-MIN-CHUNK: refuse chunks whose notional falls below the min-chunk
+  // threshold so we don't pay Kalshi's $0.01-per-fill minimum on dust.
+  // Precondition `chunkSize > 0` keeps chooseChunkSize-returns-0 (e.g.
+  // remaining=0) cases from being mis-attributed to this reason.
+  if (chunkSize > 0) {
+    const minChunkValue = config.minChunkValueDollars ?? DEFAULT_MIN_CHUNK_VALUE_DOLLARS;
+    if (minChunkValue > 0) {
+      const chunkValueDollars = chunkSize * price.priceCentsExact / 100;
+      if (chunkValueDollars < minChunkValue) {
+        return { ...price, chunkSize: 0, reason: CHUNK_TOO_SMALL_REASON };
+      }
+    }
+  }
+
   return { chunkSize, ...price };
 }
 

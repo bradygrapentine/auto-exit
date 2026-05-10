@@ -26,6 +26,10 @@ const baseCfg: ExitConfig = {
   apiKeyEnv: 'X',
   privateKeyPathEnv: 'Y',
   safetySubmittedMultiple: 1.5,
+  // SH-MIN-CHUNK: this suite tests tail-GTC behavior, not the min-chunk
+  // guard. Some fixtures use sub-cent floors × small chunks that would
+  // otherwise trip the default $0.15 threshold (e.g. 50 × 0.1¢ = $0.05).
+  minChunkValueDollars: 0,
 };
 
 describe('oneTickBelowCents', () => {
