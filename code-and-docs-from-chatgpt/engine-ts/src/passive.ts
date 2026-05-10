@@ -170,17 +170,31 @@ export async function runOneTick(
     .filter((l) => l.size > 0)
     .sort((a, b) => a.priceCents - b.priceCents);
 
-  // SH-PASSIVE-SPREAD-LOGIC (live path): when no-side is empty, synthesize
-  // a spread from yes-depth. Live uses cross-quoted bid/ask semantics
-  // (yes-side[0] = yes ask) because Kalshi's matching engine accepts the
-  // resulting GTC regardless of how off the limit math is and matches
-  // against the real book. This DIFFERS intentionally from
-  // runOneTickBacktest below, which mirrors the recording's bid-quoted
-  // representation (yes-side stores yes BIDS).
-  const bestAskCents = noAsks.length > 0
+  // SH-PASSIVE-SELL-LIMIT: derive `decisionAskCents` / `decisionBidCents` —
+  // the prices passive will reference for spread + posting math. They are
+  // NOT always true ask/bid quotes; the meaning depends on book shape:
+  //
+  //   • Cross-quoted (no-side present): `decisionAskCents = yesAsks[0]`
+  //     (lowest yes-side level = best yes ask) and `decisionBidCents =
+  //     100 − noAsks[0]` (best yes bid via the cross-conversion). Both
+  //     are real quotes.
+  //   • Yes-depth fallback (no-side empty): synthesize a spread from yes
+  //     depth — `decisionAskCents` becomes the highest yes-side level
+  //     and `decisionBidCents` the lowest. Neither is a true quote, but
+  //     it lets the spread guard and walk math run on one-sided books.
+  //
+  // For SELL on a one-sided book this places `iterPrice = decisionAsk -
+  // walkStep` BELOW all visible yes levels — intentional. Kalshi's
+  // matching engine matches at the actual best bid regardless of how low
+  // the limit is, so the GTC still rests cleanly and gets taken when a
+  // counterparty arrives. The naming used to be `bestAskCents` /
+  // `bestBidCents`; renamed to `decision*` to match the backtest path
+  // and to stop implying these are always real ask/bid quotes. Journal
+  // field names preserved for backward compat with on-disk data.
+  const decisionAskCents = noAsks.length > 0
     ? (yesAsks[0]?.priceCents ?? 99)
     : (yesAsks[yesAsks.length - 1]?.priceCents ?? 99);
-  const bestBidCents = noAsks[0] != null
+  const decisionBidCents = noAsks[0] != null
     ? 100 - noAsks[0].priceCents
     : (yesAsks[0]?.priceCents ?? 1);
 
@@ -189,19 +203,19 @@ export async function runOneTick(
   if (counterpartyEmpty && !state.oneSidedWarned) {
     journal.append(jk('passive_no_opposite_liquidity'), {
       side: config.side,
-      bestAskCents,
-      bestBidCents,
+      bestAskCents: decisionAskCents,
+      bestBidCents: decisionBidCents,
     });
     state.oneSidedWarned = true;
   }
 
-  const spreadCents = bestAskCents - bestBidCents;
+  const spreadCents = decisionAskCents - decisionBidCents;
 
   // ── 2. Spread check ─────────────────────────────────────────────────────────
   if (spreadCents < walkStepCents) {
     journal.append(jk('passive_spread_too_tight'), {
-      bestBidCents,
-      bestAskCents,
+      bestBidCents: decisionBidCents,
+      bestAskCents: decisionAskCents,
       spreadCents,
     });
     // Note: loop_finished is written by run()'s finally block, not here.
@@ -216,10 +230,10 @@ export async function runOneTick(
     const pegged = computePeggedPrice(action, orderbook, offset, effectiveFloorCents);
     iterPrice = pegged !== null
       ? pegged
-      : roundCents(config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents);
+      : roundCents(config.side === 'sell' ? decisionAskCents - walkStepCents : decisionBidCents + walkStepCents);
   } else {
     iterPrice = roundCents(
-      config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents,
+      config.side === 'sell' ? decisionAskCents - walkStepCents : decisionBidCents + walkStepCents,
     );
   }
 
@@ -438,10 +452,15 @@ export async function runOneTickBacktest(
   const crossBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : Number.NEGATIVE_INFINITY;
   const crossSpreadValid = noAsks.length > 0 && crossAskCents - crossBidCents > 0;
 
-  // SH-PASSIVE-SELL-LIMIT: rename to reflect that on the bid-quoted backtest path
-  // these aren't true ask/bid quotes — they're derived "decision" prices that vary
-  // depending on whether the cross-spread fallback applies. Journal field names
-  // preserved (bestAskCents / bestBidCents) for backward compat with on-disk data.
+  // SH-PASSIVE-SELL-LIMIT: these aren't true ask/bid quotes — they're derived
+  // "decision" prices that vary depending on whether the cross-spread fallback
+  // applies (cross-quoted live books vs. bid-quoted recordings). For SELL on
+  // bid-quoted books, `iterPrice = decisionAsk − walkStep` deliberately sits
+  // below all visible yes levels: production Kalshi matches at the real best
+  // bid regardless of how low the limit is, while the backtest fill model
+  // treats the limit as a floor (per SH-FILL-SIM-DIRECTIONAL) and walks
+  // descending until a yes level crosses. Journal field names preserved
+  // (bestAskCents / bestBidCents) for backward compat with on-disk data.
   const decisionAskCents = crossSpreadValid
     ? crossAskCents
     : (yesAsks[yesAsks.length - 1]?.priceCents ?? 99);
