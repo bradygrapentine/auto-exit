@@ -63,14 +63,16 @@ describe('passive spread fallback (SH-PASSIVE-SPREAD-LOGIC)', () => {
     expect(state.pendingOrderId).toBe('o-1');
   });
 
-  it('breaks loop on degenerate book (single yes level, no no-side)', async () => {
+  it('breaks loop on degenerate book (single yes level, no no-side) AFTER first tick', async () => {
+    // SH-PASSIVE-SPREAD-LOGIC: spread guard now skipped on tick 1 (filled=0,
+    // pendingOrderId=undefined). Simulate post-tick-1 by setting filled>0.
     const orderbook = {
       yes: [{ priceCents: 50, size: 100 }],
       no: [],
     };
     const deps = makeDeps(orderbook);
     const state: PassiveRunState = {
-      filled: 0, remaining: 100, totalNotionalCents: 0,
+      filled: 5, remaining: 95, totalNotionalCents: 0,
       feesIncurredDollars: 0, totalSubmittedShares: 0,
       guardHit: false, oneSidedWarned: false,
     };

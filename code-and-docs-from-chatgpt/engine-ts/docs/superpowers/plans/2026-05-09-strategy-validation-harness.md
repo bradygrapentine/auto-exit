@@ -306,9 +306,9 @@ These shape the API. Surface to the user; default below.
 
 1. **Trial granularity.** Each "trial" = one full strategy run on one ticker (entry + exit, journaled), or = one entry decision and let the existing exit-runner / synthetic-watcher exit it later? **Default: full strategy run.** Cleaner attribution, simpler harness. Operator can always run the existing exitRunner separately if they want a half-trial.
 
-2. **Size cap.** The harness must enforce a per-trial USD cap (e.g. $5) AND a daily aggregate cap (e.g. $50). **Default: per-trial cap = $5, daily aggregate = $50, both configurable.** Gate via the existing safety.json mechanism.
+2. **Size cap.** The harness must enforce a per-trial USD cap AND a daily aggregate cap. **Operator decision (2026-05-09): per-trial cap range $0.10–$1.00, daily aggregate cap $2.50.** Default config ships with `perTrialCapDollars: 1.00, dailyAggregateCapDollars: 2.50` — operator can lower further per-run via `--max-notional`. Gate via the existing safety.json mechanism.
 
-3. **Confirmation gating.** Every trial confirms before submission, OR after the first 3 trials on a strategy×market combo the harness auto-confirms? **Default: every trial confirms.** Aligns with "DON'T EXECUTE TRADES" muscle-memory and the 2026-05-09 user feedback.
+3. **Confirmation gating.** Every trial confirms before submission, OR after the first 3 trials on a strategy×market combo the harness auto-confirms? **Operator decision: ALWAYS prompt for live testing — real spend, no auto-confirm flag, ever.** No `--confirm-yes` escape hatch. Sweeps step through one trial at a time with operator-in-the-loop.
 
 4. **What strategies are eligible?** All shipped strategies (s-passive, s-aggressive, s-trail, s-twap, s-auto), or a curated subset for v1? **Default: all shipped, but s-aggressive defaults to `confirmedAggressive: true` only after the operator passes a per-trial confirmation flag.**
 
@@ -356,8 +356,8 @@ export interface MicroTrialResult {
 ```jsonc
 {
   "microHarness": {
-    "perTrialCapDollars": 5,
-    "dailyAggregateCapDollars": 50,
+    "perTrialCapDollars": 1.00,
+    "dailyAggregateCapDollars": 2.50,
     "tickerAllowlist": ["KXBTC*", "KXETH*", "KXNFL*"]   // glob patterns
   }
 }
@@ -394,11 +394,11 @@ async function runTrial(config: MicroTrialConfig, deps: TrialDeps): Promise<Micr
 }
 ```
 
-- [ ] **Step 2: Confirmation flow.** TTY prompt by default; `--confirm-yes` flag to skip (for scripted runs); always rejects if `process.stdin.isTTY === false` and `--confirm-yes` not passed.
+- [ ] **Step 2: Confirmation flow.** TTY prompt is MANDATORY for every trial — no skip flag, no auto-confirm. The harness rejects if `process.stdin.isTTY === false` (non-interactive runs are not allowed for live trials). This is a hard rule, not a default.
 
 - [ ] **Step 3: Tests** — mock the strategy runner; assert: rejected when over per-trial cap; rejected when daily aggregate exceeded; happy path produces a Fire-shaped journal that SH-EDGE's `joinFires` can consume.
 
-- [ ] **Step 4: Live smoke** — run ONE micro-trial against a real ticker, $1 notional, with `--confirm-yes` skipped (so you actually approve interactively). Verify journal entry appears in `${KEA_HOME}/jobs/`.
+- [ ] **Step 4: Live smoke** — run ONE micro-trial against a real ticker, **$0.10 notional** (the lowest end of the operator-approved range), interactive TTY confirmation. Verify journal entry appears in `${KEA_HOME}/jobs/`.
 
 - [ ] **Step 5: Commit**
 
@@ -498,5 +498,5 @@ git commit -m "feat(cli/SH-MICRO-3.4): kea micro {trial|sweep|status} subcommand
 - ✅ Tasks decomposed to ≤4h each; cluster total ~32h ≈ 4 days at sustained focus.
 - ✅ Out of scope is opinionated and leaves obvious v2 hooks.
 - ✅ Pre-flight design-question section gates Sub-story 3 on operator alignment.
-- ⚠️ Task 3.2's live smoke is the highest-risk step — first time real money runs through `runTrial`. Mitigation: $1 cap, full TTY confirmation, signal-handlers for clean abort.
+- ⚠️ Task 3.2's live smoke is the highest-risk step — first time real money runs through `runTrial`. Mitigation: $0.10–$1 cap (operator-approved range), MANDATORY TTY confirmation per trial (no skip flag), $2.50 daily aggregate ceiling, signal-handlers for clean abort.
 - ⚠️ Task 1.4 (s-twap) may already be shipped (SH-TWAP-CADENCE in §7); verify on Step 1 before re-writing it. If shipped, mark task complete and move on.

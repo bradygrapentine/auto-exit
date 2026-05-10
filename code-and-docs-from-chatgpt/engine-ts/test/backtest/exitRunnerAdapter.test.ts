@@ -205,7 +205,11 @@ describe('makePassiveAdapter', () => {
     expect(decision).toMatch(/break_loop.*floor_hit/);
   });
 
-  it('reports break_loop:spread_too_tight when spread < walkStepCents', async () => {
+  it('reports break_loop:spread_too_tight after first tick when spread stays tight', async () => {
+    // SH-PASSIVE-SPREAD-LOGIC: tick 1 no longer break-loops on tight spread —
+    // it posts. The guard now fires from tick 2+ once pendingOrderId is set.
+    // Use fillImmediately: false so tick 1 leaves a pending order, then tick 2
+    // hits the guard.
     const adapter = makePassiveAdapter({
       ticker: TICKER,
       side: 'sell',
@@ -213,8 +217,9 @@ describe('makePassiveAdapter', () => {
     });
 
     // bid=59, ask=61, spread=2 < walkStep=5
-    const client = makeMockClient({ yesBid: 59, yesAsk: 61, fillImmediately: true });
-    const decision = await adapter.tick(client as any, 10);
+    const client = makeMockClient({ yesBid: 59, yesAsk: 61, fillImmediately: false });
+    await adapter.tick(client as any, 10);                   // tick 1: posts pending
+    const decision = await adapter.tick(client as any, 10);  // tick 2: guard fires
     expect(decision).toMatch(/break_loop.*spread_too_tight/);
   });
 

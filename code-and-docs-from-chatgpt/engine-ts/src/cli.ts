@@ -82,21 +82,37 @@ import { formatReport, writeReport } from './backtest/report.js';
 import type { BacktestConfig, SweepConfig, CounterfactualReport } from './backtest/types.js';
 
 // ── argv parsing ─────────────────────────────────────────────────────────────
-function parseFlags(argv: string[]): Record<string, string> {
+export function parseFlags(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i].startsWith('--')) {
-      const key = argv[i].slice(2);
+      const tok = argv[i].slice(2);
+      // Support `--flag=value` form alongside `--flag value` and bare `--flag`.
+      const eqIdx = tok.indexOf('=');
+      if (eqIdx >= 0) {
+        out[tok.slice(0, eqIdx)] = tok.slice(eqIdx + 1);
+        continue;
+      }
       const next = argv[i + 1];
       if (next && !next.startsWith('--')) {
-        out[key] = next;
+        out[tok] = next;
         i += 1;
       } else {
-        out[key] = 'true';
+        out[tok] = 'true';
       }
     }
   }
   return out;
+}
+
+/** Parse a boolean flag tolerating presence-only, =true/false, and space-separated forms. */
+export function boolFlag(flags: Record<string, string>, key: string, defaultValue = false): boolean {
+  const v = flags[key];
+  if (v === undefined) return defaultValue;
+  const lc = v.toLowerCase();
+  if (lc === 'true' || lc === '1' || lc === 'yes') return true;
+  if (lc === 'false' || lc === '0' || lc === 'no') return false;
+  return defaultValue;
 }
 
 function die(msg: string): never {
@@ -328,7 +344,7 @@ function cmdUse(rest: string[]): void {
 }
 
 function cmdLogout(flags: Record<string, string>): void {
-  if (flags.all === 'true') {
+  if (boolFlag(flags, 'all')) {
     for (const name of listProfiles()) removeProfile(name);
     ok('removed all profiles');
     return;
@@ -807,7 +823,7 @@ async function cmdStrategyAggressive(flags: Record<string, string>): Promise<voi
     action: flags.action as 'buy' | 'sell',
     size: Number(flags.size),
     confirmedAggressive: true,
-    oneTickIn: flags['one-tick-in'] === 'true',
+    oneTickIn: boolFlag(flags, 'one-tick-in'),
   });
   const client = new KalshiClient(makeMinimalConfig(config.ticker));
   const result = await new AggressiveRunner(client, config).run();
@@ -873,7 +889,7 @@ async function cmdStrategyStopAndReverse(flags: Record<string, string>): Promise
     openSide: flags['open-side'] as 'yes' | 'no',
     openSize: Number(flags['open-size']),
     confirmedReverse: true,
-    oneTickIn: flags['one-tick-in'] === 'true',
+    oneTickIn: boolFlag(flags, 'one-tick-in'),
   }).run();
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }
@@ -894,7 +910,7 @@ async function cmdStrategyRoll(flags: Record<string, string>): Promise<void> {
     targetSide: flags['target-side'] as 'yes' | 'no',
     targetSize: Number(flags['target-size']),
     confirmedRoll: true,
-    oneTickIn: flags['one-tick-in'] === 'true',
+    oneTickIn: boolFlag(flags, 'one-tick-in'),
   }).run();
   process.stdout.write(JSON.stringify(result, null, 2) + '\n');
 }
@@ -912,7 +928,7 @@ async function cmdStrategyPrependThenSweep(flags: Record<string, string>): Promi
     size: Number(flags.size),
     prependWindowMs: Number(flags['prepend-window-ms']),
     confirmedPrepend: true,
-    oneTickIn: flags['one-tick-in'] === 'true',
+    oneTickIn: boolFlag(flags, 'one-tick-in'),
   });
   const client = new KalshiClient(makeMinimalConfig(s15config.ticker));
   const result = await new SPrependThenSweepRunner(client, s15config).run();

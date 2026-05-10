@@ -162,6 +162,43 @@ describe('makeAggressiveAdapter', () => {
     const decision = await adapter.tick(client as any, 0);
     expect(decision).toBe('');
   });
+
+  // SH-AGGRESSIVE-PARTIAL-SIZE
+  it('respects params.size when smaller than remainingQty (partial harvest)', async () => {
+    const adapter = makeAggressiveAdapter({
+      ticker: TICKER,
+      side: 'yes',
+      action: 'sell',
+      size: 3,                  // smaller than remainingQty=10
+    });
+    const client = makeMockClient({ yesBid: 60, yesAsk: 70 });
+    const decision = await adapter.tick(client as any, 10);
+    expect(decision).toMatch(/filled=3/);
+  });
+
+  it('caps params.size to remainingQty when larger', async () => {
+    const adapter = makeAggressiveAdapter({
+      ticker: TICKER,
+      side: 'yes',
+      action: 'sell',
+      size: 100,                // larger than remainingQty=10
+    });
+    const client = makeMockClient({ yesBid: 60, yesAsk: 70 });
+    const decision = await adapter.tick(client as any, 10);
+    expect(decision).toMatch(/filled=10/);
+  });
+
+  it('falls back to remainingQty when params.size is absent (legacy behavior)', async () => {
+    const adapter = makeAggressiveAdapter({
+      ticker: TICKER,
+      side: 'yes',
+      action: 'sell',
+      // no size
+    });
+    const client = makeMockClient({ yesBid: 60, yesAsk: 70 });
+    const decision = await adapter.tick(client as any, 10);
+    expect(decision).toMatch(/filled=10/);
+  });
 });
 
 // ---------------------------------------------------------------------------
