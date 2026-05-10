@@ -13,6 +13,7 @@
 
 import type { KalshiClientLike, OrderPayload, Side, JournalKind } from './types.js';
 import { Journal } from './journal.js';
+import { checkLiveness, type ProjectionAssumptions } from './preTradeLiveness.js';
 
 // Cast unknown string → JournalKind without modifying types.ts.
 function jk(s: string): JournalKind {
@@ -29,6 +30,17 @@ export interface AggressiveConfig {
   confirmedAggressive: boolean;
   /** default false; if true, cross by one tick beyond best price */
   oneTickIn?: boolean;
+  /**
+   * SH-DEPTH-WALK-STALE-SNAPSHOT: pre-trade liveness check.
+   * When `livenessGateSize` (default 100) <= size, the runner re-fetches
+   * the orderbook between projection and submission and compares against
+   * the first fetch (or, when supplied, the operator's `livenessAssumptions`).
+   * Set `livenessCheckEnabled: false` to opt out (e.g. backtests).
+   */
+  livenessCheckEnabled?: boolean;
+  livenessGateSize?: number;
+  livenessAssumptions?: import('./preTradeLiveness.js').ProjectionAssumptions;
+  livenessConfig?: import('./preTradeLiveness.js').LivenessConfig;
 }
 
 export interface AggressiveResult {
@@ -109,6 +121,38 @@ export class AggressiveRunner {
       reduce_only: true,
       client_order_id: `kea-aggressive-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     };
+
+    // SH-DEPTH-WALK-STALE-SNAPSHOT: pre-trade liveness check.
+    // For sized trades (default >= 100 contracts), re-fetch the book and
+    // compare against assumptions before submitting. If the operator
+    // supplied `livenessAssumptions` (e.g. from a harvest-planner that ran
+    // minutes earlier), use those; otherwise derive from the first fetch.
+    const livenessGateSize = this.config.livenessGateSize ?? 100;
+    const livenessOn = this.config.livenessCheckEnabled !== false && this.config.size >= livenessGateSize;
+    if (livenessOn) {
+      const sellingSide: 'yes' | 'no' = this.config.action === 'sell' ? this.config.side : (this.config.side === 'yes' ? 'no' : 'yes');
+      const projection: ProjectionAssumptions = this.config.livenessAssumptions ?? (() => {
+        const lvls = sellingSide === 'yes' ? book.yes : book.no;
+        const sorted = [...lvls].filter((l) => l.size > 0).sort((a, b) => b.priceCents - a.priceCents);
+        const top = sorted[0];
+        return {
+          sellingSide,
+          topBidCents: top?.priceCents ?? limitPriceCents,
+          expectedSize: top?.size ?? this.config.size,
+        };
+      })();
+      const fresh = await this.client.getOrderbook(this.config.ticker, 5);
+      const liveness = checkLiveness(projection, fresh, this.config.livenessConfig);
+      if (!liveness.ok) {
+        this.journal?.append(jk('aggressive_liveness_rejected'), {
+          reason: liveness.reason,
+          observed: liveness.observed,
+          drift: liveness.drift,
+          projection,
+        });
+        return { kind: 'break_loop', reason: `liveness_rejected:${liveness.reason}` };
+      }
+    }
 
     this.journal?.append(jk('aggressive_order_placed'), { payload });
 
