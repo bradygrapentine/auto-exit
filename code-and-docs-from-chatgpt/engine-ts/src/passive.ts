@@ -170,32 +170,38 @@ export async function runOneTick(
     .filter((l) => l.size > 0)
     .sort((a, b) => a.priceCents - b.priceCents);
 
-  // SH-PASSIVE-SELL-LIMIT: derive `decisionAskCents` / `decisionBidCents` —
-  // the prices passive will reference for spread + posting math. They are
-  // NOT always true ask/bid quotes; the meaning depends on book shape:
+  // SH-PASSIVE-SPREAD-LOGIC: derive `decisionAskCents` / `decisionBidCents` —
+  // the prices passive will reference for spread + posting math. Mirrors
+  // `runOneTickBacktest`'s cross-spread-validity logic so production and
+  // backtest paths stay semantically aligned.
   //
-  //   • Cross-quoted (no-side present): `decisionAskCents = yesAsks[0]`
-  //     (lowest yes-side level = best yes ask) and `decisionBidCents =
-  //     100 − noAsks[0]` (best yes bid via the cross-conversion). Both
-  //     are real quotes.
-  //   • Yes-depth fallback (no-side empty): synthesize a spread from yes
-  //     depth — `decisionAskCents` becomes the highest yes-side level
-  //     and `decisionBidCents` the lowest. Neither is a true quote, but
-  //     it lets the spread guard and walk math run on one-sided books.
+  //   • Cross-quoted (no-side present AND cross-spread positive): use
+  //     the real yes ask = lowest yes level, yes bid = 100 − lowest no.
+  //   • Yes-depth fallback (no-side empty OR cross-spread inverted —
+  //     e.g. yes=[14,55], no=[5] would give ask=14, bid=95, spread=−81):
+  //     synthesize from yes depth — ask = highest yes, bid = lowest yes.
+  //     Neither is a true quote, but the spread guard + walk math need a
+  //     positive spread to run. Inverted cross-spreads are transient
+  //     arbitrage states that Kalshi auto-matches; passive shouldn't
+  //     break_loop on them.
   //
-  // For SELL on a one-sided book this places `iterPrice = decisionAsk -
-  // walkStep` BELOW all visible yes levels — intentional. Kalshi's
-  // matching engine matches at the actual best bid regardless of how low
-  // the limit is, so the GTC still rests cleanly and gets taken when a
-  // counterparty arrives. The naming used to be `bestAskCents` /
-  // `bestBidCents`; renamed to `decision*` to match the backtest path
-  // and to stop implying these are always real ask/bid quotes. Journal
-  // field names preserved for backward compat with on-disk data.
-  const decisionAskCents = noAsks.length > 0
-    ? (yesAsks[0]?.priceCents ?? 99)
-    : (yesAsks[yesAsks.length - 1]?.priceCents ?? 99);
-  const decisionBidCents = noAsks[0] != null
+  // For SELL under yes-depth fallback `iterPrice = decisionAsk − walkStep`
+  // sits BELOW visible yes levels — intentional. Kalshi matches at the
+  // actual best bid regardless of how low the limit is.
+  //
+  // Journal field names (`bestAskCents`, `bestBidCents`) preserved for
+  // backward compat with on-disk journal data.
+  const crossAskCents = yesAsks[0]?.priceCents ?? 99;
+  const crossBidCents = noAsks[0] != null
     ? 100 - noAsks[0].priceCents
+    : Number.NEGATIVE_INFINITY;
+  const crossSpreadValid = noAsks.length > 0 && crossAskCents - crossBidCents > 0;
+
+  const decisionAskCents = crossSpreadValid
+    ? crossAskCents
+    : (yesAsks[yesAsks.length - 1]?.priceCents ?? 99);
+  const decisionBidCents = crossSpreadValid
+    ? crossBidCents
     : (yesAsks[0]?.priceCents ?? 1);
 
   const counterpartyEmpty =
