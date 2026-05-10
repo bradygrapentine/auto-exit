@@ -72,7 +72,11 @@ export function makeAggressiveAdapter(params: Record<string, unknown>): Strategy
         const { journal, tmpDir: td } = makeTmpJournal(jobId);
         tmpDir = td;
 
-        const config = buildAggressiveConfig(params, remainingQty);
+        // SH-AGGRESSIVE-PARTIAL-SIZE: respect caller-supplied params.size when present;
+        // fall back to remainingQty (legacy "dump entire position") when omitted.
+        const requested = typeof params['size'] === 'number' ? (params['size'] as number) : remainingQty;
+        const effectiveSize = Math.min(requested, remainingQty);
+        const config = buildAggressiveConfig(params, effectiveSize);
         runner = new AggressiveRunner(
           client as unknown as import('../../types.js').KalshiClientLike,
           config,

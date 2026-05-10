@@ -367,18 +367,32 @@ describe('runOneTickBacktest: remaining=0 at start', () => {
 // ── Test 4: spread_too_tight ──────────────────────────────────────────────────
 
 describe('runOneTickBacktest: spread_too_tight guard', () => {
-  it('returns break_loop:spread_too_tight when spread < walkStepCents', async () => {
-    // yesAsk=55, yesBid=55: spread=0 < walkStep=1
+  it('returns break_loop:spread_too_tight when spread < walkStepCents AFTER first tick', async () => {
+    // yesAsk=55, yesBid=55: spread=0 < walkStep=1.
+    // SH-PASSIVE-SPREAD-LOGIC: the guard now only fires once we're past tick 1
+    // (state.filled > 0 OR pendingOrderId set). Simulate post-tick-1 by
+    // marking the state as having filled at least one share already.
     const client = makeStubClient({ yesAsk: 55, yesBid: 55 });
-    const state = makeState();
+    const state = makeState({ filled: 5 });
     const deps = makeDeps(client);
 
     const outcome = await runOneTickBacktest(state, deps);
 
     expect(outcome.kind).toBe('break_loop');
     expect((outcome as { kind: 'break_loop'; reason: string }).reason).toBe('spread_too_tight');
-    expect(state.filled).toBe(0);
-    expect(state.totalSubmittedShares).toBe(0);
+  });
+
+  it('does NOT break_loop on the first tick even when spread is tight (SH-PASSIVE-SPREAD-LOGIC)', async () => {
+    // Same tight-spread book as above, but state.filled === 0 + no pendingOrderId.
+    // Tick 1 must attempt to post rather than bail — otherwise passive never
+    // tests the book on skewed / one-sided markets.
+    const client = makeStubClient({ yesAsk: 55, yesBid: 55 });
+    const state = makeState();
+    const deps = makeDeps(client);
+
+    const outcome = await runOneTickBacktest(state, deps);
+
+    expect(outcome.kind).not.toBe('break_loop');
   });
 });
 

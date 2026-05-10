@@ -438,10 +438,14 @@ export async function runOneTickBacktest(
   const crossBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : Number.NEGATIVE_INFINITY;
   const crossSpreadValid = noAsks.length > 0 && crossAskCents - crossBidCents > 0;
 
-  const bestAskCents = crossSpreadValid
+  // SH-PASSIVE-SELL-LIMIT: rename to reflect that on the bid-quoted backtest path
+  // these aren't true ask/bid quotes — they're derived "decision" prices that vary
+  // depending on whether the cross-spread fallback applies. Journal field names
+  // preserved (bestAskCents / bestBidCents) for backward compat with on-disk data.
+  const decisionAskCents = crossSpreadValid
     ? crossAskCents
     : (yesAsks[yesAsks.length - 1]?.priceCents ?? 99);
-  const bestBidCents = crossSpreadValid
+  const decisionBidCents = crossSpreadValid
     ? crossBidCents
     : (yesAsks[0]?.priceCents ?? 1);
 
@@ -451,13 +455,13 @@ export async function runOneTickBacktest(
   if (counterpartyEmpty && !state.oneSidedWarned) {
     journal.append(jk('passive_no_opposite_liquidity'), {
       side: config.side,
-      bestAskCents,
-      bestBidCents,
+      bestAskCents: decisionAskCents,
+      bestBidCents: decisionBidCents,
     });
     state.oneSidedWarned = true;
   }
 
-  const spreadCents = bestAskCents - bestBidCents;
+  const spreadCents = decisionAskCents - decisionBidCents;
 
   // ── 2. Check pending order status FIRST — always drain a fill before spread/guard checks.
   //       If a resting GTC filled while the spread tightened, we must record the fill.
@@ -472,7 +476,7 @@ export async function runOneTickBacktest(
 
     if (statusResult.status === 'filled' || statusResult.remainingCount <= 0) {
       const filledNow = statusResult.filledCount;
-      const priceCentsUsed = state.pendingPriceCents ?? bestAskCents;
+      const priceCentsUsed = state.pendingPriceCents ?? decisionAskCents;
       state.filled += filledNow;
       state.remaining = Math.max(0, state.remaining - filledNow);
       if (statusResult.takerFeesDollars) state.feesIncurredDollars += statusResult.takerFeesDollars;
@@ -488,7 +492,13 @@ export async function runOneTickBacktest(
   }
 
   // ── 3. Spread check ─────────────────────────────────────────────────────────
-  if (spreadCents < walkStepCents) {
+  // SH-PASSIVE-SPREAD-LOGIC: skip the spread guard on the FIRST tick (no
+  // pending order yet, no fills yet). The guard is a stop-loop safety after
+  // we've already posted; firing it on tick 1 prevents passive from ever
+  // testing the book on skewed / one-sided markets where the cross-spread
+  // fallback math computes a tight spread but the yes-depth is healthy.
+  const isFirstTick = state.pendingOrderId === undefined && state.filled === 0;
+  if (!isFirstTick && spreadCents < walkStepCents) {
     // Cancel any resting order before stopping — spread too tight to repost.
     if (state.pendingOrderId) {
       try { await client.cancelOrder(state.pendingOrderId); } catch { /* ignore */ }
@@ -496,8 +506,8 @@ export async function runOneTickBacktest(
       state.pendingPriceCents = undefined;
     }
     journal.append(jk('passive_spread_too_tight'), {
-      bestBidCents,
-      bestAskCents,
+      bestBidCents: decisionBidCents,
+      bestAskCents: decisionAskCents,
       spreadCents,
     });
     return { kind: 'break_loop', reason: 'spread_too_tight' };
@@ -515,10 +525,10 @@ export async function runOneTickBacktest(
     );
     iterPrice = pegged !== null
       ? pegged
-      : roundCents(config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents);
+      : roundCents(config.side === 'sell' ? decisionAskCents - walkStepCents : decisionBidCents + walkStepCents);
   } else {
     iterPrice = roundCents(
-      config.side === 'sell' ? bestAskCents - walkStepCents : bestBidCents + walkStepCents,
+      config.side === 'sell' ? decisionAskCents - walkStepCents : decisionBidCents + walkStepCents,
     );
   }
 
