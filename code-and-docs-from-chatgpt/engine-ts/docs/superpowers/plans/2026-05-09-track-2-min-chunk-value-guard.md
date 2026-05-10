@@ -7,9 +7,9 @@
 **Architecture:**
 1. One field on `ExitConfig` (`minChunkValueDollars?: number`).
 2. One guard in `decideLosingExitOrder` (`pricing.ts`) that returns `chunkSize: 0` with a stable `reason` constant when the threshold trips.
-3. **One runner-side change** in `exitRunner.ts` to skip the `buildSellPayload`/`createOrder` path when `decision.chunkSize === 0`, journal the skip, and break the loop. Verified during plan review (2026-05-09): `exitRunner.ts:351–388` currently does NOT branch on chunk size; without the runner change, a zero-chunk decision becomes a `count: 0` createOrder call that Kalshi rejects.
+3. **One runner-side change** in `exitRunner.ts` — extend the existing `BreakLoopOutcome` reason union (`exitRunner.ts:12`) with a new `'chunk_too_small'` arm, and add a branch in `runOneTick` (the function around `exitRunner.ts:351`) that returns `{ kind: 'break_loop', reason: 'chunk_too_small' }` when `decision.chunkSize === 0`. The runner's loop driver (`run()` at line ~519) already terminates cleanly on `kind: 'break_loop'`. Verified during plan review (2026-05-09): there is currently NO short-circuit on chunk size, so without this change a zero-chunk decision becomes a `count: 0` createOrder call that Kalshi rejects.
 
-No journal-kind union changes — the existing `order_decision`/`loop_finished` entries already carry the decision's `reason` field.
+**No new `JournalKind` strings.** The existing `safety_submitted_cap_reached`-style log entry pattern (see `exitRunner.ts:367`) is the model: append a structured log via `this.log('info', '...', { reason, remaining, priceCentsExact })` BEFORE returning the `break_loop`. We use the same pattern with a new log message string `'chunk_too_small_for_fee_threshold'` — this is a free-form log message, not a `JournalKind` union member, so no `types.ts` union changes.
 
 **Tech stack:** TypeScript engine + vitest. No new dependencies.
 
@@ -18,7 +18,10 @@ No journal-kind union changes — the existing `order_decision`/`loop_finished` 
 **Pre-flight verification (already done during plan review, do NOT repeat):**
 
 - `types.ts:111` — `PriceDecision.reason` is typed as `string`, NOT a literal union. Adding a new sentinel value does not require any type-union update; just use a `const`.
+- `types.ts:140` — `JobStatus` does NOT have a `terminationReason` field. The runner's break path uses `BreakLoopOutcome` returned from `runOneTick`, NOT a status-mutation pattern.
+- `exitRunner.ts:12` — `BreakLoopOutcome` reason is a literal union: `'kill_switch' | 'max_orders' | 'safety_cap' | 'gtc_resting' | 'stop_requested'`. Adding `'chunk_too_small'` extends this union (one-line change).
 - `exitRunner.ts:351–388` — calls `decideLosingExitOrder` then unconditionally builds + creates an order. There is NO existing zero-chunk early return.
+- `exitRunner.ts:367` — the safety-cap break is the model pattern: `this.log('error', 'safety_submitted_cap_reached', {...}); return { kind: 'break_loop', reason: 'safety_cap' };`. Mirror this for chunk-too-small.
 - `test/pricing.test.ts:8` — uses a single hand-built `cfg: ExitConfig` fixture; there is NO `makePricingConfig` helper. New tests must either reuse `cfg` (overriding fields per case) or introduce a small inline `withCfg(...)` helper at the top of the new describe block.
 
 ---
@@ -191,14 +194,7 @@ Nothing new in CLI, MCP, or backtest harness.
     if (minChunkValue > 0) {
       const chunkValueDollars = chunkSize * price.priceCentsExact / 100;
       if (chunkValueDollars < minChunkValue) {
-        return {
-          chunkSize: 0,
-          priceCents: price.priceCents,
-          priceCentsExact: price.priceCentsExact,
-          priceDollars: price.priceDollars,
-          reason: CHUNK_TOO_SMALL_REASON,
-          cumulativeSizeAtPrice: price.cumulativeSizeAtPrice,
-        };
+        return { ...price, chunkSize: 0, reason: CHUNK_TOO_SMALL_REASON };
       }
     }
   }
@@ -232,61 +228,60 @@ Nothing new in CLI, MCP, or backtest harness.
 - Modify: `src/exitRunner.ts`
 - Modify: `test/exitRunner.test.ts` (or whichever file contains existing ExitRunner integration tests; identify with `grep -l "new ExitRunner\|ExitRunner.run" test/`)
 
-- [ ] **Step 1: Locate the call site.** `exitRunner.ts:351` calls `decideLosingExitOrder`; `352` calls `buildSellPayload`; `388` calls `createOrder`. The short-circuit must land between 351 and 352.
+- [ ] **Step 1: Extend the BreakLoopOutcome union.** At `exitRunner.ts:12`, add `'chunk_too_small'` to the reason literal union:
 
-- [ ] **Step 2: Add the short-circuit**
+  ```ts
+  | { kind: 'break_loop'; reason: 'kill_switch' | 'max_orders' | 'safety_cap' | 'gtc_resting' | 'stop_requested' | 'chunk_too_small' };
+  ```
+
+- [ ] **Step 2: Locate the call site.** `runOneTick` at `exitRunner.ts:351` calls `decideLosingExitOrder`; line 352 calls `buildSellPayload`; line 388 calls `createOrder`. The short-circuit must land between 351 and 352.
+
+- [ ] **Step 3: Add the short-circuit using the existing safety-cap break pattern (`exitRunner.ts:367`)**:
+
   ```ts
   import { CHUNK_TOO_SMALL_REASON } from './pricing.js';
   // ...
   const decision = decideLosingExitOrder(orderbook, this.status.remaining, this.config);
   if (decision.chunkSize === 0) {
-    this.journal.append('chunk_skipped', {
+    if (decision.reason === CHUNK_TOO_SMALL_REASON) {
+      this.log('info', 'chunk_too_small_for_fee_threshold', {
+        reason: decision.reason,
+        remaining: this.status.remaining,
+        priceCentsExact: decision.priceCentsExact,
+      });
+      return { kind: 'break_loop', reason: 'chunk_too_small' };
+    }
+    // Defensive: any other zero-chunk return path (none today) — log + break.
+    this.log('warn', 'unexpected_zero_chunk', {
       reason: decision.reason,
       remaining: this.status.remaining,
-      priceCentsExact: decision.priceCentsExact,
     });
-    // CHUNK_TOO_SMALL_REASON is a structural skip — break loop with status
-    // 'complete' so the runner doesn't bang against the same dust forever.
-    if (decision.reason === CHUNK_TOO_SMALL_REASON) {
-      this.status.terminationReason = 'chunk_too_small_for_fee_threshold';
-      break;
-    }
-    // Defensive: any other zero-chunk return path also breaks. (Today there
-    // is none, but a future addition shouldn't accidentally infinite-loop.)
-    this.status.terminationReason = decision.reason;
-    break;
+    return { kind: 'break_loop', reason: 'chunk_too_small' };
   }
   const payload = buildSellPayload(this.config, decision);
   ```
 
-  **Verify before pasting:**
-  - `this.status.terminationReason` exists on the runner status type. If not, look at how other early-exit branches (e.g. the safety-cap break at line ~367) set termination state and match that pattern.
-  - `'chunk_skipped'` is acceptable as a journal kind. `JournalKind` is a union (`types.ts:246`); it does not currently include this string. Either:
-    - (a) add `'chunk_skipped'` to the union (preferred — small, clean), or
-    - (b) reuse an existing kind like `'loop_finished'` with a richer `data` payload.
-    Default to (a). Update the union in `types.ts:246–274` and the entry will typecheck.
+  - `this.log` writes to the structured logger (verified existing pattern at `exitRunner.ts:367`); no `JournalKind` union changes needed since these are log-message strings, not journal kinds.
+  - The `run()` loop driver at `exitRunner.ts:540` already handles `outcome.kind === 'break_loop'` by breaking out cleanly — no additional run-side change required.
 
-- [ ] **Step 3: Add an integration test**
+- [ ] **Step 4: Add an integration test**
   ```ts
   it('SH-MIN-CHUNK: zero-chunk decision breaks the loop without calling createOrder', async () => {
     // Fixture: 1¢ top bid, chunkSize 1, minChunkValueDollars 0.15.
     // Pricing layer returns chunkSize=0 + CHUNK_TOO_SMALL_REASON; runner
-    // must NOT call createOrder, must journal chunk_skipped, must terminate
-    // with status 'complete' (not 'failed').
+    // must NOT call createOrder, must complete with no fills.
     const client = makeMockClient({ /* book with 1¢ yes bid */ });
     const runner = new ExitRunner(client, makeConfig({
       chunkSize: 1, minChunkValueDollars: 0.15, /* etc */
     }));
     const result = await runner.run();
     expect(client.createOrder).not.toHaveBeenCalled();
-    expect(result.terminationReason).toBe('chunk_too_small_for_fee_threshold');
-    // Journal contains the chunk_skipped entry.
-    const journal = readTestJournal(runner.jobId);
-    expect(journal.some((e) => e.kind === 'chunk_skipped')).toBe(true);
+    expect(result.filledTotal).toBe(0);
+    expect(result.remaining).toBeGreaterThan(0); // dust still there but skipped
   });
   ```
 
-  Adapt to whatever mock client / journal-read helper the existing exitRunner tests use.
+  Adapt to whatever mock client / config builder the existing `exitRunner.test.ts` (or equivalent integration suite) uses. The JobResult shape returned by `run()` exposes `filledTotal` and `remaining` (verify via `grep -nA 3 "interface JobStatus" code-and-docs-from-chatgpt/engine-ts/src/types.ts`); both make robust assertion targets.
 
 - [ ] **Step 4: Run**
   ```sh

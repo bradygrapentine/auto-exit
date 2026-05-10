@@ -32,14 +32,13 @@ The §0 status board currently reads:
 - "🧊 Tooling ecosystem (SH)" counts SH-tagged rows in §1–§6 whose heading starts with `### 🧊` AND that don't have a corresponding `### ✅` heading immediately above them. 🟢 rows like `SH-MICRO-LIVE-SMOKE` (added in `chore/sh-micro-followup`) are NOT counted in 🧊 — they roll into a separate "Ready" line if the board has one, or are visible-but-untallied otherwise. (Inspect §0 to confirm before relying on this; if the board has no Ready line, leave SH-MICRO-LIVE-SMOKE out of the 🧊 count and add a one-time note in the "Last sync" comment.)
 - "✅ Shipped (this log)" counts §7 bullets (the chronological shipped log).
 
-After this reconciliation:
+**Numbering drift acknowledged:** the current §0 board reports `Shipped (this log) | 75`, but a raw count of §7 bullets returns 65 (verified `awk` on file at SHA 523dc47). The 10-bullet gap is pre-existing drift — the §0 number is *not* a reliable baseline. **Do NOT do delta math** on top of 75; **always do a clean recount on the post-edit file** and put whatever the awk returns into the table. The PR description should call out the drift so the operator sees the fix.
 
-```
-| 🧊 Tooling ecosystem (SH) | 1 |   (drops by 3 — DEPTH-WALK + AGGRESSIVE-CLI + AGGRESSIVE-PARTIAL all promoted)
-| ✅ Shipped (this log)     | 78 |  (rises by 3 — three new §7 bullets added)
-```
+Expected post-edit counts (subject to the actual recount):
+- 🧊 Tooling ecosystem (SH): drops by 3 (DEPTH-WALK + AGGRESSIVE-CLI + AGGRESSIVE-PARTIAL all promoted to ✅).
+- ✅ Shipped (this log): rises by 3 (the three new §7 bullets added in Task 1.5). Whether the absolute number lands at 68 (= 65 + 3, the awk-correct count) or 78 (= 75 + 3, the prior-board-correct count) depends on whether the operator wants the §0 board to track the awk count or preserve its prior offset. **Default: track the awk count** — single source of truth.
 
-The remaining 1 open 🧊 SH row is the `SH-PASSIVE-SPREAD-LOGIC` engine-side passive bug (line ~744), which is the only SH 🧊 row not already shipped. (Spot-check by re-grepping §1–§6 for `^### 🧊 SH` headings and excluding any that have `^### ✅ ` immediately above.)
+The remaining open 🧊 SH row is the `SH-PASSIVE-SPREAD-LOGIC` engine-side passive bug (line ~744), which is the only SH 🧊 row not already shipped. (Spot-check by re-grepping §1–§6 for `^### 🧊 SH` headings and excluding any that have `^### ✅ ` immediately above.)
 
 ---
 
@@ -173,7 +172,7 @@ If any of these *don't* match expectations, STOP — the reconciliation is wrong
 
   The first awk gives the new "🧊 Tooling ecosystem (SH)" count. The second gives the new "Shipped (this log)" count.
 
-  **However:** if the second number doesn't equal the previous 75 + 3 = 78, the §0 count was *already* drifted before this PR — DON'T silently fix it as part of Track 1; flag it in the PR description and let the operator decide. (The first awk is the source of truth; the second is what the §0 board claims to display.)
+  Whatever the awk returns IS the new number. The pre-existing drift between board (75) and bullets (65) is a known issue — see the §3 numbering note. The PR description must call it out: "Recount finds N §7 bullets vs prior §0 claim of 75; pre-existing drift, fixing as part of this reconciliation." Operator can decide post-merge whether to investigate the drift.
 
 - [ ] **Step 2: Update the §0 table** with the awk-derived numbers.
 

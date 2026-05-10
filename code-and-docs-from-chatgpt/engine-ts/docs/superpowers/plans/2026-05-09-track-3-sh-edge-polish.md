@@ -93,7 +93,15 @@ Nothing in `src/edge/` changes. The aggregation modules already return plain ser
 
 - [ ] **Step 1: Export `cmdEdge`.** In `cli.ts:1627`, change `function cmdEdge` → `export function cmdEdge`. tsc clean. No callsite refactor needed since the existing dispatch in `runCli` doesn't need an import.
 
-- [ ] **Step 2: Build a journal fixture helper.** New file `test/cli/edge.test.ts`:
+- [ ] **Step 2: Build a journal fixture helper.**
+
+  **DO NOT GUESS the entry shape.** `joinFires` (`src/edge/lifecycle.ts:86`) requires specific field names + structure for the resulting `Fire[]` to be non-empty AND have non-zero edge dollars. Existing test fixtures that successfully construct Fires live in `test/edge/lifecycle.test.ts` and `test/edge/aggregate.test.ts` — read one of them once before writing your own helper, and reuse the same entry shape (or its helper, if exported). Specifically:
+  - `test/edge/lifecycle.test.ts` has the canonical minimum entry set for a Fire with entry fills.
+  - `test/edge/attribution.test.ts` shows the additional entries needed for non-zero edge dollars (TCA + resolution).
+
+  If neither file exports a helper, copy the inline fixture pattern verbatim into `test/cli/edge.test.ts` rather than rewriting from scratch.
+
+  Sketch (adapt entry shape from `test/edge/lifecycle.test.ts`):
 
   ```ts
   import { describe, it, expect, afterEach, beforeEach } from 'vitest';
@@ -199,7 +207,9 @@ Nothing in `src/edge/` changes. The aggregation modules already return plain ser
 **Files:**
 - Modify: `src/cli.ts:cmdEdge`
 
-- [ ] **Step 1:** After the existing filtering at lines ~1640–1645 (mock-journal filter), add:
+- [ ] **Step 1:** Verify `allFires` is declared `let` (not `const`) — confirmed at `cli.ts:1636` (`let allFires = joinFires(entries).filter(...)`). The reassignment-style filter below will compile.
+
+- [ ] **Step 2:** After the existing filtering at lines ~1640–1645 (mock-journal filter), add:
 
   ```ts
   const tickerFilter = flags['ticker'];
@@ -210,7 +220,7 @@ Nothing in `src/edge/` changes. The aggregation modules already return plain ser
 
 - [ ] **Step 2:** Update `cmdHelp` to document the new flag.
 
-- [ ] **Step 3:** Re-run `test/cli/edge.test.ts`. The `--ticker` tests pass; `--json` tests still fail (expected).
+- [ ] **Step 3:** Re-run `test/cli/edge.test.ts`. The `--ticker` tests pass (including the `--ticker × --strategy intersection` regression pin); `--json` tests still fail (expected).
 
 ## Task 3.4 — Add `--json` mode (~45 min)
 
