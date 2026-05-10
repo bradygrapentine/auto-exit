@@ -437,7 +437,7 @@ async function cmdPlan(ticker: string | undefined, flags: Record<string, string>
 
 // ── report command ────────────────────────────────────────────────────────────
 
-function cmdReport(positional: string[]): void {
+function cmdReport(positional: string[], flags: Record<string, string>): void {
   const jobId = positional[0];
   if (!jobId) die('report requires <jobId>');
 
@@ -447,24 +447,54 @@ function cmdReport(positional: string[]): void {
     .filter((e) => e.kind === 'tca')
     .map((e) => e.data as Omit<TcaEntry, 'kind' | 'ts'>);
 
-  if (tcaEntries.length === 0) {
-    process.stdout.write(`TCA Report — ${jobId}\nNo TCA entries found.\n`);
+  // SH-REPORT-POLISH: --ticker filter applies before any rendering.
+  const tickerFilter = flags['ticker'];
+  const filteredEntries = tickerFilter
+    ? tcaEntries.filter((e) => e.ticker === tickerFilter)
+    : tcaEntries;
+
+  const avgSlippage = filteredEntries.length > 0
+    ? filteredEntries.reduce((s, e) => s + e.slippageCents, 0) / filteredEntries.length
+    : 0;
+
+  // SH-REPORT-POLISH: --json envelope mirrors SH-EDGE-POLISH shape.
+  if (flags['json'] !== undefined) {
+    const envelope = {
+      version: 1 as const,
+      mode: 'tca' as const,
+      jobId,
+      filters: { ...(tickerFilter ? { ticker: tickerFilter } : {}) },
+      totals: {
+        entryCount: filteredEntries.length,
+        avgSlippageCents: avgSlippage,
+      },
+      rows: filteredEntries,
+    };
+    process.stdout.write(JSON.stringify(envelope, null, 2) + '\n');
     return;
   }
 
-  const ticker = tcaEntries[0]?.ticker ?? 'unknown';
-  const side = tcaEntries[0]?.side ?? 'unknown';
+  if (filteredEntries.length === 0) {
+    const filterStr = tickerFilter ? ` (ticker=${tickerFilter})` : '';
+    process.stdout.write(`TCA Report — ${jobId}${filterStr}\nNo TCA entries found.\n`);
+    return;
+  }
+
+  const ticker = filteredEntries[0]?.ticker ?? 'unknown';
+  const side = filteredEntries[0]?.side ?? 'unknown';
 
   process.stdout.write(`\nTCA Report — ${jobId}\n`);
   process.stdout.write(`Ticker: ${ticker}\n`);
   process.stdout.write(`Side: ${side}\n`);
-  process.stdout.write(`Chunks: ${tcaEntries.length}\n\n`);
+  // SH-REPORT-POLISH: extend header with entries-count + avg-slippage so the
+  // operator sees scope before scrolling the per-chunk rows.
+  process.stdout.write(`Chunks: ${filteredEntries.length} entries · avg slippage ${(avgSlippage >= 0 ? '+' : '') + fmtCents(avgSlippage)}\n\n`);
 
   const header = `${'Chunk'.padStart(5)}  ${'arrivalMid'.padStart(10)}  ${'executed'.padStart(8)}  ${'slippage'.padStart(8)}  ${'size'.padStart(6)}`;
   process.stdout.write(header + '\n');
   process.stdout.write(`${'─'.repeat(header.length)}\n`);
 
-  for (const e of tcaEntries) {
+  for (const e of filteredEntries) {
     const idx = String(e.chunkIndex + 1).padStart(5);
     const mid = fmtCents(e.arrivalMidCents).padStart(10);
     const exec = fmtCents(e.executedPriceCents).padStart(8);
@@ -472,7 +502,6 @@ function cmdReport(positional: string[]): void {
     process.stdout.write(`${idx}  ${mid}  ${exec}  ${slip.padStart(8)}  ${String(e.chunkSize).padStart(6)}\n`);
   }
 
-  const avgSlippage = tcaEntries.reduce((s, e) => s + e.slippageCents, 0) / tcaEntries.length;
   const totalFeesDollars = entries
     .filter((e) => e.kind === 'loop_finished' || e.kind === 'buy_loop_finished')
     .reduce((s, e) => {
@@ -650,7 +679,9 @@ Read-only commands (no money moves):
   positions [--ticker <T>]           List held positions
   resting [--ticker <T>]             List our resting orders
   journal --job <id>                 Print a job's journal
-  report <jobId>                     Print TCA (slippage) report for a completed job
+  report <jobId> [--ticker <T>] [--json]
+                                     Print TCA (slippage) report for a completed job
+                                     (--ticker filters entries; --json emits a versioned envelope)
   plan <ticker> --position <n> --cost-basis-cents <n> --market-p <f> --private-p <f>
        --catalyst-type soft|hard [--catalyst-date <ISO>] [--payout-cents <n>]
                                      EV harvest vs hold analysis: EV table, risk-reduction, Greeks
@@ -2096,7 +2127,7 @@ export async function runCli(argv: string[]): Promise<void> {
     }
     case 'report': {
       const positional = rest.filter((x) => !x.startsWith('--'));
-      return cmdReport(positional);
+      return cmdReport(positional, flags);
     }
     case 'watch': {
       const sub = rest.find((x) => !x.startsWith('--'));
