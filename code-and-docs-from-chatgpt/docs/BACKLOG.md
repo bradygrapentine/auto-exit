@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-09 (SH-EDGE Tasks 7+8+12 shipped + 2 follow-ups; SP3 path-b shipped; SH-SCANNER-WS shipped to Fly prod; SH-AGGRESSIVE-FLOAT-CENTS + SH-SCANNER-SYNC-FIX-2 promoted to ✅)
+Last `/backlog-sync`: 2026-05-09 (SH-MICRO-EXECUTION-LOOP shipped (#165), SH-MIN-CHUNK shipped (#168), SH-EDGE-POLISH shipped (#169); SH-DEPTH-WALK-STALE-SNAPSHOT (#164), SH-AGGRESSIVE-CLI-FLAG-PARSING + SH-AGGRESSIVE-PARTIAL-SIZE (#163) promoted to ✅; SH-MICRO-LIVE-SMOKE filed as 🟢 ready. Note: prior §0 Shipped count of 75 disagreed with raw §7 bullet count (65); this sync adopts the awk-recount as source of truth.)
 
 | Status | Count |
 |--------|-------|
@@ -8,10 +8,10 @@ Last `/backlog-sync`: 2026-05-09 (SH-EDGE Tasks 7+8+12 shipped + 2 follow-ups; S
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 4 |
+| 🧊 Tooling ecosystem (SH) | 1 |
 | 🧊 Surface parity (SP1–SP4) | 0 |
 | 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 75 |
+| ✅ Shipped (this log) | 71 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -420,6 +420,18 @@ violated. Cost: ~1-2h.
 
 _SH-BACKTEST-PHASE-D shipped 2026-05-08 — see §7._
 
+### ✅ SH-DEPTH-WALK-STALE-SNAPSHOT — shipped 2026-05-09 (PR #164)
+**Tags:** engine [pricing-model] [critical]
+
+Three components on `feat/sh-depth-walk-liveness`:
+1. **Pure `checkLiveness` primitive** (`src/preTradeLiveness.ts`) — projection vs fresh book; rejects with `bid_shifted` / `size_collapsed` / `side_empty`. Defaults: max 1¢ shift, max 50% size shrink. No I/O.
+2. **AggressiveRunner gate** — for trades >= `livenessGateSize` (default 100 contracts) the runner re-fetches the orderbook between projection and `createOrder`, journals `aggressive_liveness_rejected`, and breaks with `reason: 'liveness_rejected:<reason>'`. Operators can pre-supply `livenessAssumptions` or opt out via `livenessCheckEnabled: false`.
+3. **Harvest-planner risk notes** — `HarvestPlannerOutput.riskNotes` flags fat top-of-book (>5× `topSize / meanRest`, or single-level book). Surfaced in the harvest-plan CLI under "Risk notes".
+
+MOVVA-replay test confirms the runner aborts before `createOrder` when the projected level vanishes. Runbook updated with a fix-shipped section.
+
+(Original ticket below for history.)
+
 ### 🧊 SH-DEPTH-WALK-STALE-SNAPSHOT — top-of-book can fully evaporate between projection and execution
 **Tags:** engine [pricing-model] [critical]
 **Severity:** high — projections used a snapshot whose top-of-book vanished 5 min before execution; produced a $3,201 cash miss on a real-money trade 2026-05-09.
@@ -524,6 +536,13 @@ Anything that breaks at $0.10 here is something we'd otherwise discover at $50+ 
 
 **Dependency:** SH-MICRO-EXECUTION-LOOP (✅ PR #165). No other blockers.
 
+### ✅ SH-AGGRESSIVE-CLI-FLAG-PARSING — shipped 2026-05-09 (PR #163)
+**Tags:** engine [cli]
+
+Shipped via the SH-VALIDATION-BUGBASH cluster. `parseFlags` (`src/cli.ts`) now correctly handles all three boolean forms — `--flag`, `--flag=value`, `--flag value` — and a new `boolFlag(flags, key, default)` helper accepts `true|false|1|0|yes|no` (case-insensitive). Five callsites migrated. 18-test pin in `test/cli/flagParsing.test.ts`.
+
+(Original ticket below for history.)
+
 ### 🧊 SH-AGGRESSIVE-CLI-FLAG-PARSING — `--one-tick-in true` may not be parsed correctly
 **Tags:** engine [cli]
 
@@ -597,6 +616,13 @@ broader sub-cent-tick handling + research on Kalshi schema.
 
 **Dependency:** none for the immediate fix; broader fix may depend on
 clarifying Kalshi's price-unit conventions.
+
+### ✅ SH-AGGRESSIVE-PARTIAL-SIZE — shipped 2026-05-09 (PR #163)
+**Tags:** engine [backtest]
+
+Shipped via the SH-VALIDATION-BUGBASH cluster. `aggressiveAdapter` now respects `params.size` when present, capping at `remainingQty`: `effectiveSize = Math.min(requested, remainingQty)`. Three regression tests in `test/backtest/aggressiveAdapter.test.ts`.
+
+(Original ticket below for history.)
 
 ### 🧊 SH-AGGRESSIVE-PARTIAL-SIZE — `s-aggressive` backtest adapter ignores `params.size`
 **Tags:** engine [backtest]
@@ -1132,6 +1158,24 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-09 — SH-EDGE-POLISH — `kea edge` --ticker filter + --json envelope + summary header (PR #169).**
+  Adds `--ticker <symbol>` (intersection across every mode), `--json` versioned envelope `{ version: 1, mode, since, filters, totals, rows }`, and a default-summary header line that surfaces filter context + totals before the per-strategy table. `cmdEdge` exported so the test harness can drive it via `runCli + captureOut`. 6 new tests in `test/cli/edge.test.ts`. Plan: `engine-ts/docs/superpowers/plans/2026-05-09-track-3-sh-edge-polish.md`.
+
+- **2026-05-09 — SH-MIN-CHUNK — `minChunkValueDollars` guard + runner skip (PR #168).**
+  pricing.ts: refuse chunks where `chunkSize × priceCentsExact / 100 < minChunkValueDollars` (default $0.15). Defends against Kalshi's $0.01-per-fill minimum-fee tax. Returns stable `{ chunkSize: 0, reason: CHUNK_TOO_SMALL_REASON }`; `chunkSize > 0` precondition prevents misattributing `chooseChunkSize`-returns-0 cases. exitRunner.ts: short-circuits before `buildSellPayload`/`createOrder` and returns `break_loop` cleanly. Without this a zero-chunk decision became a count: 0 createOrder Kalshi rejects. 6 pricing tests + 1 integration test + 2 fixture opt-outs in autoAdaptive/tailGtc suites.
+
+- **2026-05-09 — SH-MICRO-EXECUTION-LOOP — small-size live execution + sweep + SH-EDGE integration (PR #165).**
+  `kea micro {trial|sweep|status}`. Pure config + `gateTrial` primitive (caps + ticker-allowlist glob), `runTrial` runner with MANDATORY TTY confirmation per trial (no skip flag), `runSweep` (hard abort on safety-gate rejection, soft continue on operator-decline / strategy-failure), per-cell summary table. Operator-approved caps: per-trial $0.10–$1.00 (default cap $1.00 in `safety.json:microHarness`), daily aggregate $2.50. Trial id == jobId so SH-EDGE attributes the resulting fire automatically. v1 wires s-passive + s-aggressive; s-trail/s-twap/s-auto deferred to v1.1. Plus runbook + smoke-procedure runbook + SH-MICRO-LIVE-SMOKE follow-up story (PR #166).
+
+- **2026-05-09 — SH-DEPTH-WALK-STALE-SNAPSHOT — pre-trade liveness check + planner risk notes (PR #164).**
+  Pure `checkLiveness` primitive (`src/preTradeLiveness.ts`) — projection vs fresh book; rejects with `bid_shifted`/`size_collapsed`/`side_empty`. AggressiveRunner gate that re-fetches book between projection and submission for trades >= 100 contracts and aborts with `liveness_rejected:<reason>`. Harvest-planner `riskNotes` for fat top-of-book (>5× topSize/meanRest, or single-level book); CLI prints them under "Risk notes". MOVVA-replay test (12_000@93¢ → 100@93¢) confirms the runner aborts before `createOrder`. Replays the 2026-05-09 MOVVA $3,201 staleness incident.
+
+- **2026-05-09 — SH-AGGRESSIVE-CLI-FLAG-PARSING — boolean flag forms unified (PR #163).**
+  `parseFlags` now correctly handles `--flag`, `--flag=value`, `--flag value`. New `boolFlag(flags, key, default)` helper accepts `true|false|1|0|yes|no` (case-insensitive). Five callsites migrated. 18-test pin in `test/cli/flagParsing.test.ts`.
+
+- **2026-05-09 — SH-AGGRESSIVE-PARTIAL-SIZE — backtest adapter respects params.size (PR #163).**
+  `aggressiveAdapter` now reads `params.size` and caps at `remainingQty`: `effectiveSize = Math.min(requested, remainingQty)`. Three regression tests in `test/backtest/aggressiveAdapter.test.ts`.
 
 - **2026-05-08 — SH-BACKTEST-PHASE-D — Watcher adapters + passive fill-realism mechanical fix (3 PRs).**
   PRs #128, #129, #130. Adds the generic `makeWatcherAdapter(buildArgs, params)`
