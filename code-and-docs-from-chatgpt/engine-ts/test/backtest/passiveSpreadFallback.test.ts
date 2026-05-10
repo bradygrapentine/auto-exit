@@ -1,6 +1,6 @@
 // test/backtest/passiveSpreadFallback.test.ts
 import { describe, it, expect } from 'vitest';
-import { runOneTickBacktest } from '../../src/passive.js';
+import { runOneTick, runOneTickBacktest } from '../../src/passive.js';
 import type { PassiveRunState, PassiveRunDeps } from '../../src/passive.js';
 import { Journal } from '../../src/journal.js';
 import * as fs from 'node:fs';
@@ -129,5 +129,78 @@ describe('passive spread fallback (SH-PASSIVE-SPREAD-LOGIC)', () => {
 
     expect(outcome.kind).toBe('continue');
     expect(state.pendingOrderId).toBe('o-1');
+  });
+});
+
+describe('passive spread fallback — live path runOneTick', () => {
+  // The live path used to immediately break_loop when the cross-quoted
+  // spread was inverted (e.g. yes=[14,55], no=[5] → bestAsk=14, bestBid=95,
+  // spread=-81). Mirrors the backtest path: cross-spread validity check
+  // + yes-depth fallback + first-tick skip.
+
+  it('does not break_loop on a one-sided book (no-side empty)', async () => {
+    const orderbook = {
+      yes: [
+        { priceCents: 14, size: 22 },
+        { priceCents: 39, size: 50 },
+        { priceCents: 55, size: 100 },
+      ],
+      no: [],
+    };
+    const outcome = await runOneTick(
+      {
+        filled: 0, remaining: 100, totalNotionalCents: 0,
+        feesIncurredDollars: 0, totalSubmittedShares: 0,
+        guardHit: false, oneSidedWarned: false,
+      },
+      makeDeps(orderbook),
+    );
+    // Live path inner walk may hit floor_hit on the mock client (orders
+    // never fill, timebox expires, walks to 0). The contract here is just
+    // that the spread guard at tick 1 does NOT short-circuit before the
+    // inner walk runs at all.
+    expect((outcome as { reason?: string }).reason).not.toBe('spread_too_tight');
+  });
+
+  it('does not break_loop on a skewed book where cross-spread is inverted', async () => {
+    const orderbook = {
+      yes: [
+        { priceCents: 14, size: 22 },
+        { priceCents: 55, size: 100 },
+      ],
+      no: [{ priceCents: 5, size: 50 }],
+    };
+    const outcome = await runOneTick(
+      {
+        filled: 0, remaining: 100, totalNotionalCents: 0,
+        feesIncurredDollars: 0, totalSubmittedShares: 0,
+        guardHit: false, oneSidedWarned: false,
+      },
+      makeDeps(orderbook),
+    );
+    // Live path inner walk may hit floor_hit on the mock client (orders
+    // never fill, timebox expires, walks to 0). The contract here is just
+    // that the spread guard at tick 1 does NOT short-circuit before the
+    // inner walk runs at all.
+    expect((outcome as { reason?: string }).reason).not.toBe('spread_too_tight');
+  });
+
+  it('still break_loops on a truly degenerate book (single yes level, no no-side)', async () => {
+    // yes=[50], no=[] → fallback ask=50 (only level), bid=50 → spread=0.
+    // Spread guard fires immediately — no first-tick skip on the live path.
+    const orderbook = {
+      yes: [{ priceCents: 50, size: 100 }],
+      no: [],
+    };
+    const outcome = await runOneTick(
+      {
+        filled: 0, remaining: 100, totalNotionalCents: 0,
+        feesIncurredDollars: 0, totalSubmittedShares: 0,
+        guardHit: false, oneSidedWarned: false,
+      },
+      makeDeps(orderbook),
+    );
+    expect(outcome.kind).toBe('break_loop');
+    expect((outcome as { reason?: string }).reason).toBe('spread_too_tight');
   });
 });
