@@ -10,6 +10,7 @@ import type {
   Position,
   PriceLevel,
 } from './types.js';
+import type { VenueClient } from './venue/types.js';
 import { KalshiAccountClient } from './accountClient.js';
 import { loadActive } from './credentials.js';
 import { withRetry, HttpError, NonRetryableError, parseRetryAfterMs, computeBackoffMs } from './retry.js';
@@ -122,7 +123,9 @@ async function fetchChecked(fetchFn: FetchFn, url: string, init?: RequestInit): 
   throw new HttpError(status, undefined, `HTTP ${status}: ${body}`);
 }
 
-export class KalshiClient implements KalshiClientLike {
+export class KalshiClient implements KalshiClientLike, VenueClient {
+  /** Stable venue identifier (W4.4 SOR scaffold). */
+  readonly venueName = 'kalshi' as const;
   private accountClient: KalshiAccountClient;
   private readonly fetchFn: FetchFn;
 
