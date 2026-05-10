@@ -28,6 +28,13 @@ export interface ExitConfig {
   floorPriceCents: number;
   orderbookDepth: number;
   minLevelSize: number;
+  /**
+   * SH-MIN-CHUNK: refuse any decision where `chunkSize × priceCentsExact / 100`
+   * falls below this dollar amount. Defends against Kalshi's $0.01-per-fill
+   * minimum fee, which balloons the effective rate on cheap-market dust
+   * trades. Default 0.15. Set to 0 to disable.
+   */
+  minChunkValueDollars?: number;
   tailSweepThreshold: number;
   /**
    * Adaptive chunk sizing. Leave undefined to let the engine auto-decide based on book shape:

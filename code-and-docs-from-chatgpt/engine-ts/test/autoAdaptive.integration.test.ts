@@ -49,6 +49,11 @@ function baseCfg(): ExitConfig {
     apiKeyEnv: 'X',
     privateKeyPathEnv: 'Y',
     safetySubmittedMultiple: 2,
+    // SH-MIN-CHUNK: this suite predates the min-chunk guard. Its fixtures use
+    // sub-cent prices × small chunks (e.g. 16 × 0.9¢ = $0.144 < default
+    // $0.15) which the guard would otherwise refuse. Disable here — the
+    // suite tests adaptive chunking, not fee-floor protection.
+    minChunkValueDollars: 0,
   };
 }
 

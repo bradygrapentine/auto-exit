@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildSellPayload, decideLosingExitOrder, selectExecutablePrice } from '../src/pricing.js';
+import { buildSellPayload, CHUNK_TOO_SMALL_REASON, decideLosingExitOrder, selectExecutablePrice } from '../src/pricing.js';
 import { parseOrderbookResponse } from '../src/kalshiClient.js';
 import type { ExitConfig, Orderbook } from '../src/types.js';
 
@@ -122,5 +122,87 @@ describe('decideLosingExitOrder against real prod orderbook fixture', () => {
     // YES bid prices (not derived from NO via inversion).
     const yesBidPrices = ob.yes.map((l) => l.priceCents).sort((a, b) => b - a);
     expect(yesBidPrices).toContain(decision.priceCentsExact);
+  });
+});
+
+// ── SH-MIN-CHUNK — minChunkValueDollars guard ────────────────────────────────
+
+describe('SH-MIN-CHUNK — minChunkValueDollars guard', () => {
+  // Reuse the existing top-of-file `cfg: ExitConfig`. Override per case.
+  function withCfg(overrides: Partial<ExitConfig>): ExitConfig {
+    return { ...cfg, ...overrides };
+  }
+
+  it('refuses chunks below minChunkValueDollars', () => {
+    const config = withCfg({
+      chunkSize: 1, minChunkValueDollars: 0.15, heldSide: 'yes',
+      tailSweepThreshold: 0, minLevelSize: 1,
+    });
+    // Top yes-bid at 1¢ → chunk value = 1 × 0.01 = $0.01 ≪ $0.15.
+    const book: Orderbook = {
+      yes: [{ priceCents: 1, size: 100 }],
+      no: [{ priceCents: 99, size: 100 }],
+    };
+    const decision = decideLosingExitOrder(book, 1, config);
+    expect(decision.chunkSize).toBe(0);
+    expect(decision.reason).toBe(CHUNK_TOO_SMALL_REASON);
+    expect(Number.isFinite(decision.priceCents)).toBe(true);
+  });
+
+  it('does NOT fire when chunk value is comfortably above threshold', () => {
+    const config = withCfg({
+      chunkSize: 100, minChunkValueDollars: 0.15, heldSide: 'yes',
+      tailSweepThreshold: 0, minLevelSize: 1,
+    });
+    const book: Orderbook = { yes: [{ priceCents: 50, size: 200 }], no: [] };
+    const decision = decideLosingExitOrder(book, 100, config);
+    expect(decision.chunkSize).toBe(100); // 100 × 0.50 = $50.00 ≫ threshold
+    expect(decision.reason).not.toBe(CHUNK_TOO_SMALL_REASON);
+  });
+
+  it('uses default minChunkValueDollars=0.15 when unset', () => {
+    const config = withCfg({
+      chunkSize: 1, heldSide: 'yes',
+      tailSweepThreshold: 0, minLevelSize: 1,
+    });
+    // minChunkValueDollars undefined; engine defaults to 0.15.
+    const book: Orderbook = { yes: [{ priceCents: 5, size: 100 }], no: [] };
+    // 1 × $0.05 = $0.05 < default 0.15 → guard fires.
+    const decision = decideLosingExitOrder(book, 1, config);
+    expect(decision.reason).toBe(CHUNK_TOO_SMALL_REASON);
+  });
+
+  it('disables when minChunkValueDollars=0', () => {
+    const config = withCfg({
+      chunkSize: 1, minChunkValueDollars: 0, heldSide: 'yes',
+      tailSweepThreshold: 0, minLevelSize: 1,
+    });
+    const book: Orderbook = { yes: [{ priceCents: 5, size: 100 }], no: [] };
+    const decision = decideLosingExitOrder(book, 1, config);
+    expect(decision.chunkSize).toBe(1);
+    expect(decision.reason).not.toBe(CHUNK_TOO_SMALL_REASON);
+  });
+
+  it('does not fire on tail-sweep path — tail-sweep returns earlier by design', () => {
+    const config = withCfg({
+      chunkSize: 1, tailSweepThreshold: 5, minChunkValueDollars: 0.15, heldSide: 'yes',
+      minLevelSize: 1,
+    });
+    const book: Orderbook = { yes: [{ priceCents: 1, size: 100 }], no: [] };
+    const decision = decideLosingExitOrder(book, 3, config); // remaining < threshold
+    expect(decision.reason).toBe('final_tail_sweep');
+  });
+
+  it('does NOT mis-attribute when chooseChunkSize returns 0 (remaining=0)', () => {
+    // chooseChunkSize → Math.min(config.chunkSize, remaining=0) = 0.
+    // Guard's `chunkSize > 0` precondition prevents re-attributing to
+    // CHUNK_TOO_SMALL_REASON.
+    const config = withCfg({
+      chunkSize: 100, minChunkValueDollars: 0.15, heldSide: 'yes',
+      tailSweepThreshold: 0, minLevelSize: 1,
+    });
+    const book: Orderbook = { yes: [{ priceCents: 50, size: 200 }], no: [] };
+    const decision = decideLosingExitOrder(book, 0, config);
+    expect(decision.reason).not.toBe(CHUNK_TOO_SMALL_REASON);
   });
 });
