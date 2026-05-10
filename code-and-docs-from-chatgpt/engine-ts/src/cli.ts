@@ -666,11 +666,15 @@ Read-only commands (no money moves):
   portfolio plan --positions <JSON> --bids <JSON> --mids <JSON> [--strategy aggressive|passive]
                                      Sequence a portfolio exit by overvalued-to-hold priority
   edge [--strategy <name>] [--trigger <kind>] [--market <category>]
-       [--param <paramName>] [--since <YYYY-MM-DD>] [--min-notional <dollars>]
+       [--param <paramName>] [--ticker <symbol>] [--since <YYYY-MM-DD>]
+       [--min-notional <dollars>] [--include-mock] [--json]
                                      P&L attribution by strategy × market × trigger
                                      (default: 30-day summary; --strategy drills into one strategy;
                                       --trigger shows fire-quality histogram; --market segments by
-                                      category; --param shows parameter sensitivity table)
+                                      category; --param shows parameter sensitivity table;
+                                      --ticker filters fires to one symbol across every mode;
+                                      --include-mock keeps KXTEST/dryRun journals; --json emits
+                                      a versioned envelope for scripts/agents)
 
 Scanner / recording commands:
   record discover [--out <path>] [--per-category <n>] [--hot-per-category <n>]
@@ -1624,7 +1628,7 @@ async function cmdMicro(
   }
 }
 
-function cmdEdge(flags: Record<string, string>): void {
+export function cmdEdge(flags: Record<string, string>): void {
   const sinceFlag = flags['since'];
   const minNotional = parseFloat(flags['min-notional'] ?? '1');
   const sinceDate = sinceFlag
@@ -1644,13 +1648,56 @@ function cmdEdge(flags: Record<string, string>): void {
     );
   }
 
+  // SH-EDGE-POLISH: --ticker filter applies to every mode. Place AFTER mock
+  // and notional filters but BEFORE mode dispatch so all downstream branches
+  // see the filtered set.
+  const tickerFilter = flags['ticker'];
+  if (tickerFilter) {
+    allFires = allFires.filter((f) => f.ticker === tickerFilter);
+  }
+
   const out = process.stdout.write.bind(process.stdout);
+
+  // SH-EDGE-POLISH: shared filter snapshot for the JSON envelope. Each mode
+  // packages its rows + this metadata into the same v1 shape.
+  const jsonMode = flags['json'] !== undefined;
+  const jsonFilters: Record<string, unknown> = {
+    minNotional,
+    includeMock,
+  };
+  if (flags['strategy']) jsonFilters['strategy'] = flags['strategy'];
+  if (flags['trigger'] !== undefined) jsonFilters['trigger'] = flags['trigger'];
+  if (flags['market'] !== undefined) jsonFilters['market'] = flags['market'];
+  if (flags['param']) jsonFilters['param'] = flags['param'];
+  if (tickerFilter) jsonFilters['ticker'] = tickerFilter;
+
+  type EdgeMode = 'summary' | 'strategy' | 'trigger' | 'param' | 'market';
+  const emitJson = (
+    mode: EdgeMode,
+    rows: unknown[],
+    fireCount: number,
+    totalEdgeDollars = 0,
+  ): void => {
+    const envelope = {
+      version: 1 as const,
+      mode,
+      since: sinceDate.toISOString(),
+      filters: jsonFilters,
+      totals: { fireCount, totalEdgeDollars },
+      rows,
+    };
+    out(JSON.stringify(envelope, null, 2) + '\n');
+  };
 
   // ── --trigger mode ──────────────────────────────────────────────────────────
   if (flags['trigger'] !== undefined) {
     const kind = flags['trigger'];
     const filtered = kind ? allFires.filter((f) => f.triggerKind === kind) : allFires;
     const hist = triggerHistogram(filtered);
+    if (jsonMode) {
+      emitJson('trigger', hist, filtered.length);
+      return;
+    }
     if (hist.length === 0) {
       out('No trigger fires found.\n');
       return;
@@ -1674,6 +1721,10 @@ function cmdEdge(flags: Record<string, string>): void {
     const paramName = flags['param'];
     if (!paramName) die('--param requires a parameter name');
     const sens = paramSensitivity(allFires, paramName);
+    if (jsonMode) {
+      emitJson('param', sens.rows, allFires.length);
+      return;
+    }
     if (sens.rows.length === 0) {
       out(`No fires with param "${paramName}" found.\n`);
       return;
@@ -1698,6 +1749,11 @@ function cmdEdge(flags: Record<string, string>): void {
     const category = flags['market'];
     const filtered = category ? allFires.filter((f) => f.marketCategory === category) : allFires;
     const groups = groupByMarket(filtered);
+    if (jsonMode) {
+      const totalEdge = groups.reduce((s, g) => s + g.totalRealizedPnLDollars, 0);
+      emitJson('market', groups, filtered.length, totalEdge);
+      return;
+    }
     if (groups.length === 0) {
       out('No market fires found.\n');
       return;
@@ -1720,11 +1776,16 @@ function cmdEdge(flags: Record<string, string>): void {
   if (flags['strategy'] !== undefined) {
     const stratName = flags['strategy'];
     const filtered = stratName ? allFires.filter((f) => f.strategy === stratName) : allFires;
+    const groups = groupByStrategy(filtered);
+    if (jsonMode) {
+      const totalEdge = groups.reduce((s, g) => s + g.totalRealizedPnLDollars, 0);
+      emitJson('strategy', groups, filtered.length, totalEdge);
+      return;
+    }
     if (filtered.length === 0) {
       out(`No fires found for strategy "${stratName}".\n`);
       return;
     }
-    const groups = groupByStrategy(filtered);
     for (const g of groups) {
       const a = g.attribution;
       out(`\nStrategy: ${g.strategy}\n`);
@@ -1750,14 +1811,28 @@ function cmdEdge(flags: Record<string, string>): void {
 
   // ── default: overall summary table ──────────────────────────────────────────
   const groups = groupByStrategy(allFires);
+  if (jsonMode) {
+    const totalEdge = groups.reduce((s, g) => s + g.totalRealizedPnLDollars, 0);
+    emitJson('summary', groups, allFires.length, totalEdge);
+    return;
+  }
   if (groups.length === 0) {
     const sinceStr = sinceDate.toISOString().slice(0, 10);
     out(`No fires found since ${sinceStr} (min-notional $${minNotional.toFixed(2)}).\n`);
     return;
   }
 
+  // SH-EDGE-POLISH: header line shows totals + active filters before the
+  // per-strategy breakdown, so the operator sees scope at a glance.
   const sinceStr = sinceDate.toISOString().slice(0, 10);
-  out(`\nEdge Summary — since ${sinceStr}\n`);
+  const filterBits: string[] = [];
+  if (tickerFilter) filterBits.push(`ticker=${tickerFilter}`);
+  if (flags['strategy']) filterBits.push(`strategy=${flags['strategy']}`);
+  if (flags['market']) filterBits.push(`market=${flags['market']}`);
+  const filterStr = filterBits.length > 0 ? ` (filtered: ${filterBits.join(', ')})` : '';
+  const totalEdge = groups.reduce((s, g) => s + g.totalRealizedPnLDollars, 0);
+  out(`\nEdge Summary — since ${sinceStr}${filterStr}\n`);
+  out(`${allFires.length} fires across ${groups.length} ${groups.length === 1 ? 'strategy' : 'strategies'}; total edge ${fmtSign(totalEdge)}\n`);
   const header = `${'Strategy'.padEnd(26)}  ${'Fires'.padStart(5)}  ${'TotalPnL'.padStart(10)}  ${'Avg/Fire'.padStart(9)}  ${'Sharpe'.padStart(7)}  ${'EntryEdge'.padStart(10)}  ${'ExitEdge'.padStart(9)}  ${'Drift'.padStart(9)}  ${'Slip'.padStart(9)}`;
   out(`${'-'.repeat(header.length)}\n`);
   out(header + '\n');

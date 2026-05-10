@@ -306,3 +306,108 @@ describe('kea edge --since lookback', () => {
     expect(out).toContain('s-passive');
   });
 });
+
+// ── SH-EDGE-POLISH (Track 3) ─────────────────────────────────────────────────
+
+describe('kea edge --json envelope (SH-EDGE-POLISH)', () => {
+  it('emits a versioned envelope with mode=summary when no mode flag is set', async () => {
+    writeJob('job-json-1', makeJournalEntries('job-json-1', {
+      strategy: 's-passive', ticker: 'KXA-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    const out = await captureOut(() => runCli(['edge', '--json', '--since', '2026-04-01', '--min-notional', '0']));
+    const env = JSON.parse(out);
+    expect(env.version).toBe(1);
+    expect(env.mode).toBe('summary');
+    expect(typeof env.since).toBe('string');
+    expect(env.totals.fireCount).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(env.rows)).toBe(true);
+  });
+
+  it('emits mode=strategy when --strategy is set', async () => {
+    writeJob('job-json-2', makeJournalEntries('job-json-2', {
+      strategy: 's-passive', ticker: 'KXA-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    const out = await captureOut(() => runCli(['edge', '--json', '--strategy', 's-passive', '--since', '2026-04-01', '--min-notional', '0']));
+    const env = JSON.parse(out);
+    expect(env.mode).toBe('strategy');
+    expect(env.filters.strategy).toBe('s-passive');
+  });
+
+  it('envelope filters echo CLI flags', async () => {
+    writeJob('job-json-3', makeJournalEntries('job-json-3', {
+      strategy: 's-passive', ticker: 'KXA-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    const out = await captureOut(() => runCli(['edge', '--json', '--ticker', 'KXA-26', '--since', '2026-04-01', '--min-notional', '0']));
+    const env = JSON.parse(out);
+    expect(env.filters.ticker).toBe('KXA-26');
+    expect(env.filters.minNotional).toBe(0);
+  });
+});
+
+describe('kea edge --ticker filter (SH-EDGE-POLISH)', () => {
+  it('filters fires by ticker', async () => {
+    writeJob('job-tk-1', makeJournalEntries('job-tk-1', {
+      strategy: 's-passive', ticker: 'KXA-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    writeJob('job-tk-2', makeJournalEntries('job-tk-2', {
+      strategy: 's-passive', ticker: 'KXB-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    const out = await captureOut(() => runCli(['edge', '--json', '--ticker', 'KXA-26', '--since', '2026-04-01', '--min-notional', '0']));
+    const env = JSON.parse(out);
+    expect(env.totals.fireCount).toBe(1);
+  });
+
+  it('--ticker × --strategy is an intersection, not a union', async () => {
+    writeJob('job-int-1', makeJournalEntries('job-int-1', {
+      strategy: 's-passive', ticker: 'KXA-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    writeJob('job-int-2', makeJournalEntries('job-int-2', {
+      strategy: 's-aggressive', ticker: 'KXA-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    writeJob('job-int-3', makeJournalEntries('job-int-3', {
+      strategy: 's-passive', ticker: 'KXB-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    const out = await captureOut(() => runCli([
+      'edge', '--json', '--ticker', 'KXA-26', '--strategy', 's-passive',
+      '--since', '2026-04-01', '--min-notional', '0',
+    ]));
+    const env = JSON.parse(out);
+    // Only job-int-1 satisfies BOTH ticker=KXA-26 AND strategy=s-passive.
+    expect(env.totals.fireCount).toBe(1);
+  });
+});
+
+describe('kea edge default summary header (SH-EDGE-POLISH)', () => {
+  it('header shows fire count', async () => {
+    writeJob('job-hd-1', makeJournalEntries('job-hd-1', {
+      strategy: 's-passive', ticker: 'KXA-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    const out = await captureOut(() => runCli(['edge', '--since', '2026-04-01', '--min-notional', '0']));
+    expect(out).toMatch(/Edge Summary/);
+    expect(out).toMatch(/\b1 fires?\b/);
+  });
+
+  it('header reflects ticker filter when set', async () => {
+    writeJob('job-hd-2', makeJournalEntries('job-hd-2', {
+      strategy: 's-passive', ticker: 'KXA-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    writeJob('job-hd-3', makeJournalEntries('job-hd-3', {
+      strategy: 's-passive', ticker: 'KXB-26', side: 'yes',
+      entryPriceCents: 40, entrySize: 10, exitPriceCents: 70, exitSize: 10,
+    }));
+    const out = await captureOut(() => runCli([
+      'edge', '--ticker', 'KXA-26', '--since', '2026-04-01', '--min-notional', '0',
+    ]));
+    expect(out).toMatch(/ticker=KXA-26/);
+  });
+});
