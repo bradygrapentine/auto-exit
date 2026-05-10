@@ -230,6 +230,17 @@ export interface SafetyConfig {
   maxPositionConcentrationPct?: number;
   /** W3.1: Max fraction of recent-minute volume to submit per minute (0–1). 0 = disabled. */
   maxParticipationRate?: number;
+  /** SH-MICRO-EXECUTION-LOOP: caps + allowlist for the validation harness. */
+  microHarness?: MicroHarnessSafety;
+}
+
+export interface MicroHarnessSafety {
+  /** Cap on a single trial's notional ($). Operator-approved range: $0.10–$1.00. */
+  perTrialCapDollars: number;
+  /** Cap on total trial notional spent in a UTC day ($). Operator-approved: $2.50. */
+  dailyAggregateCapDollars: number;
+  /** Glob patterns for tickers eligible for live trials. Empty = none allowed. */
+  tickerAllowlist: string[];
 }
 
 export type JournalKind =
@@ -260,7 +271,9 @@ export type JournalKind =
   | 'synthetic_fired'
   | 'synthetic_fire_failed'
   | 'synthetic_canceled'
-  | 'synthetic_state_update';
+  | 'synthetic_state_update'
+  | 'micro_trial_started'
+  | 'micro_trial_finished';
 
 export interface TcaEntry {
   kind: 'tca';
