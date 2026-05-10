@@ -106,3 +106,15 @@ The two analysis scripts are reusable for any future harvest investigation
 on a recorded market. Inputs: an `.ndjson` recording covering before and
 after the trade. Outputs: transition events, ±N snapshot comparison around
 trade time, minute-by-minute trace.
+
+## Fix shipped — 2026-05-09
+
+`SH-DEPTH-WALK-STALE-SNAPSHOT` landed on branch `feat/sh-depth-walk-liveness`:
+
+1. **Pure liveness primitive** (`src/preTradeLiveness.ts`). `checkLiveness(projection, freshBook)` returns `{ ok: true }` or rejects with `bid_shifted` / `size_collapsed` / `side_empty` and the specific drift. Defaults: max 1¢ shift, max 50% size shrink at the projected level. No I/O.
+
+2. **AggressiveRunner gate** (`src/aggressive.ts`). For trades >= `livenessGateSize` (default 100 contracts), the runner re-fetches the orderbook between projection and `createOrder`, calls `checkLiveness`, and breaks the loop with `reason: 'liveness_rejected:<reason>'` + journals `aggressive_liveness_rejected` if stale. Operators can pass pre-computed `livenessAssumptions` (e.g. from a harvest-planner that ran minutes earlier) or opt out via `livenessCheckEnabled: false` for backtests.
+
+3. **Harvest-planner risk notes** (`src/harvestPlanner.ts`). When the YES bid side has a fat top (`topSize / meanRest > 5×` over the next 4 levels, or the top is the only visible level), `HarvestPlannerOutput.riskNotes` includes a concrete warning naming the size, price, and the SH-DEPTH-WALK ticket. The CLI prints these under a "Risk notes" section.
+
+Replay test: a projection of 12,336@93¢ vs a fresh book of [[91¢, 5_000]] now returns `{ ok: false, reason: 'bid_shifted' | 'size_collapsed' }` instead of walking through. The MOVVA-replay aggressive test (12,000@93¢ → 100@93¢) returns `liveness_rejected:size_collapsed`; `createOrder` is never called.

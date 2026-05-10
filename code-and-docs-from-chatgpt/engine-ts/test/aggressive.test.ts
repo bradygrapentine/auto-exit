@@ -264,6 +264,79 @@ describe('AggressiveRunner — empty book guard', () => {
   });
 });
 
+// ── 5b. SH-DEPTH-WALK-STALE-SNAPSHOT — pre-trade liveness ────────────────────
+
+describe('AggressiveRunner — pre-trade liveness (SH-DEPTH-WALK-STALE-SNAPSHOT)', () => {
+  it('rejects sized trade when fresh book shows projected level vanished', async () => {
+    // MOVVA replay: first fetch shows 12,000@93¢ NO bid. Between projection and
+    // submission, that resting size is pulled — fresh fetch shows 100@93¢. The
+    // runner must abort rather than walk through a collapsed book.
+    const firstBook: Orderbook = { yes: [{ priceCents: 93, size: 12_000 }], no: [] };
+    const freshBook: Orderbook = { yes: [{ priceCents: 93, size: 100 }], no: [] };
+    const getOrderbook = vi.fn()
+      .mockResolvedValueOnce(firstBook)
+      .mockResolvedValueOnce(freshBook);
+    const client: KalshiClientLike = {
+      getOrderbook,
+      createOrder: vi.fn(),
+      getOrder: vi.fn(),
+      cancelOrder: vi.fn(),
+      getPosition: vi.fn(),
+      getRestingOrderCount: vi.fn(),
+      findOrderByClientOrderId: vi.fn(),
+    };
+    const config: AggressiveConfig = {
+      ticker: 'KX-MOVVA',
+      side: 'yes',
+      action: 'sell',
+      size: 12_000, // >= default livenessGateSize (100)
+      confirmedAggressive: true,
+    };
+    const runner = new AggressiveRunner(client, config);
+    const outcome = await runner.runOneTick();
+
+    expect(outcome.kind).toBe('break_loop');
+    if (outcome.kind === 'break_loop') {
+      expect(outcome.reason).toBe('liveness_rejected:size_collapsed');
+    }
+    expect(client.createOrder).not.toHaveBeenCalled();
+    expect(getOrderbook).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips liveness gate for small trades below livenessGateSize', async () => {
+    // size 10 (default tests) is below the 100-contract gate — no second fetch,
+    // order goes through as before. Pin the no-regression behaviour.
+    const client = makeClient({ yesBid: 72, noBid: 25 });
+    const config: AggressiveConfig = {
+      ticker: 'TICKER-YES',
+      side: 'yes',
+      action: 'sell',
+      size: 10,
+      confirmedAggressive: true,
+    };
+    const runner = new AggressiveRunner(client, config);
+    await runner.run();
+    expect((client.getOrderbook as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    expect(client.createOrder).toHaveBeenCalledOnce();
+  });
+
+  it('honors livenessCheckEnabled=false (operator opt-out for backtests)', async () => {
+    const client = makeClient({ yesBid: 72, noBid: 25 });
+    const config: AggressiveConfig = {
+      ticker: 'TICKER-YES',
+      side: 'yes',
+      action: 'sell',
+      size: 5_000,
+      confirmedAggressive: true,
+      livenessCheckEnabled: false,
+    };
+    const runner = new AggressiveRunner(client, config);
+    await runner.run();
+    expect((client.getOrderbook as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    expect(client.createOrder).toHaveBeenCalledOnce();
+  });
+});
+
 // ── 6. Journal entries ────────────────────────────────────────────────────────
 
 describe('AggressiveRunner — journal entries', () => {

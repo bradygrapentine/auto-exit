@@ -61,6 +61,31 @@ function buildRiskReductionTable(
   return rows;
 }
 
+/**
+ * SH-DEPTH-WALK-STALE-SNAPSHOT §4: detect when the projection depends on
+ * a single fat top-of-book bid that may be pulled before execution. Compares
+ * the top bid's size against the mean of the next levels in the same side's
+ * depth window. Returns a human-readable note if `topSize / meanRest > 5.0`,
+ * otherwise null. Operates on the YES bid side (the side we sell into).
+ */
+function detectFatTopOfBook(orderbook: Orderbook): string | null {
+  const sorted = [...orderbook.yes]
+    .filter((l) => l.size > 0)
+    .sort((a, b) => b.priceCents - a.priceCents);
+  if (sorted.length === 0) return null;
+  const top = sorted[0]!;
+  const rest = sorted.slice(1, 5); // next 4 levels in the depth window
+  if (rest.length === 0) {
+    // Only one bid level visible — definitionally fragile.
+    return `Projection assumes ${top.size}-contract bid at ${top.priceCents}¢ persists to execution; this is the only visible level on the YES bid side and may be pulled with no warning (see SH-DEPTH-WALK-STALE-SNAPSHOT).`;
+  }
+  const meanRest = rest.reduce((acc, l) => acc + l.size, 0) / rest.length;
+  if (meanRest > 0 && top.size / meanRest > 5.0) {
+    return `Projection assumes ${top.size}-contract bid at ${top.priceCents}¢ persists to execution; this depth is >5× the mean of the next ${rest.length} levels (${meanRest.toFixed(0)} contracts) and may be pulled with no warning (see SH-DEPTH-WALK-STALE-SNAPSHOT).`;
+  }
+  return null;
+}
+
 function computeGammaProxy(orderbook: Orderbook): { spread: number; gammaProxy: number } {
   // Best bid on YES side
   const yesBids = [...orderbook.yes].sort((a, b) => b.priceCents - a.priceCents);
@@ -115,6 +140,10 @@ export function computeHarvestPlan(
 
   const { gammaProxy } = computeGammaProxy(orderbook);
 
+  const riskNotes: string[] = [];
+  const fatTopNote = detectFatTopOfBook(orderbook);
+  if (fatTopNote) riskNotes.push(fatTopNote);
+
   // Suggested strategies
   let suggestedStrategies: string[];
   if (marketP >= 0.90) {
@@ -140,5 +169,6 @@ export function computeHarvestPlan(
       gammaProxy,
     },
     suggestedStrategies,
+    riskNotes,
   };
 }
