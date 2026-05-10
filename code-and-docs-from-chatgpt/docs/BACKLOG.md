@@ -500,6 +500,30 @@ intrinsic.
 **Dependency:** none for the staleness-check + risk-note in (1)+(4).
 SH-EDGE for (5).
 
+### 🟢 SH-MICRO-LIVE-SMOKE — first live trial through the SH-MICRO-EXECUTION-LOOP harness
+**Tags:** engine [validation] [operator-driven]
+**Severity:** medium — gates the harness's path from "all unit tests pass" to "trusted with real money"; until completed, the harness is implementation-validated only.
+
+**Trigger:** PR #165 (SH-MICRO-EXECUTION-LOOP) shipped the trial / sweep / status framework + safety gates + runbook, but every test path has run with mocked Kalshi clients. The first end-to-end live trial validates that:
+
+1. `safety.json:microHarness` reads correctly under real conditions and the gate accepts.
+2. `defaultConfirm` reads from a real TTY and the operator can approve via the type-the-ticker-back flow.
+3. The strategy runner's existing journal entries land under the trial id (jobId match) so SH-EDGE attribution works.
+4. `kea edge --since today` picks up the new fire automatically.
+
+Anything that breaks at $0.10 here is something we'd otherwise discover at $50+ later.
+
+**Procedure:** see runbook `engine-ts/docs/runbooks/2026-05-09-micro-execution-loop-smoke-procedure.md`. Step-by-step: edit safety.json → run a single $0.10 `kea micro trial` against a liquid ticker → verify journal + `kea edge` show the new fire → fill in the worked-example block in the general runbook (`2026-05-09-micro-execution-loop.md`).
+
+**Done when:**
+- One trial runs end-to-end and produces a journal entry that `kea edge --since today` attributes to the trial.
+- `kea micro status` shows the trial with correct notional.
+- General runbook §"Worked example" is filled in with the actual fill / slippage / fire id.
+
+**Stretch (separate ticket if scope grows):** small parameter sweep ($1.00 total exposure, two cells, 5 trials each) to validate `runSweep`'s prompt-per-trial flow + `summarizeByCell` output + downstream SH-EDGE breakdown.
+
+**Dependency:** SH-MICRO-EXECUTION-LOOP (✅ PR #165). No other blockers.
+
 ### 🧊 SH-AGGRESSIVE-CLI-FLAG-PARSING — `--one-tick-in true` may not be parsed correctly
 **Tags:** engine [cli]
 
