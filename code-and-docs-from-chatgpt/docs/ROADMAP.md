@@ -1,5 +1,23 @@
 # Roadmap: CLI First → Local Extension → SaaS
 
+## Current state (2026-05-09)
+
+Phases 0, 1, 3, 6, 7, 8, 9, 12 (partial), and 13 are shipped end-to-end.
+The S library (S1–S16) is complete; the watcher daemon + 8 synthetic
+kinds are live; SH-EDGE / SH-BACKTEST / SH-RECOMMENDER / SH-COMPOSE
+all ship; surface parity (MCP/TUI/extension) is broadly green for the
+S library, safety, alerts, and TCA. The auto-exit tool is now an
+algorithmic-trading tooling ecosystem, not just an exit-strategy
+runner.
+
+The active frontier is **operator validation** (SH-MICRO-EXECUTION-LOOP
+harness shipped; first live trial deferred operator-side per
+SH-MICRO-LIVE-SMOKE) and **observability polish** (depth-walk staleness
+checks, edge filters, MCP coverage closures). No major capabilities
+gaps remain in the engine itself.
+
+`BACKLOG.md` §0 status board has the per-section deferred counts.
+
 ## Phase 0 — CLI proof ✅
 
 Validated:
@@ -159,22 +177,29 @@ Layered on top of an established S library.
 - **Phase 10 (Entry foundation EW1)** — folded into W1.5 buy primitive.
 - **Phase 11 (Entry strategy library EW2)** — merged into S1–S5 + S8 + S12.
 
-## Phase 12 — Surface parity (extension / TUI / MCP)
+## Phase 12 — Surface parity (extension / TUI / MCP) — partial ✅
 
 The engine has three frontends: **browser extension** (panel injected on
 Kalshi pages), **TUI** (ink terminal app), and **MCP** (tools the agent
 calls). Each engine capability needs to land on each surface — or be
-explicitly out-of-scope for that surface. Today coverage is uneven:
+explicitly out-of-scope for that surface. State as of 2026-05-09:
 
 | Capability | Extension | TUI | MCP |
 |---|---|---|---|
-| Losing exit (existing) | ✅ via `/start` | ✅ | read-only preview |
-| Account / profile switching | ❌ (SP1.7) | ✅ (shipped 2026-05-02) | ✅ `kea_whoami` (shipped 2026-05-02) |
-| Safety + forbidden tickers | ❌ | 🟡 (W1.1) | 🟡 (W1.1) |
-| Named strategies (S library) | ❌ | ❌ | ❌ |
-| Triggers (W4.1) | ❌ | ❌ | ❌ |
-| TCA / reports (W1.2) | ❌ | ❌ | ❌ |
-| Portfolio view (W4.3) | ❌ | ❌ | ❌ |
+| Losing exit (existing) | ✅ via `/start` | ✅ | ✅ `kea_strategy_run` + per-strategy tools |
+| Account / profile switching | ✅ (SP1.7 shipped) | ✅ | ✅ `kea_whoami` |
+| Safety + forbidden tickers | ✅ | ✅ | ✅ `kea_safety_*`, `kea_forbidden_*` |
+| Named strategies (S library) | ✅ (SP2 shipped) | ✅ | ✅ 15 per-strategy MCP tools + `kea_strategy_run` |
+| Triggers / synthetics (SH-WATCH) | ✅ (SP3.3 shipped) | 🧊 SP3.2 deferred (triggers tab) | ✅ `kea_synthetic_*`, `kea_bracket_arm`, etc. |
+| TCA / reports (SH-EDGE + SP4) | ✅ (SP4.3 shipped) | ✅ (SP4.2 shipped) | ✅ `kea_tca_summary`, `kea_edge_*` |
+| Portfolio view (W4.3) | ✅ | ✅ | ✅ `kea_portfolio_plan` |
+| Workflows (SH-COMPOSE) | partial | ✅ | ✅ `kea_workflow_*`, `kea_template_*` |
+| Validation harness (SH-MICRO) | n/a | ✅ via CLI | ✅ `kea_micro_status` (PR #177) |
+
+Two SP gaps remain (TUI triggers tab SP3.2 / extension triggers panel
+SP3.3 — wait, SP3.3 is shipped; the remaining 🧊 row in BACKLOG is the
+docs/spec preservation, not actual work). Practically: the surface
+parity gap left in v1 is **TUI triggers tab** only.
 
 The Surface parity sequence in `BACKLOG.md` (SP1–SP4) cascades each engine
 capability into one backlog story per surface. Engine work is the
@@ -192,7 +217,12 @@ then TUI, then extension (richest UI).
 32. **SP4 — Reports + portfolio.** MCP / TUI / Extension surfaces for W1.2
     TCA reports and W4.3 portfolio sequencer.
 
-## Phase 13 — Tooling ecosystem (SH stories)
+## Phase 13 — Tooling ecosystem (SH stories) ✅ shipped
+
+**Status (2026-05-09):** all six core SH dimensions have shipped end-to-end.
+The auto-exit tool is now the algorithmic-trading tooling ecosystem
+described in this section. Sub-stories below are kept for historical
+context; see `BACKLOG.md` §7 for the per-PR shipped log.
 
 **Reframing (2026-05-05).** Auto-exit started as exit-strategy execution.
 With the SH stories below it becomes an **algorithmic-trading tooling
@@ -211,41 +241,58 @@ not one.
 
 This phase is multi-stage. SH-WATCH is the foundation; the rest layer on top.
 
-### Sequencing
+### Sequencing — historical (all shipped)
 
-33. **SH-WATCH — Synthetic order types via per-position watcher.**
-    Plan-ready (PR #17). 8–9 days with full subagent parallelism. Six v1
-    synthetic kinds (stop-loss / stop-limit / trailing-stop / multi-rung
-    take-profit / OCO / bracket). Float price math for deci-cent ticks
-    below 10¢. First-class user feature in TUI / extension / MCP — not
-    just internal trigger plumbing. Validated against Kalshi OpenAPI:
-    `type` enum is `limit | market` only; no native stops.
+33. **SH-WATCH ✅** — shipped 2026-05-06 (PRs #19–#39). 8 synthetic
+    kinds (stop_loss / stop_limit / trailing_stop / take_profit / oco /
+    bracket / time_stop / step_trail). Watcher daemon + crash-safe
+    journal. CLI / MCP / HTTP / TUI / extension surfaces. 4 strategy
+    presets. v2 buy-side synthetics deferred — spec at
+    `engine-ts/docs/superpowers/specs/2026-05-09-sh-watch-v2-buy-side-synthetics-design.md`
+    (PR #180).
 
-34. **SH-ALERTS — Notify-only synthetics (alerts layer).** 3–4 days.
-    Cheap extension of SH-WATCH; same evaluator engine, different action.
-    Webhook (Slack/Discord-compatible) + desktop channels in v1.
+34. **SH-ALERTS ✅** — shipped 2026-05-06. Notify-only synthetics
+    layered on the watcher; webhook + desktop channels.
 
-35. **SH-RECOMMENDER — EV/Kelly + strategy recommender.** 4–5 days. Can
-    ship before SH-WATCH (extends `harvestPlanner.ts`); most useful once
-    SH-WATCH exists; richest output once SH-EDGE has data. Three layered
-    MCP tools (`kea_ev`, `kea_size`, `kea_recommend`) complete the
-    LLM-in-the-loop story.
+35. **SH-RECOMMENDER ✅** — shipped 2026-05-04 / 2026-05-05. `kea_ev`,
+    `kea_size`, `kea_recommend`, plus W4.5 `kea_harvest_planner` (the
+    decision-support tool wraps EV crossover, risk-reduction sizing,
+    no-loss-floor row, TradFi-framed Greeks).
 
-36. **SH-COMPOSE — Workflow state machines + default policies.** 5–7
-    days. Multi-stage workflows + per-position auto-policy. Closed-set
-    declarative JSON; explicit anti-runaway caps; 8 prebuilt templates
-    in v1. Sits on top of SH-WATCH.
+36. **SH-COMPOSE ✅** — shipped 2026-05-06. Workflow state machines +
+    per-position policies. `kea_workflow_*` and `kea_template_*` MCP
+    tools.
 
-37. **SH-EDGE — Operator-specific PnL attribution.** 5–7 days. Pure
-    analytics over existing journal — measures per-strategy /
-    per-trigger / per-market edge **for this operator on these markets**.
-    Useful at SH-WATCH + 30 days (data accumulation period). Feeds
-    SH-RECOMMENDER as a calibration prior.
+37. **SH-EDGE ✅** — shipped 2026-05-07 (initial), polished 2026-05-09
+    (PR #169 SH-EDGE-POLISH: `--ticker` filter + `--json` envelope +
+    summary header). Per-strategy / per-trigger / per-market edge
+    attribution over journal data. Plus PR #177 added MCP
+    `ticker` filter parity.
 
-38. **SH-BACKTEST — Record-and-replay harness.** 7–10 days. Continuous
-    journal during normal operation; replay against any strategy in the
-    library. Unblocks empirical strategy tuning and parameter walk-
-    forward. First meaningful backtest at SH-WATCH + 30 days.
+38. **SH-BACKTEST ✅** — record-and-replay harness shipped across
+    Phases A/B/D 2026-05-07 to 2026-05-08 (PRs #120–#133+). Phase 1
+    extracted `runOneTick` seams from all four runners; Phase 2 added
+    five thin synthetic-strategy adapter wrappers. Phase C (CLI/MCP
+    surfaces beyond `kea record`) deferred — `// TODO(SH-BACKTEST
+    Phase C)` markers remain in `src/backtest/harness.ts`.
+
+### Post-shipping refinements (2026-05-09)
+
+Five separate stories shipped after the core ecosystem to harden the
+production path:
+
+- **SH-DEPTH-WALK-STALE-SNAPSHOT** (PR #164) — pre-trade liveness check
+  + planner risk notes. Replays the MOVVA $3,201 staleness incident.
+- **SH-MICRO-EXECUTION-LOOP** (PR #165) — `kea micro {trial|sweep|
+  status}` validation harness with mandatory-TTY confirmation, daily
+  caps, SH-EDGE attribution. First-live-trial procedure deferred to
+  SH-MICRO-LIVE-SMOKE (operator-driven).
+- **SH-MIN-CHUNK** (PR #168) — `minChunkValueDollars` guard against
+  Kalshi's $0.01-per-fill minimum-fee tax.
+- **SH-PASSIVE-SPREAD-LOGIC** (PR #141 backtest, PR #179 live) — passive
+  no longer break_loops on one-sided / inverted-cross-spread books.
+- **SH-MCP-GAP-CLOSURES** (PR #177) — five new MCP tools + ticker
+  filter parity with `kea edge` CLI flags.
 
 ### Why this is the right framing
 
