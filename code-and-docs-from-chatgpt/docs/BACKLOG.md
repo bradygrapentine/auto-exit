@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-09 (SH-MICRO-EXECUTION-LOOP shipped (#165), SH-MIN-CHUNK shipped (#168), SH-EDGE-POLISH shipped (#169); SH-DEPTH-WALK-STALE-SNAPSHOT (#164), SH-AGGRESSIVE-CLI-FLAG-PARSING + SH-AGGRESSIVE-PARTIAL-SIZE (#163) promoted to ✅; SH-MICRO-LIVE-SMOKE filed as 🟢 ready. Note: prior §0 Shipped count of 75 disagreed with raw §7 bullet count (65); this sync adopts the awk-recount as source of truth.)
+Last `/backlog-sync`: 2026-05-09 evening (SH-PASSIVE-SELL-LIMIT shipped (#178), SH-PASSIVE-SPREAD-LOGIC shipped (#179, live path), SH-MCP-GAP-CLOSURES shipped (#177), SH-WATCH v2 spec slice landed (#180), Min-chunk-value-guard ✅ promotion (was already shipped via #168 / SH-MIN-CHUNK but the deferred row was stale). §7 bullet recount: 76.
 
 | Status | Count |
 |--------|-------|
@@ -8,10 +8,10 @@ Last `/backlog-sync`: 2026-05-09 (SH-MICRO-EXECUTION-LOOP shipped (#165), SH-MIN
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🧊 Tooling ecosystem (SH) | 1 |
-| 🧊 Surface parity (SP1–SP4) | 0 |
-| 🧊 Other deferred (off-sequence) | 5 |
-| ✅ Shipped (this log) | 71 |
+| 🟡 / 🟢 Tooling ecosystem (SH) — actionable | 2 (🟡 SH-WATCH v2, 🟢 SH-MICRO-LIVE-SMOKE) |
+| 🧊 Surface parity (SP3.2 / SP3.3) | 2 |
+| 🧊 Other deferred (off-sequence) | 4 |
+| ✅ Shipped (this log) | 76 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -737,37 +737,15 @@ PnL improves on KXINXU fixture).
 
 **Dependency:** none.
 
-### 🟡 SH-PASSIVE-SELL-LIMIT — `bestAskCents` naming cleanup (functional bug resolved by SH-FILL-SIM-DIRECTIONAL)
-**Tags:** engine [shared]
+### ✅ SH-PASSIVE-SELL-LIMIT — shipped 2026-05-09 (PR #178)
 
-**Status update 2026-05-08:** with PR #132 landed, the sell-side fill semantics now treat `limitPriceCents` as a floor. Passive's existing `iterPrice = bestAskCents - walkStepCents` (e.g. 11¢ when lowest yes level is 12¢) works correctly under the new sweep — walks descending and fills at the highest crossing yes level. The remaining work is a pure naming/docs cleanup (variable should be `bestYesLevelCents` and the docblock should explain why a sell limit deliberately sits below all visible yes levels). Demoted from blocker to cleanup; no production-vs-backtest semantic divergence remains.
-
-(Original ticket below for history.)
-
-**Trigger:** discovered during the same 2026-05-08 Phase D validation.
-`passive.runOneTick` (and `runOneTickBacktest`) compute
-`bestAskCents = orderbook.yes.sort(asc)[0].priceCents` — the LOWEST
-yes-side level — and use `iterPrice = bestAskCents - walkStepCents`
-for sell. Under Kalshi conventions, the yes side stores yes-side BIDS
-(buyers willing to BUY yes contracts at that price), not asks. So
-`bestAskCents` is actually the lowest yes BID, and `iterPrice` ends
-up below ALL yes-side levels. This is fine in production (Kalshi
-matches at the actual best bid regardless of how low the limit is),
-but in backtest it's an unfillable order against the naive fill
-model — surfaced when SH-FILL-SIM-DIRECTIONAL is fixed.
-
-**Proposed:** rename `bestAskCents` to `bestYesLevelCents` (or similar),
-clarify in passive's docblock that for SELL the limit is set BELOW the
-operator-reachable bid (intentional: lets Kalshi take the spread to
-the operator's benefit), and document the production-vs-backtest
-divergence. OR: change the sell-side limit calculation to use a true
-best-bid reference (`bestYesLevelCents` = highest yes bid) so the same
-math works in both contexts.
-
-**Cost:** ~2-3h (rename + 1 calculation change + update tests).
-
-**Dependency:** SH-FILL-SIM-DIRECTIONAL (otherwise the new limit math
-still won't fill in backtest).
+Renamed locals in `passive.runOneTick` (live) and `exitRunnerAdapter`
+(backtest): `bestAskCents`/`bestBidCents` → `decisionAskCents`/
+`decisionBidCents`. Brings them into alignment with
+`passive.runOneTickBacktest`'s existing convention. Expanded docblock
+to explain cross-quoted vs yes-depth-fallback derivation and why a
+SELL limit deliberately sits below all visible yes levels on
+bid-quoted books. Journal field names preserved for backward compat.
 
 ### ✅ SH-TWAP-CADENCE — shipped 2026-05-08
 **Tags:** engine [backtest]
@@ -791,51 +769,17 @@ Two fixes in the same PR: (1) drop `dryRun: true` from twap's passiveInvoke so p
 
 **Dependency:** SH-PASSIVE-STILL-NO-FILLS (shipped — same PR as this ticket's filing).
 
-### 🧊 SH-PASSIVE-SPREAD-LOGIC — passive break_loops on one-sided / skewed books
-**Tags:** engine [shared]
+### ✅ SH-PASSIVE-SPREAD-LOGIC — shipped 2026-05-09 (PRs #141 backtest, #179 live)
 
-**Trigger:** discovered 2026-05-08 during the post-PR-#132 validation
-re-run on the KXINXU 5566-snapshot recording (S&P 500 hourly). Passive's
-`runOneTickBacktest` computes `bestBidCents = noAsks[0] != null ? 100 - noAsks[0].priceCents : 1`.
-When the no-side is empty or thin, this synthesized bid collapses against
-`bestAskCents` (lowest yes level) and the spread check at line 466 fires
-with reason `spread_too_tight` on tick 1 — passive never posts a single
-order despite a healthy yes-side book (e.g. KXINXU at 00:00:02 had
-`yes = [14, 34, 35, 37, 47, 48, 50, 51, 52, 55]` with 22–112 qty per
-level). Aggressive-style strategies fill on the same recording, so the
-issue is squarely in passive's spread-check, not the harness.
-
-**Concrete observation:** instrumented `passiveAdapter.tick()` with a
-debug log on outcome — first tick returned
-`{kind:'break_loop', reason:'spread_too_tight'}` with `state.remaining=100`
-and `pendingOrderId=undefined`. No order was ever posted on tick 1, and
-since the adapter sets `stopped=true` on break_loop, no orders post on
-subsequent ticks either — fill_count = 0 across the entire 5566-snapshot
-run.
-
-**Proposed fix paths (decide after seeing more recordings):**
-- (a) When no-side is empty or below a depth threshold, fall back to
-  using the highest yes-side level as the implicit bid reference
-  (sort yes desc, take `[0]`) rather than the constant `1`. Spread
-  becomes `highestYesLevel - lowestYesLevel`, which is positive on
-  any non-degenerate book.
-- (b) Add a `minSpreadCents = 0` config knob with `walkStepCents = 0`
-  override for skewed-book recordings, accepting that passive may
-  post at the same price level repeatedly.
-- (c) Skip the spread check entirely on the FIRST tick (before any
-  order has been posted) — only enforce it as a stop-loop guard
-  after at least one order has rested.
-
-Pick after running the comparison sweep across multiple recordings —
-if the failure mode is universal, (a) is right; if it's KXINXU-specific,
-(b) is right; if passive should always at least try once, (c) is right.
-
-**Cost:** ~3-4h (1 calc change + 4-6 unit tests covering one-sided +
-skewed-book fixtures + re-run validation on KXINXU).
-
-**Dependency:** none. SH-FILL-SIM-DIRECTIONAL already shipped (PR #132)
-so the directional sweep semantics are correct; this is a passive-side
-gating issue.
+Backtest path landed first in PR #141 (cross-spread-validity check +
+yes-depth fallback + first-tick skip in `runOneTickBacktest`). Live
+path closed in PR #179 (cross-spread-validity check + yes-depth
+fallback in `runOneTick`, mirroring the backtest path's three-state
+derivation). Inverted cross-spreads (e.g. yes=[14,55], no=[5]) now
+fall back to yes-depth instead of break_loop'ing with
+`spread_too_tight`. Truly degenerate books and tight cross-quoted
+books still bail as before — no first-tick skip on live to preserve
+existing tight-spread semantics.
 
 ### ✅ SH-SCANNER-WS — shipped 2026-05-09 (PRs #159 #160 #161 #162)
 
@@ -1067,32 +1011,15 @@ pacing to it.
 market presents the refill pattern; spec'ing against a hypothetical book is
 how you get the wrong abstraction.
 
-## 🧊 Min-chunk-value guard (avoid the $0.01-per-fill minimum tax)
-**Tags:** engine [shared]
+## ✅ Min-chunk-value guard — shipped 2026-05-09 (PR #168, SH-MIN-CHUNK)
 
-**Problem:** Kalshi rounds taker fees UP to $0.01 per fill. For a chunk worth
-less than ~$0.15, the formula fee is below $0.01, so the minimum binds and
-the effective fee rate balloons. Worst case: 1 share × 1¢ = $0.01 trade pays
-$0.01 fee = 100% fee rate.
-
-**Proposal:** new config `minChunkValueDollars: number` (default 0.15).
-`decideLosingExitOrder` refuses to emit a chunk where
-`chunk × decision.priceCentsExact / 100 < minChunkValueDollars`. Engine
-logs `chunk_too_small_for_fee_threshold` and falls through to next iter (or
-stops if remaining is the same shape).
-
-**Where this matters:** tail-sweep + cancel-stale loops on cheap markets,
-fractional remainders, and any exit where chunkSize × bid_price falls under
-the threshold.
-
-**Where it doesn't:** our P1 chunks were 2000 shares × 0.1-0.8¢ = $2-16 per
-chunk, well above $0.15. Already fine.
-
-**Cost:** ~2 hours. One pricing.ts change + 3 test cases.
-
-**Why deferred:** P1 didn't trigger the failure mode. Build when a future
-exit hits a cheap-market dust scenario where the per-fill minimum is the
-dominant cost.
+`pricing.ts:decideLosingExitOrder` refuses chunks where
+`chunkSize × priceCentsExact / 100 < minChunkValueDollars`
+(default $0.15). Returns stable `{ chunkSize: 0, reason:
+CHUNK_TOO_SMALL_REASON }`. `exitRunner.ts` short-circuits before
+`buildSellPayload`/`createOrder` and returns `break_loop` cleanly.
+Defends against Kalshi's $0.01-per-fill minimum-fee tax. 6 pricing
+tests + 1 integration test. See §7 entry for full details.
 
 ## 🧊 Single-shot capture-and-execute scanner
 **Tags:** engine [shared]
@@ -1158,6 +1085,14 @@ peg-to-mid will likely subsume the use cases this targets.
 ---
 
 # ✅ Shipped
+
+- **2026-05-09 — SH-PASSIVE-SPREAD-LOGIC — cross-spread-validity check on live runOneTick (PR #179).** Backtest path's three-state derivation (cross-quoted / yes-depth-fallback) ported to the live path. Inverted cross-spreads (e.g. yes=[14,55], no=[5] producing ask=14, bid=95, spread=−81) no longer break_loop with `spread_too_tight`; they fall back to yes-depth (ask=highest yes, bid=lowest yes) and post normally. Truly degenerate books and tight cross-quoted books still bail as before. 3 new tests in `test/backtest/passiveSpreadFallback.test.ts` pin the live path against the same fixtures as the backtest path.
+
+- **2026-05-09 — SH-PASSIVE-SELL-LIMIT — naming cleanup (PR #178).** Renamed `bestAskCents`/`bestBidCents` → `decisionAskCents`/`decisionBidCents` in `passive.runOneTick` and `exitRunnerAdapter`. Brings them in line with the backtest path's existing convention. Expanded docblock explains cross-quoted vs yes-depth-fallback derivation and why a SELL limit may sit below all visible yes levels on bid-quoted books. Journal field names preserved for backward compat with on-disk data. No behavior change.
+
+- **2026-05-09 — SH-MCP-GAP-CLOSURES — 5 follow-ups from MCP coverage audit (PR #177).** New tools: `kea_cancel_resting`, `kea_micro_status`, `kea_alert_list`, `kea_alert_cancel`, `kea_resume`. Plus `ticker` filter added to `kea_edge_summary` and `kea_edge_per_strategy` for parity with PR #169's `--ticker` CLI flag. 5 new MCP test cases (not-initialized, empty envelope, missing-config error paths). Closes the must-fix + 4 should-fix gaps surfaced in `engine-ts/docs/mcp-coverage-audit.md`.
+
+- **2026-05-09 — SH-WATCH v2 spec slice (PR #180).** Documentation only — scopes the v2 surface (`buy_stop` / `buy_dip` / `scaled_entry` / `bracket_entry`) against the v1 watcher; confirms v1 surface reuses cleanly with kind-agnostic daemon/journal/registry/transports. ~2 days estimate, 7 slices. Implementation deferred — spec at `engine-ts/docs/superpowers/specs/2026-05-09-sh-watch-v2-buy-side-synthetics-design.md`.
 
 - **2026-05-09 — SH-EDGE-POLISH — `kea edge` --ticker filter + --json envelope + summary header (PR #169).**
   Adds `--ticker <symbol>` (intersection across every mode), `--json` versioned envelope `{ version: 1, mode, since, filters, totals, rows }`, and a default-summary header line that surfaces filter context + totals before the per-strategy table. `cmdEdge` exported so the test harness can drive it via `runCli + captureOut`. 6 new tests in `test/cli/edge.test.ts`. Plan: `engine-ts/docs/superpowers/plans/2026-05-09-track-3-sh-edge-polish.md`.
