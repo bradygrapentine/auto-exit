@@ -1631,6 +1631,40 @@ async function cmdMicro(
         if (typeof tid === 'string') finishedByTrial.set(tid, d);
       }
 
+      // SH-MICRO-STATUS-JSON: emit a versioned envelope BEFORE either text-mode
+      // exit path. Mirrors SH-EDGE-POLISH / SH-REPORT-POLISH shape.
+      if (flags['json'] !== undefined) {
+        const rows = started.map((e) => {
+          const d = e.data as Record<string, unknown>;
+          const tid = String(d['trialId'] ?? '');
+          const fin = finishedByTrial.get(tid);
+          return {
+            trialId: tid,
+            ticker: d['ticker'],
+            strategy: d['strategy'],
+            side: d['side'],
+            maxNotionalDollars: d['maxNotionalDollars'],
+            intent: d['intent'],
+            startedAt: d['startedAt'],
+            finishedAt: fin ? fin['finishedAt'] : null,
+            status: fin ? (fin['status'] ?? 'finished') : 'running',
+            fireId: fin ? fin['fireId'] : null,
+          };
+        });
+        const envelope = {
+          version: 1 as const,
+          mode: 'micro_status' as const,
+          date: today,
+          totals: {
+            trialsToday: started.length,
+            spentDollars: sumDailySpent(entries),
+          },
+          rows,
+        };
+        process.stdout.write(JSON.stringify(envelope, null, 2) + '\n');
+        return;
+      }
+
       process.stdout.write(`\nMicro trials — ${today} UTC (${started.length} started)\n\n`);
       if (started.length === 0) {
         process.stdout.write('  none.\n');
