@@ -164,6 +164,15 @@ export interface BacktestConfig {
     ticker: string;
     side: 'yes' | 'no';
     quantity: number;
+    /**
+     * Cost basis per contract in cents. When set, pnl_cents = gross_proceeds -
+     * (quantity * costBasisCents) so the reported figure is net edge, not gross
+     * sale revenue. When omitted, defaults to the mid of the first tick in the
+     * recording window — i.e. "edge over buying at the start of the recording
+     * and exiting via this strategy". Pass `costBasisCents: 0` to preserve the
+     * old gross-proceeds behavior explicitly.
+     */
+    costBasisCents?: number;
   };
 }
 
