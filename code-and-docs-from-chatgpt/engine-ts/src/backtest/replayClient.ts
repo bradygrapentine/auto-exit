@@ -29,16 +29,50 @@ import {
   simulateFill,
   type SnapshotOrderbook,
   type SimOrder,
+  computeFeeCents,
 } from './fillSimulator.js';
 
 // ---------------------------------------------------------------------------
 // Internal state
 // ---------------------------------------------------------------------------
 
+/**
+ * In-flight GTC order awaiting fill on a future snapshot.
+ *
+ * For `fillModel === 'queue_aware'`, the queue tracker also carries:
+ *   - `queueAhead`: depth at the limit-price level *ahead of us in the FIFO
+ *     queue* at post time. Decrements as the level's depth drops on later
+ *     snapshots (the assumption: any depth decrease at our level was consumed
+ *     by an aggressive cross in front of us, even though it could also be a
+ *     cancel — see v1 limitations below).
+ *   - `lastSeenDepth`: monotonic non-increasing baseline of same-level depth.
+ *     Clamped to `min(lastSeenDepth, current_depth)` every tick so that depth
+ *     *increases* (new resting orders joining the queue behind us) do not
+ *     later get credited to our queue position when they cancel.
+ *
+ * v1 LIMITATIONS (documented; not bugs):
+ *   (a) Snapshot decreases due to cancels are credited as fills. We cannot
+ *       distinguish consumption from cancellation; treating both as
+ *       consumption slightly over-credits our queue position. Acceptable
+ *       approximation; vastly more realistic than naive.
+ *   (b) Multiple resting orders at the same `(side, priceCents)` would each
+ *       track their own `queueAhead` and double-count the consumption that
+ *       drained the level. The current backtest harness assumes at most one
+ *       resting order per `(side, priceCents)`; sweep workloads chunk one
+ *       order at a time per strategy. If real workloads exercise the
+ *       duplicate-level case, file a v2 reconciliation follow-up.
+ *   (c) Recording snapshots are captured by the venue and do NOT include
+ *       this client's resting orders. So `depthAtLevel` returns the queue
+ *       ahead of us without ever double-counting our own size.
+ */
 interface RestingOrder {
   orderId: string;
   payload: OrderPayload;
   remainingSize: number;
+  /** Set when fillModel === 'queue_aware'; undefined for 'naive'. */
+  queueAhead?: number;
+  /** Set when fillModel === 'queue_aware'; undefined for 'naive'. */
+  lastSeenDepth?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +198,54 @@ export function createReplayClient(opts: ReplayClientOptions): ReplayKalshiClien
   }
 
   /**
+   * Look up the visible depth at one specific price level on one side of the
+   * book in a recorded snapshot. Returns 0 if the level isn't present.
+   *
+   * Kalshi snapshots emit at most one entry per `(side, priceCents)` — this
+   * is a lookup, not a reducer.
+   */
+  function depthAtLevel(
+    snap: SnapshotEntry,
+    side: 'yes' | 'no',
+    priceCents: number,
+  ): number {
+    const levels = side === 'yes' ? snap.orderbook.yes : snap.orderbook.no;
+    for (const [p, qty] of levels) {
+      if (p === priceCents) return qty;
+    }
+    return 0;
+  }
+
+  /**
+   * For a resting limit order on `side` at `priceCents` with `action`, return
+   * the queue depth visible AHEAD of us (other resting orders at the same
+   * matching level).
+   *
+   * Kalshi book convention: `snap.yes` holds yes-side BIDS (buyers of yes),
+   * `snap.no` holds no-side BIDS (buyers of no = sellers of yes at the
+   * complementary price). So:
+   *   - A BUY on side S at price P joins the bid queue on side S at price P.
+   *     Queue ahead = depthAtLevel(snap, S, P).
+   *   - A SELL on side S at price P is equivalent to a BID on the OPPOSITE
+   *     side at price (100 - P). Queue ahead = depthAtLevel(snap, opposite, 100 - P).
+   *
+   * The returned depth does NOT include this client's resting orders — the
+   * snapshot is the venue's view captured before our order existed.
+   */
+  function queueLevelDepth(
+    snap: SnapshotEntry,
+    side: 'yes' | 'no',
+    action: 'buy' | 'sell',
+    priceCents: number,
+  ): number {
+    if (action === 'buy') {
+      return depthAtLevel(snap, side, priceCents);
+    }
+    const opposite: 'yes' | 'no' = side === 'yes' ? 'no' : 'yes';
+    return depthAtLevel(snap, opposite, 100 - priceCents);
+  }
+
+  /**
    * Resolve a limit price from an OrderPayload (handles both integer cents
    * fields and dollar-string fields).
    */
@@ -197,6 +279,81 @@ export function createReplayClient(opts: ReplayClientOptions): ReplayKalshiClien
 
       for (const [orderId, resting] of restingOrders) {
         const limitCents = resolveLimitPriceCents(resting.payload);
+
+        if (fillModel === 'queue_aware') {
+          // ── queue-aware GTC path ──────────────────────────────────────
+          // Track queue position by watching same-level depth drop. Any
+          // decrease is credited to our queue position (over-credits us
+          // slightly when the decrease was actually a cancel — see v1
+          // limitations on RestingOrder).
+          if (
+            limitCents === undefined ||
+            resting.queueAhead === undefined ||
+            resting.lastSeenDepth === undefined
+          ) {
+            // queue_aware state not initialized (e.g. unresolvable price).
+            // Skip — no fill credited.
+            continue;
+          }
+          const action = resting.payload.action ?? 'buy';
+          const currentDepth = queueLevelDepth(snap, resting.payload.side, action, limitCents);
+          const delta = Math.max(0, resting.lastSeenDepth - currentDepth);
+          resting.queueAhead = Math.max(0, resting.queueAhead - delta);
+          // Monotonic non-increasing clamp: depth increases mean new orders
+          // joined the queue BEHIND us; they must not later be credited to
+          // our position when they cancel.
+          resting.lastSeenDepth = Math.min(resting.lastSeenDepth, currentDepth);
+
+          if (resting.queueAhead === 0 && currentDepth >= resting.remainingSize) {
+            // We're at the front of the queue and a cross is arriving that
+            // can fill our remaining size. Construct a maker-side fill
+            // record matching the shape of the naive branch's emit.
+            const filled = resting.remainingSize;
+            const feesCents = computeFeeCents(filled, limitCents);
+            const requestedSize = resting.remainingSize;
+
+            // Update position
+            if (resting.payload.action === 'buy') {
+              if (position.ticker === '' || position.ticker === snap.ticker) {
+                position.ticker = snap.ticker;
+                position.side = resting.payload.side;
+                position.quantity += filled;
+              }
+            } else {
+              position.quantity = Math.max(0, position.quantity - filled);
+            }
+
+            resting.remainingSize -= filled;
+
+            fillLog.push({
+              ts: snap.ts,
+              ticker: snap.ticker,
+              orderId,
+              side: resting.payload.side,
+              requestedSize,
+              filled,
+              fillPriceCents: limitCents,
+              isTaker: false,
+              feesCents,
+            });
+
+            const existing = orderResults.get(orderId);
+            const totalFilled = (existing?.filledCount ?? 0) + filled;
+            orderResults.set(orderId, {
+              orderId,
+              status: resting.remainingSize === 0 ? 'filled' : 'partially_filled',
+              filledCount: totalFilled,
+              remainingCount: resting.remainingSize,
+            });
+
+            if (resting.remainingSize <= 0) {
+              restingOrders.delete(orderId);
+            }
+          }
+          continue;
+        }
+
+        // ── naive path (existing behavior, unchanged) ───────────────────
         const simOrder: SimOrder = {
           side: resting.payload.side,
           action: resting.payload.action,
@@ -291,13 +448,22 @@ export function createReplayClient(opts: ReplayClientOptions): ReplayKalshiClien
         (payload.time_in_force as SimOrder['timeInForce']) ??
         'immediate_or_cancel';
 
+      // For queue_aware + GTC, query the marketable portion via an IOC-shaped
+      // sim order — simulateFill throws on GTC+queue_aware by design (the
+      // queue tracker owns ongoing GTC fills; only the initial-cross slice is
+      // handled here). For all other modes, use the order's actual TIF.
+      const simTif: SimOrder['timeInForce'] =
+        fillModel === 'queue_aware' && tif === 'good_till_canceled'
+          ? 'immediate_or_cancel'
+          : tif;
+
       const simOrder: SimOrder = {
         side: payload.side,
         action: payload.action,
         type: payload.type as 'limit' | 'market',
         size: payload.count,
         limitPriceCents: limitCents,
-        timeInForce: tif,
+        timeInForce: simTif,
       };
 
       const simBook = snapshotToSimBook(snap);
@@ -355,13 +521,21 @@ export function createReplayClient(opts: ReplayClientOptions): ReplayKalshiClien
         clientOrderIdIndex.set(payload.client_order_id, orderId);
       }
 
-      // Queue resting GTC orders
+      // Queue resting GTC orders. Under queue_aware, snapshot the same-side
+      // depth at the limit price at post time — that's our queue-ahead count.
       if (tif === 'good_till_canceled' && remaining > 0) {
-        restingOrders.set(orderId, {
+        const rest: RestingOrder = {
           orderId,
           payload,
           remainingSize: remaining,
-        });
+        };
+        if (fillModel === 'queue_aware' && limitCents !== undefined) {
+          const action = payload.action ?? 'buy';
+          const initialDepth = queueLevelDepth(snap, payload.side, action, limitCents);
+          rest.queueAhead = initialDepth;
+          rest.lastSeenDepth = initialDepth;
+        }
+        restingOrders.set(orderId, rest);
       }
 
       return result;
