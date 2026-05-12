@@ -520,6 +520,104 @@ Decision: keep `trailing_stop trailCents=10` as the recommended baseline. Docume
 
 Engine change shipped in PR #189 (queue-position-tracked fill model in `replayClient.ts`; `queue_aware` is no longer a stub; 3 integration tests pin drain-then-fill, hold, and the M1 swell-then-drain clamp). Sweep v3.3 runbook + ADR revisit shipped here. Verdict: keep `trailing_stop trailCents=10` baseline confirmed — see `engine-ts/docs/adr/0001-trailing-stop-baseline.md` §"2026-05-12 revisit". `s-twap`'s previous lead over `trailing_stop` compressed from 379¢ to 41¢ under realistic fills; `s-twap` is now worst on falling markets.
 
+### 🟢 SH-FORECASTER-DISCOVER — ticker discovery from forecaster configs
+**Tags:** scanner [ops]
+**Severity:** medium — gates the Phase 1 scrape window; no data flow until this lands.
+
+**Trigger:** Plan `engine-ts/docs/superpowers/plans/2026-05-12-forecaster-integration.md` Phase 1.2. The existing `kea record discover` is category-volume-driven and does NOT read the sibling forecaster repos. We need a new subcommand that reads `~/projects/oil-forecaster/configs/strikes.yaml` and `~/projects/weather-forecaster/configs/thresholds.yaml`, expands strike/bracket grids (KXWTI ±5 strikes; KXHIGH* per-city brackets), resolves them against live Kalshi `/events`, and writes a partial `tickers.forecaster.json` with conviction-band metadata joined from the forecaster's latest `data/forecasts/{date}.jsonl`.
+
+**Done when:**
+- `engine-ts/src/backtest/discoverForecasters.ts` exists with unit tests for strike-grid expansion + bracket expansion + conviction join.
+- `kea record discover-from-forecasters --out tickers.forecaster.json` produces a file consumable by `multiTickerRecorder`.
+- Read-only access to sibling repos — zero edits to anything under `~/projects/oil-forecaster/` or `~/projects/weather-forecaster/`.
+
+**Dependency:** none.
+
+### 🟢 SH-FORECASTER-TICKER-MERGE — merge discover + discover-from-forecasters into tickers.json
+**Tags:** scanner [ops]
+**Severity:** medium — required for forecaster tickers to coexist with the broader scanner ticker set.
+
+**Trigger:** Plan Phase 1.2. The Fly cron runs `discover` (broad) and `discover-from-forecasters` (targeted) separately; we need a merge step that unions both into the final `tickers.json`. Forecaster entries override discover entries on key collision (so conviction metadata wins).
+
+**Done when:**
+- `kea record merge-tickers --inputs tickers.discover.json,tickers.forecaster.json --out tickers.json` produces a unioned file.
+- Unit tests cover (a) no overlap (b) overlap with forecaster wins (c) empty input survives.
+
+**Dependency:** SH-FORECASTER-DISCOVER.
+
+### 🟢 SH-FORECASTER-DEPLOY — wire forecaster tickers into the running scanner
+**Tags:** scanner [ops]
+**Severity:** medium — gates data flow.
+
+**Trigger:** Plan Phase 1.3. The `auto-exit-scanner` Fly app is already running on WebSocket transport (`SH-SCANNER-WS` shipped 2026-05-09). We need to add a daily cron that runs the discover pair + merge and writes the result to `/data/tickers.json`, plus confirm the recorder reloads on mtime change (or trigger a restart).
+
+**Done when:**
+- Daily cron writes `/data/tickers.json` and triggers reload.
+- `fly logs` shows forecaster tickers being tracked within one cron tick.
+- `fly volumes list` shows volume ≥10 GB (extend if currently 5 GB).
+
+**Dependency:** SH-FORECASTER-DISCOVER, SH-FORECASTER-TICKER-MERGE.
+
+### 🟢 SH-FORECASTER-SYNC-ATOMIC — manifest-based atomic sync with optional remote cleanup
+**Tags:** scanner [ops]
+**Severity:** medium — required before `--delete-remote-older-than-days` can be turned on safely.
+
+**Trigger:** Plan Phase 1.4. Current `kea record sync` is tar-pipe over `fly ssh console` with no per-file ack; coupling it with remote delete is a data-loss bug. Need: remote manifest (path/size/mtime), stream to staging dir, byte-size verify, directory-level atomic swap, then opt-in remote cleanup.
+
+**Done when:**
+- Tests cover (a) mid-stream tar abort (b) full local disk during staging (c) byte-size mismatch (d) crash between mv calls.
+- `kea record sync --delete-remote-older-than-days 7` only deletes after a successful local swap with verified manifest.
+
+**Dependency:** SH-FORECASTER-DEPLOY.
+
+### 🟢 SH-FORECASTER-COVERAGE — `kea record coverage` CLI
+**Tags:** scanner [ops]
+**Severity:** medium — primary 30-day acceptance gate for Phase 1.
+
+**Trigger:** Plan Phase 1 acceptance criteria require a continuous-coverage verdict command. File count is insufficient (a 200-byte file passes a count check). Need: enumerate recordings since N days, compute per-ticker max-gap-seconds, exit 0 iff all under threshold.
+
+**Done when:**
+- `kea record coverage --since 30d --max-gap-seconds 600` exits 0 when coverage is acceptable, prints largest gap per ticker on failure.
+
+**Dependency:** SH-FORECASTER-DEPLOY (needs real data flowing).
+
+### 🟢 SH-FORECASTER-KILL-SWITCH — `/data/PAUSE` sentinel + pause/resume CLI
+**Tags:** scanner [ops]
+**Severity:** low — operational safety net; not blocking for data flow.
+
+**Trigger:** Plan Phase 1.6. If the recorder degrades the trading-account rate budget or starts emitting 429s, we need a fast kill switch.
+
+**Done when:**
+- `kea record pause` (writes `/data/PAUSE` on the Fly volume) causes the recorder loop to skip its poll within 30s.
+- `kea record resume` removes the sentinel.
+- Test covers sentinel detection in `multiTickerRecorder` or `wsRecorder`.
+
+**Dependency:** SH-FORECASTER-DEPLOY.
+
+### 🧊 SH-FORECASTER-BACKTEST — sweep + per-category ADRs (Phase 2)
+**Tags:** scanner [backtest]
+**Severity:** low — Phase 2, gated on ≥30 days of forecaster recordings.
+
+**Trigger:** Plan Phase 2. Once data accumulates, sweep `trailing_stop` / `s_twap` / `s_iceberg` / `s_passive` against KXWTI* and KXHIGH* recordings; drop cells with <100 fills; produce ADR-0002 (oil) and ADR-0003 (weather).
+
+**Done when:**
+- Sweep runbook lands per market category.
+- ADR-0002 + ADR-0003 name the recommended exit strategy + paired trigger config.
+
+**Dependency:** ≥30 days of forecaster recordings on disk (gated on Phase 1).
+
+### 🧊 SH-FORECASTER-LIVE-AGENT — `/forecaster-trade` skill (Phase 3)
+**Tags:** scanner [agent] [live]
+**Severity:** low — Phase 3, gated on Phase 2 ADRs + forecaster calibration green.
+
+**Trigger:** Plan Phase 3. Project-level skill reads each forecaster's latest `data/forecasts/{date}.jsonl`, drives KEA via MCP (`kea_preview` → `kea_strategy_run` + `kea_synthetic_register`). Active-session-only (9am–5pm ET) per the global No-Overnight rule; late-session weather settles handled manually.
+
+**Done when:**
+- `.claude/skills/forecaster-trade/SKILL.md` exists with dry-run mode.
+- Live mode behind explicit env flag; mutating MCP calls gated to demo until explicitly flipped.
+
+**Dependency:** SH-FORECASTER-BACKTEST + forecaster calibration green.
+
 ### 🟢 SH-MICRO-LIVE-SMOKE — first live trial through the SH-MICRO-EXECUTION-LOOP harness
 **Tags:** engine [validation] [operator-driven]
 **Severity:** medium — gates the harness's path from "all unit tests pass" to "trusted with real money"; until completed, the harness is implementation-validated only.
