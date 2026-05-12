@@ -46,6 +46,53 @@ Rationale:
 
 ## Revisit when
 
-- Queue-aware fill model lands (tracked in `SH-FILL-REALISM-QUEUE-AWARE`).
+- Queue-aware fill model lands (tracked in `SH-FILL-REALISM-QUEUE-AWARE`). ✅ shipped 2026-05-12 — see revisit below.
 - OR live fills accumulate enough to back-fit cost basis to actual entries and re-run with realistic basis distribution.
 - OR sweep includes recordings with operator-typical entry points (e.g. enter when probability crosses a threshold, not at recording start).
+
+## 2026-05-12 revisit
+
+**Trigger:** PR #189 shipped the queue-aware fill model. `engine-ts/docs/runbooks/2026-05-12-strategy-comparison-v3.3.md` re-runs the v3.1 grid with `fillModel: 'queue_aware'` so resting GTC orders pay a queue-position penalty.
+
+**Verdict: confirmed — keep `trailing_stop trailCents=10` as the recommended baseline.**
+
+### What changed under queue-aware fills
+
+| Strategy | v3.2 overall avg¢ | v3.3 overall avg¢ | Δ | Note |
+|---|---:|---:|---:|---|
+| s-twap | −838 | **−1176** | **−338** | The biggest mover. Slow-execution lead evaporated when queue penalty applied. |
+| s-passive | −849 | −1131 | −282 | Still leads overall, but by only ~38¢ over s-aggressive. |
+| s-aggressive | −1169 | −1169 | 0 | Taker-only; unchanged as expected (no resting orders). |
+| trailing_stop (best in family) | −1217 | **−1217** | 0 | Taker-based; unchanged. |
+| stop_loss | −1421 | −1421 | 0 | Taker-based; unchanged. |
+| bracket | −1818 | −1818 | 0 | Taker-based; unchanged. |
+| take_profit | −3698 | −3698 | 0 | Taker-based; unchanged. |
+
+**Consistency check passes:** every taker-only strategy reports identical numbers across v3.2 and v3.3 (queue-aware delegates IOC/FOK to the naive sweep). Only `s-twap` and `s-passive` — the strategies that rest GTC orders — moved.
+
+### Where each strategy now leads
+
+| Direction | Winner (best avg pnl¢) | Note |
+|---|---|---|
+| Rising | s-twap −79 (vs trailing_stop −347, gap = 268¢) | Slow execution still wins when price is moving up; the strategy gets out near peak. |
+| Falling | **trailing_stop / stop_loss tied at −1018 / −1027** | `s-twap` is the WORST at −1251 — patient exits in falling markets bleed. |
+| Sideways | s-passive −1342 (vs trailing_stop −1475, gap = 133¢) | Modest passive advantage on chop. |
+| Overall | s-passive −1131 (trailing_stop = −1217, gap = 86¢) | Within noise floor given v1 fill-model approximation. |
+
+### Why `trailing_stop` remains the default
+
+1. **The gap closed.** v3.2 said s-twap beat trailing_stop by 379¢; v3.3 says 41¢. The remaining margin is well inside the v1 queue-model's approximation noise (depth-drop counted as fill, single-order-per-level assumption).
+2. **`s-twap` is asymmetric.** Best on rising, worst on falling. trailing_stop doesn't have that directional flip — it's the safest default for an operator who doesn't pre-classify direction.
+3. **Operational simplicity** (preserved from the original ADR): one parameter, set-and-forget, no mid-flight commitment to a multi-interval schedule.
+4. **`trailCents=1` is still better than `trailCents=10` inside the family.** v3.3 confirms the v3.2 finding. Not enough margin yet to change the recommended trail width — defer to live-trial data.
+
+### Caveats still in force
+
+- **Cost basis = first-tick mid** remains the source of universally negative absolute pnl. Relative ranking is the meaningful read.
+- **v1 queue-model limitations**: cancels credited as fills (mild over-credit to passive); single-order-per-(side,priceCents) assumption (sweep never violates it but future workloads might).
+- **The 117-recording catalog is heavily sideways** (75/117); winners reflect that bias.
+
+### Follow-ups (no PR required)
+
+- Closes `SH-FILL-REALISM-QUEUE-AWARE` (✅ in BACKLOG.md, this revisit + the T1 PR #189 + the T2 sweep PR satisfy "Done when").
+- Filed for future consideration only: if real live trials suggest s-twap continues to win in rising markets after live fills, add an opt-in "rising-trend preset" rather than changing the default.
