@@ -267,22 +267,57 @@ describe('simulateFill — naive model', () => {
 // ---------------------------------------------------------------------------
 
 describe('simulateFill — queue_aware model', () => {
-  it('returns 0 fill and flags experimental caveat', () => {
-    const snap = book(50, 1000);
+  // For IOC/FOK, queue_aware uses the same cross-the-spread logic as naive —
+  // queue position is irrelevant for taker orders. For GTC, simulateFill must
+  // never be invoked under queue_aware (the replay client's queue tracker
+  // owns those fills); calling it throws as a contract assertion.
+
+  it('IOC under queue_aware matches naive cross-the-spread fill', () => {
+    const snap = book(50, 100);
+    const order: SimOrder = {
+      side: 'yes',
+      action: 'sell',
+      type: 'limit',
+      size: 50,
+      limitPriceCents: 50,
+      timeInForce: IOC,
+    };
+    const naiveResult = simulateFill(order, snap, 'naive');
+    const queueResult = simulateFill(order, snap, 'queue_aware');
+    expect(queueResult.filled).toBe(naiveResult.filled);
+    expect(queueResult.fillPriceCents).toBe(naiveResult.fillPriceCents);
+    expect(queueResult.remaining).toBe(naiveResult.remaining);
+    expect(queueResult.isTaker).toBe(naiveResult.isTaker);
+    expect(queueResult.feesCents).toBe(naiveResult.feesCents);
+  });
+
+  it('FOK under queue_aware matches naive', () => {
+    const snap = book(50, 100);
+    const order: SimOrder = {
+      side: 'yes',
+      action: 'sell',
+      type: 'limit',
+      size: 50,
+      limitPriceCents: 50,
+      timeInForce: FOK,
+    };
+    const naiveResult = simulateFill(order, snap, 'naive');
+    const queueResult = simulateFill(order, snap, 'queue_aware');
+    expect(queueResult.filled).toBe(naiveResult.filled);
+    expect(queueResult.fillPriceCents).toBe(naiveResult.fillPriceCents);
+  });
+
+  it('GTC under queue_aware throws contract assertion (replay client owns GTC fills)', () => {
+    const snap = book(50, 100);
     const order: SimOrder = {
       side: 'yes',
       type: 'limit',
       size: 10,
       limitPriceCents: 50,
-      timeInForce: IOC,
+      timeInForce: GTC,
     };
-    const result = simulateFill(order, snap, 'queue_aware');
-    expect(result.filled).toBe(0);
-    expect(result.remaining).toBe(10);
-    expect(result.isTaker).toBe(false);
-    expect(result.feesCents).toBe(0);
-    expect(result.assumptionsAdded.some((w) => w.includes('queue_aware'))).toBe(
-      true,
+    expect(() => simulateFill(order, snap, 'queue_aware')).toThrow(
+      /simulateFill must not be called for GTC orders under queue_aware/,
     );
   });
 });

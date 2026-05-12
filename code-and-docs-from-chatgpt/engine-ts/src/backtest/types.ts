@@ -114,7 +114,17 @@ export interface FillResult {
   assumptionsAdded: string[];
 }
 
-/** Fill simulation model. 'naive' is the default; 'queue_aware' is experimental. */
+/**
+ * Fill simulation model.
+ *   - 'naive' (default): cross-the-spread sweep against the recorded book.
+ *     Resting GTC orders fill whenever the recorded book has matching
+ *     liquidity at limit price, with no queue-position penalty. Optimistic
+ *     for passive execution.
+ *   - 'queue_aware': IOC/FOK use the naive cross-the-spread logic; GTC
+ *     resting orders are tracked through a queue-position model in
+ *     replayClient.ts (see RestingOrder.queueAhead). More realistic for
+ *     passive execution; documented v1 limitations noted there.
+ */
 export type FillModel = 'naive' | 'queue_aware';
 
 /** Internal cursor state for the ReplayKalshiClient. */

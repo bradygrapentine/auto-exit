@@ -4,7 +4,11 @@
  * Simulates order fills against a recorded orderbook snapshot.
  * Implements spec §7.3–§7.4 fill rules:
  *   - naive: cross-the-spread fills, market sweeps, partial-fill modeling.
- *   - queue_aware: experimental stub — returns 0 fill (no opposite-side data).
+ *   - queue_aware: same cross-the-spread logic for IOC/FOK (queue position
+ *     is irrelevant for taker orders). For GTC, this function throws — GTC
+ *     fills under queue_aware are owned by the replay client's queue tracker
+ *     (see replayClient.ts), and simulateFill must never be invoked on
+ *     them. The throw catches accidental future misuse.
  *   - IOC/FOK per spec §7.3.
  *
  * Fees use Kalshi schedule: rawFee = 0.07 * shares * p * (1-p), min $0.01.
@@ -56,7 +60,7 @@ export interface SimOrder {
  * Fee rounded up to cent; minimum $0.01 per fill.
  * Returns integer cents.
  */
-function computeFeeCents(shares: number, priceCents: number): number {
+export function computeFeeCents(shares: number, priceCents: number): number {
   const p = priceCents / 100;
   const rawFee = 0.07 * shares * p * (1 - p);
   // round up to cent, $0.01 minimum
@@ -180,26 +184,22 @@ export function simulateFill(
 ): FillResult {
   const assumptions: string[] = [];
 
-  // ── queue_aware stub ────────────────────────────────────────────────────
-  if (model === 'queue_aware') {
-    assumptions.push(
-      'queue_aware: experimental — no opposite-side fill data in this recording; all fills return 0',
+  // ── queue_aware GTC contract assertion ──────────────────────────────────
+  // GTC orders under queue_aware are owned by the replay client's queue
+  // tracker (see replayClient.ts advance() loop). simulateFill must never
+  // be invoked on them — if it is, that's a refactor bug.
+  if (model === 'queue_aware' && order.timeInForce === 'good_till_canceled') {
+    throw new Error(
+      'simulateFill must not be called for GTC orders under queue_aware — replayClient handles those',
     );
-    return {
-      filled: 0,
-      remaining: order.size,
-      fillPriceCents: 0,
-      isTaker: false,
-      feesCents: 0,
-      assumptionsAdded: assumptions,
-    };
   }
 
-  // ── naive model ─────────────────────────────────────────────────────────
-
-  // Always surface fidelity caveats (spec §8)
+  // Fidelity caveat (spec §8). naive and queue_aware share this for IOC/FOK
+  // since taker fills cross the spread either way.
   assumptions.push(
-    'naive: fill rates may over-estimate live; no market-impact modeled (spec §8.1, §8.2)',
+    model === 'queue_aware'
+      ? 'queue_aware (taker path): fill rates may over-estimate live; no market-impact modeled'
+      : 'naive: fill rates may over-estimate live; no market-impact modeled (spec §8.1, §8.2)',
   );
 
   const action = order.action ?? 'buy';
