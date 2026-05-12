@@ -16,3 +16,14 @@ memory = "256mb"
 
 [[restart]]
 policy = "always"
+
+# Optional sidecar: HTTPS download endpoint, gated by DL_TOKEN secret.
+# When DL_TOKEN is unset, the sidecar does not start; this http_service still
+# routes but receives connection-refused. Set DL_TOKEN to enable pulls:
+#   fly secrets set DL_TOKEN=<random> -a auto-exit-scanner
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1

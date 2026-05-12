@@ -23,8 +23,12 @@ RUN npm prune --production
 VOLUME /data
 ENV KEA_HOME=/data
 
+# Optional sidecar: HTTPS download server for /data (enabled when DL_TOKEN is set).
+COPY deploy/dl-server.mjs /app/dl-server.mjs
+
 # Bootstrap script: translate Fly secret env-var names to what loadActive() expects,
-# write the inline PEM secret to a file, then exec the scanner.
+# write the inline PEM secret to a file, optionally fork the download sidecar,
+# then exec the scanner.
 RUN printf '%s\n' \
   '#!/bin/sh' \
   'set -e' \
@@ -33,6 +37,10 @@ RUN printf '%s\n' \
   'chmod 600 /etc/kalshi/key.pem' \
   'export KALSHI_ACCESS_KEY="$KALSHI_API_KEY_ID"' \
   'export KALSHI_PRIVATE_KEY_PATH=/etc/kalshi/key.pem' \
+  'if [ -n "$DL_TOKEN" ]; then' \
+  '  echo "[bootstrap] DL_TOKEN set — starting download sidecar on :8080"' \
+  '  node /app/dl-server.mjs &' \
+  'fi' \
   'if [ ! -f /data/tickers.json ]; then' \
   '  echo "[bootstrap] /data/tickers.json missing — running auto-discover..."' \
   '  node dist/cli.js record discover --out /data/tickers.json' \
