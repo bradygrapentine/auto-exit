@@ -512,29 +512,31 @@ intrinsic.
 **Dependency:** none for the staleness-check + risk-note in (1)+(4).
 SH-EDGE for (5).
 
-### 🟢 SH-STRATEGY-BASELINE-REVISIT — revisit `trailing_stop trailCents=10` baseline given v3.1 data
-**Tags:** docs [strategy] [operator-driven]
-**Severity:** low-medium — affects the strategy CLAUDE.md recommends to operators by default, but doesn't gate anything in code.
+### ✅ SH-STRATEGY-BASELINE-REVISIT — resolved 2026-05-11 via ADR-0001
 
-**Trigger:** `engine-ts/docs/runbooks/2026-05-11-strategy-comparison-v3.1.md` runs the v3 Cartesian grid against 117 tradable non-dead recordings (up from 5 in v3 / v4). The current CLAUDE.md baseline (`trailing_stop` with `trailCents: 10`) is NOT in the top half on this data. Winners:
+Decision: keep `trailing_stop trailCents=10` as the recommended baseline. Documented in `engine-ts/docs/adr/0001-trailing-stop-baseline.md`. Revisit after the queue-aware fill model lands (see SH-FILL-REALISM-QUEUE-AWARE).
 
-- Overall: `s-twap (numIntervals=10, intervalMinutes=1)` at 3242¢ avg
-- Rising: `s-twap (numIntervals=5, intervalMinutes=1)` 4002¢; stop_loss/bracket also strong at 3739¢
-- Falling: `s-passive (chunkSize=100, walkStepCents=1)` 3299¢ ≈ s-twap 3298¢
-- Sideways: `s-twap (numIntervals=10, intervalMinutes=1)` 3042¢
+### 🟢 SH-FILL-REALISM-QUEUE-AWARE — implement queue-position-tracked fill model
+**Tags:** engine [backtest] [realism]
+**Severity:** medium — blocks confident strategy-baseline decisions; passive/twap rankings depend on this.
 
-`trailing_stop` at any `trailCents` value (1, 3, 5, 10) underperforms slow-execution variants by ~15% on average. The winning trail config is `trailCents=1` (very tight), not the recommended `=10`.
+**Trigger:** the v3.2 net-pnl sweep (`engine-ts/docs/runbooks/2026-05-11-strategy-comparison-v3.2.md`) showed `s-passive` and `s-twap` beat `trailing_stop` by ~400¢/100-contract. But the naive fill model fills resting GTC orders whenever the recorded book has matching liquidity at limit price, with no queue-position penalty — so passive execution gets credited for fills it wouldn't realistically receive in production. ADR-0001 explicitly defers the baseline change pending this fix.
+
+**Proposed:**
+
+1. **Track queue depth at post time.** When the replay client posts a GTC limit order at price P, snapshot the visible depth at level P → that's the queue ahead.
+2. **Tick-by-tick decrement.** Each subsequent snapshot, compute aggressive-cross volume that consumed level P (depth_before - depth_after, clipped at 0). Decrement the queue counter by that amount.
+3. **Fill condition.** When queue counter reaches 0, the resting order is at the front and fills at the next aggressive cross to that level.
+4. **API surface.** Add a new `FillModel` variant `'queue_aware_v1'`. Keep `'naive'` as the legacy default to preserve existing test fixtures; flip sweep scripts opt-in.
+5. **Tests.** Unit-test queue-counter decrement against a hand-built snapshot sequence; integration-test that an s-passive backtest produces lower fill rate under queue_aware_v1 than under naive.
+
+**Cost:** ~3–4 hours. Touches `src/backtest/fillSimulator.ts` (new model branch), `src/backtest/replayClient.ts` (queue-state alongside resting orders), `test/backtest/fillSimulator.test.ts` + new integration test.
 
 **Done when:**
-- Decision recorded in an ADR or runbook: keep the `trailing_stop trailCents=10` baseline (with rationale that overrides the v3.1 data — e.g. risk profile, operator simplicity, fill realism caveat) OR change CLAUDE.md to recommend a different default.
-- If changing default: PR updating `~/.claude/...` and project CLAUDE.md, plus `code-and-docs-from-chatgpt/README.md` "Recommended baseline" section.
+- New fill model `queue_aware_v1` available; existing tests still green with `'naive'`.
+- Sweep v3.3 (runbook in `engine-ts/docs/runbooks/`) shows the strategy ranking under `queue_aware_v1` and re-evaluates ADR-0001.
 
-**Caveats from the v3.1 data:**
-- Harness uses 0-cost initial position — absolute pnl is gross-sale proceeds, not net edge. Relative ranking is sound.
-- `fillModel: 'naive'` likely under-penalizes spread crossing — slip is single-digit on every strategy. Investigate before changing live defaults.
-- Sideways (75/117) dominates the sample — winners may overfit to sideways shapes.
-
-**Dependency:** none. Read-only data analysis + a decision.
+**Dependency:** PR #186 (net pnl) merged — already shipped 2026-05-12.
 
 ### 🟢 SH-MICRO-LIVE-SMOKE — first live trial through the SH-MICRO-EXECUTION-LOOP harness
 **Tags:** engine [validation] [operator-driven]
