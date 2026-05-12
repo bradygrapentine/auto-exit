@@ -35,8 +35,18 @@ npm run build
 The default Fly volume from the original scanner deploy is 5 GB. Forecaster tickers ~doubles the daily storage; with 7-day hot retention we want ≥10 GB headroom.
 
 ```sh
-# Get the volume id
-VOL_ID="$(fly volumes list -a auto-exit-scanner --json | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])")"
+# Get the attached volume id (filter to the one bound to a machine).
+# As of 2026-05-12 the only volume is `data` (vol_vly6n1l8g99pjlp4);
+# an orphan `scanner_data` volume was destroyed in cleanup.
+VOL_ID="$(fly volumes list -a auto-exit-scanner --json | python3 -c "
+import json, sys
+vols = json.load(sys.stdin)
+attached = [v for v in vols if v.get('attached_machine_id') or v.get('AttachedAllocation')]
+if not attached:
+    sys.exit('no attached volume found')
+print(attached[0]['id'])
+")"
+echo "extending volume: $VOL_ID"
 
 # Extend in-place (no machine downtime)
 fly volumes extend "$VOL_ID" --size 10 -a auto-exit-scanner
