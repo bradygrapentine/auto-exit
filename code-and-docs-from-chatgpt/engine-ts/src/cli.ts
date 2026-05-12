@@ -75,6 +75,11 @@ import type { Policy } from './workflows/policies.js';
 import { createMultiTickerRecorder } from './backtest/multiTickerRecorder.js';
 import { createWsRecorder } from './backtest/wsRecorder.js';
 import { discoverTickers, writeTickerFile, readTickerFile } from './backtest/discover.js';
+import {
+  discoverForecasters,
+  writeForecasterTickers,
+} from './backtest/discoverForecasters.js';
+import { mergeTickerFiles, writeMergedTickers } from './backtest/mergeTickers.js';
 import { syncRecordings } from './backtest/sync.js';
 import { runBacktest } from './backtest/harness.js';
 import { runSweep } from './backtest/sweep.js';
@@ -710,6 +715,14 @@ Read-only commands (no money moves):
 Scanner / recording commands:
   record discover [--out <path>] [--per-category <n>] [--hot-per-category <n>]
                                      Sample open markets by category, assign cadences, write ticker file
+  record discover-from-forecasters [--out <path>] [--min-seconds-until-close <n>]
+                                     Discover open markets across the 7 forecaster series
+                                     (KXWTI + KXHIGH{NY,CHI,PHIL,MIA,LAX,DEN}); writes tickers.json
+                                     plus a tickers.metadata.json sidecar with forecaster context.
+                                     Override sibling-repo paths via KEA_FORECASTER_{OIL,WEATHER}_ROOT.
+  record merge-tickers --inputs <path1,path2,...> [--out <path>]
+                                     Union multiple ticker files into one. Later inputs override earlier
+                                     on key collision (forecaster wins over broad discover).
   record start --tickers-file <path> [--recordings-dir <path>]
                                      Start multi-ticker NDJSON recorder (runs until SIGINT/SIGTERM)
   record sync --fly-app <app> [--remote <path>] [--to <local-path>]
@@ -2122,8 +2135,48 @@ async function cmdRecord(
       return;
     }
 
+    case 'discover-from-forecasters': {
+      const minSecs = flags['min-seconds-until-close'] !== undefined
+        ? Number(flags['min-seconds-until-close'])
+        : 0;
+      const client = new KalshiClient(makeMinimalConfig('KX_PLACEHOLDER'));
+      const result = await discoverForecasters({
+        client: client as unknown as Parameters<typeof discoverForecasters>[0]['client'],
+        minSecondsUntilClose: minSecs,
+      });
+      if (flags.out) {
+        const { tickersPath, metadataPath } = writeForecasterTickers(result, flags.out);
+        process.stdout.write(
+          `[scanner] wrote ${result.tickers.length} forecaster tickers → ${tickersPath} (metadata: ${metadataPath})\n`,
+        );
+      } else {
+        process.stdout.write(
+          JSON.stringify({ ...result, discoveredAt: new Date().toISOString() }, null, 2) + '\n',
+        );
+      }
+      return;
+    }
+
+    case 'merge-tickers': {
+      if (!flags.inputs) die('record merge-tickers requires --inputs <path1,path2,...>');
+      const inputs = flags.inputs.split(',').map((s) => s.trim()).filter(Boolean);
+      if (inputs.length === 0) die('record merge-tickers --inputs must list at least one path');
+      const merged = mergeTickerFiles(inputs);
+      if (flags.out) {
+        writeMergedTickers(merged, flags.out);
+        process.stdout.write(
+          `[scanner] merged ${inputs.length} ticker file(s) into ${merged.length} unique tickers → ${flags.out}\n`,
+        );
+      } else {
+        process.stdout.write(
+          JSON.stringify({ tickers: merged, discoveredAt: new Date().toISOString() }, null, 2) + '\n',
+        );
+      }
+      return;
+    }
+
     default:
-      die(`unknown record subcommand: ${subcommand ?? '(none)'}. Valid: discover, start, sync`);
+      die(`unknown record subcommand: ${subcommand ?? '(none)'}. Valid: discover, discover-from-forecasters, merge-tickers, start, sync`);
   }
 }
 
