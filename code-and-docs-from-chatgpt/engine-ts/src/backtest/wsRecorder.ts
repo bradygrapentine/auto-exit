@@ -10,6 +10,7 @@
  * REST scanner stays the default; WS is opt-in via `--transport ws`.
  */
 
+import * as fs from 'node:fs';
 import { createRecorder } from './recorder.js';
 import type { Recorder } from './types.js';
 import { WsBookTracker } from '../wsBookTracker.js';
@@ -19,6 +20,34 @@ import type {
   TickerEntry,
   TickerStats,
 } from './multiTickerRecorder.js';
+
+// ---------------------------------------------------------------------------
+// Pause-sentinel helper
+// ---------------------------------------------------------------------------
+//
+// If a file exists at the configured sentinel path, the recorder skips all
+// snapshot writes until it is removed. Used as a kill switch when the recorder
+// must be silenced fast without redeploying. Default path matches the Fly
+// machine layout (`/data/PAUSE`); override via env or option.
+
+const PAUSE_CACHE_TTL_MS = 2_000;
+
+interface PauseState {
+  lastCheckMs: number;
+  paused: boolean;
+}
+
+export function makePauseChecker(sentinelPath: string): () => boolean {
+  const state: PauseState = { lastCheckMs: 0, paused: false };
+  return (): boolean => {
+    const now = Date.now();
+    if (now - state.lastCheckMs >= PAUSE_CACHE_TTL_MS) {
+      state.paused = fs.existsSync(sentinelPath);
+      state.lastCheckMs = now;
+    }
+    return state.paused;
+  };
+}
 
 export interface WsRecorderOptions {
   tickers: TickerEntry[];
@@ -41,6 +70,12 @@ export interface WsRecorderOptions {
    * `orderbook_snapshot` per Kalshi's WS contract — no REST round-trip needed.
    */
   staleAfterMs?: number;
+  /**
+   * Path to a pause sentinel file. When present, the recorder skips all
+   * snapshot writes (kill switch). Default: `/data/PAUSE` (Fly layout).
+   * Override via env `KEA_RECORDER_PAUSE_SENTINEL` or this option.
+   */
+  pauseSentinelPath?: string;
 }
 
 interface TickerState {
@@ -59,6 +94,9 @@ export function createWsRecorder(opts: WsRecorderOptions): MultiTickerRecorder {
   const autoReconnect = opts.autoReconnect ?? true;
   const staleAfterMs = opts.staleAfterMs ?? 60_000;
   const STALE_CHECK_MS = 5_000;
+  const pauseSentinelPath =
+    opts.pauseSentinelPath ?? process.env.KEA_RECORDER_PAUSE_SENTINEL ?? '/data/PAUSE';
+  const isPaused = makePauseChecker(pauseSentinelPath);
 
   const tracker = new WsBookTracker();
   const states: TickerState[] = tickers.map((entry) => ({
@@ -110,6 +148,10 @@ export function createWsRecorder(opts: WsRecorderOptions): MultiTickerRecorder {
   }
 
   function emit(state: TickerState): void {
+    if (isPaused()) {
+      state.lastError = `paused (sentinel: ${pauseSentinelPath})`;
+      return;
+    }
     const book = tracker.getSnapshot(state.entry.ticker, depthLevels);
     if (!book) return;
     try {
