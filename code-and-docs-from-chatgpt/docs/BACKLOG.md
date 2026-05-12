@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-12 early-morning (session shipped #183 scanner HTTPS sidecar, #184 recording catalog regen on 345 recordings, #185 sweep v3.1, #186 backtest net-pnl, #187 sweep v3.2 + ADR-0001, #188 backlog sync, #189 queue-aware fill model (T1); SH-FILL-REALISM-QUEUE-AWARE resolved → ✅ via T2 here; SH-STRATEGY-BASELINE-REVISIT already ✅ via ADR-0001).
+Last `/backlog-sync`: 2026-05-12 afternoon (session shipped #189 queue-aware fill model T1, #190 sweep v3.3 + ADR-0001 revisit, #191 forecaster discover + ticker-merge, #193 forecaster atomic-sync + coverage + kill-switch, #194 forecaster deploy runbook + cron script, #195 runbook step-1 fix; SH-FORECASTER-{DISCOVER,TICKER-MERGE,SYNC-ATOMIC,COVERAGE,KILL-SWITCH} resolved → ✅; SH-FORECASTER-DEPLOY artifacts shipped, operator steps remain 🟢).
 
 | Status | Count |
 |--------|-------|
@@ -8,10 +8,11 @@ Last `/backlog-sync`: 2026-05-12 early-morning (session shipped #183 scanner HTT
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🟡 / 🟢 Tooling ecosystem (SH) — actionable | 2 (🟡 SH-WATCH v2, 🟢 SH-MICRO-LIVE-SMOKE) |
+| 🟡 / 🟢 Tooling ecosystem (SH) — actionable | 3 (🟡 SH-WATCH v2, 🟢 SH-MICRO-LIVE-SMOKE, 🟢 SH-FORECASTER-DEPLOY) |
+| 🧊 Phase 2/3 deferred (SH-FORECASTER) | 2 (SH-FORECASTER-BACKTEST, SH-FORECASTER-LIVE-AGENT) |
 | 🧊 Surface parity (SP3.2 / SP3.3) | 2 |
 | 🧊 Other deferred (off-sequence) | 4 |
-| ✅ Shipped (this log) | 76 |
+| ✅ Shipped (this log) | 81 |
 
 **SH-WATCH MVP shipped 2026-05-06.** Synthetic order types (stop_loss,
 stop_limit, trailing_stop, take_profit, oco, bracket, time_stop,
@@ -520,79 +521,38 @@ Decision: keep `trailing_stop trailCents=10` as the recommended baseline. Docume
 
 Engine change shipped in PR #189 (queue-position-tracked fill model in `replayClient.ts`; `queue_aware` is no longer a stub; 3 integration tests pin drain-then-fill, hold, and the M1 swell-then-drain clamp). Sweep v3.3 runbook + ADR revisit shipped here. Verdict: keep `trailing_stop trailCents=10` baseline confirmed — see `engine-ts/docs/adr/0001-trailing-stop-baseline.md` §"2026-05-12 revisit". `s-twap`'s previous lead over `trailing_stop` compressed from 379¢ to 41¢ under realistic fills; `s-twap` is now worst on falling markets.
 
-### 🟢 SH-FORECASTER-DISCOVER — ticker discovery from forecaster configs
-**Tags:** scanner [ops]
-**Severity:** medium — gates the Phase 1 scrape window; no data flow until this lands.
+### ✅ SH-FORECASTER-DISCOVER — shipped 2026-05-12 (PR #191)
 
-**Trigger:** Plan `engine-ts/docs/superpowers/plans/2026-05-12-forecaster-integration.md` Phase 1.2. The existing `kea record discover` is category-volume-driven and does NOT read the sibling forecaster repos. We need a new subcommand that reads `~/projects/oil-forecaster/configs/strikes.yaml` and `~/projects/weather-forecaster/configs/thresholds.yaml`, expands strike/bracket grids (KXWTI ±5 strikes; KXHIGH* per-city brackets), resolves them against live Kalshi `/events`, and writes a partial `tickers.forecaster.json` with conviction-band metadata joined from the forecaster's latest `data/forecasts/{date}.jsonl`.
+`engine-ts/src/backtest/discoverForecasters.ts` + `kea record discover-from-forecasters` CLI. Targets the 7 forecaster series (KXWTI + KXHIGH{NY,CHI,PHIL,MIA,LAX,DEN}); per-series cadence (KXWTI 500ms, KXHIGH* 1500ms); writes `tickers.forecaster.json` + sidecar metadata file joining latest forecaster context (probability + sigma) from `data/forecasts/{date}.jsonl`. Sibling repos read-only; no YAML parsing (configs document themselves that the live Kalshi grid is the source of truth).
 
-**Done when:**
-- `engine-ts/src/backtest/discoverForecasters.ts` exists with unit tests for strike-grid expansion + bracket expansion + conviction join.
-- `kea record discover-from-forecasters --out tickers.forecaster.json` produces a file consumable by `multiTickerRecorder`.
-- Read-only access to sibling repos — zero edits to anything under `~/projects/oil-forecaster/` or `~/projects/weather-forecaster/`.
+### ✅ SH-FORECASTER-TICKER-MERGE — shipped 2026-05-12 (PR #191)
 
-**Dependency:** none.
-
-### 🟢 SH-FORECASTER-TICKER-MERGE — merge discover + discover-from-forecasters into tickers.json
-**Tags:** scanner [ops]
-**Severity:** medium — required for forecaster tickers to coexist with the broader scanner ticker set.
-
-**Trigger:** Plan Phase 1.2. The Fly cron runs `discover` (broad) and `discover-from-forecasters` (targeted) separately; we need a merge step that unions both into the final `tickers.json`. Forecaster entries override discover entries on key collision (so conviction metadata wins).
-
-**Done when:**
-- `kea record merge-tickers --inputs tickers.discover.json,tickers.forecaster.json --out tickers.json` produces a unioned file.
-- Unit tests cover (a) no overlap (b) overlap with forecaster wins (c) empty input survives.
-
-**Dependency:** SH-FORECASTER-DISCOVER.
+`engine-ts/src/backtest/mergeTickers.ts` + `kea record merge-tickers` CLI. Unions multiple ticker files; later inputs override earlier on collision (forecaster cadence wins over broad-discover for the same ticker).
 
 ### 🟢 SH-FORECASTER-DEPLOY — wire forecaster tickers into the running scanner
 **Tags:** scanner [ops]
 **Severity:** medium — gates data flow.
-
-**Trigger:** Plan Phase 1.3. The `auto-exit-scanner` Fly app is already running on WebSocket transport (`SH-SCANNER-WS` shipped 2026-05-09). We need to add a daily cron that runs the discover pair + merge and writes the result to `/data/tickers.json`, plus confirm the recorder reloads on mtime change (or trigger a restart).
+**Progress:** docs + cron script shipped in PRs #194 / #195 (`deploy/forecaster-discover-cron.sh`, `deploy/forecaster-deploy-runbook.md`, orphan `scanner_data` volume destroyed 2026-05-12). **Operator steps remain:** `fly volumes extend` 5→10 GB, first-run `kea record sync-atomic` verification, install the launchd plist for the daily discover cron, flip nightly pull to `--delete-remote-older-than-days 7`.
 
 **Done when:**
-- Daily cron writes `/data/tickers.json` and triggers reload.
+- Daily launchd cron writes `/data/tickers.json` and triggers reload.
 - `fly logs` shows forecaster tickers being tracked within one cron tick.
-- `fly volumes list` shows volume ≥10 GB (extend if currently 5 GB).
+- `fly volumes list` shows volume ≥10 GB.
+- Nightly atomic sync with `--delete-remote-older-than-days 7` runs cleanly.
 
-**Dependency:** SH-FORECASTER-DISCOVER, SH-FORECASTER-TICKER-MERGE.
+**Dependency:** SH-FORECASTER-DISCOVER ✅, SH-FORECASTER-TICKER-MERGE ✅.
 
-### 🟢 SH-FORECASTER-SYNC-ATOMIC — manifest-based atomic sync with optional remote cleanup
-**Tags:** scanner [ops]
-**Severity:** medium — required before `--delete-remote-older-than-days` can be turned on safely.
+### ✅ SH-FORECASTER-SYNC-ATOMIC — shipped 2026-05-12 (PR #193)
 
-**Trigger:** Plan Phase 1.4. Current `kea record sync` is tar-pipe over `fly ssh console` with no per-file ack; coupling it with remote delete is a data-loss bug. Need: remote manifest (path/size/mtime), stream to staging dir, byte-size verify, directory-level atomic swap, then opt-in remote cleanup.
+`engine-ts/src/backtest/syncAtomic.ts` + `kea record sync-atomic` CLI. Protocol: remote `find -printf` manifest → stream tar to staging dir → verify file count + per-file byte size → directory-level atomic swap → opt-in `--delete-remote-older-than-days`. Closes the partial-extract-with-success-exit data-loss bug. Default `kea record sync` (non-atomic tar-pipe) preserved until operators verify the atomic protocol on a real day's data.
 
-**Done when:**
-- Tests cover (a) mid-stream tar abort (b) full local disk during staging (c) byte-size mismatch (d) crash between mv calls.
-- `kea record sync --delete-remote-older-than-days 7` only deletes after a successful local swap with verified manifest.
+### ✅ SH-FORECASTER-COVERAGE — shipped 2026-05-12 (PR #193)
 
-**Dependency:** SH-FORECASTER-DEPLOY.
+`engine-ts/src/backtest/coverage.ts` + `kea record coverage` CLI. Per-ticker max-gap-seconds gate; streams NDJSON `ts` via fast regex; intra-file and cross-file gaps. Primary 30-day Phase 1 acceptance gate.
 
-### 🟢 SH-FORECASTER-COVERAGE — `kea record coverage` CLI
-**Tags:** scanner [ops]
-**Severity:** medium — primary 30-day acceptance gate for Phase 1.
+### ✅ SH-FORECASTER-KILL-SWITCH — shipped 2026-05-12 (PR #193)
 
-**Trigger:** Plan Phase 1 acceptance criteria require a continuous-coverage verdict command. File count is insufficient (a 200-byte file passes a count check). Need: enumerate recordings since N days, compute per-ticker max-gap-seconds, exit 0 iff all under threshold.
-
-**Done when:**
-- `kea record coverage --since 30d --max-gap-seconds 600` exits 0 when coverage is acceptable, prints largest gap per ticker on failure.
-
-**Dependency:** SH-FORECASTER-DEPLOY (needs real data flowing).
-
-### 🟢 SH-FORECASTER-KILL-SWITCH — `/data/PAUSE` sentinel + pause/resume CLI
-**Tags:** scanner [ops]
-**Severity:** low — operational safety net; not blocking for data flow.
-
-**Trigger:** Plan Phase 1.6. If the recorder degrades the trading-account rate budget or starts emitting 429s, we need a fast kill switch.
-
-**Done when:**
-- `kea record pause` (writes `/data/PAUSE` on the Fly volume) causes the recorder loop to skip its poll within 30s.
-- `kea record resume` removes the sentinel.
-- Test covers sentinel detection in `multiTickerRecorder` or `wsRecorder`.
-
-**Dependency:** SH-FORECASTER-DEPLOY.
+Pause sentinel in `wsRecorder.ts` (cached 2s TTL); `/data/PAUSE` present → recorder skips all snapshot writes. `kea record pause` / `record resume` toggle via `fly ssh console`. `KEA_RECORDER_PAUSE_SENTINEL` env override.
 
 ### 🧊 SH-FORECASTER-BACKTEST — sweep + per-category ADRs (Phase 2)
 **Tags:** scanner [backtest]
