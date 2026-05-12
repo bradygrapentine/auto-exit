@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-11 evening (session shipped #183 scanner HTTPS sidecar, #184 recording catalog regen on 345 recordings, #185 sweep v3.1, #186 backtest net-pnl, #187 sweep v3.2 + ADR-0001; SH-STRATEGY-BASELINE-REVISIT resolved → ✅; SH-FILL-REALISM-QUEUE-AWARE added as 🟢 Ready).
+Last `/backlog-sync`: 2026-05-12 early-morning (session shipped #183 scanner HTTPS sidecar, #184 recording catalog regen on 345 recordings, #185 sweep v3.1, #186 backtest net-pnl, #187 sweep v3.2 + ADR-0001, #188 backlog sync, #189 queue-aware fill model (T1); SH-FILL-REALISM-QUEUE-AWARE resolved → ✅ via T2 here; SH-STRATEGY-BASELINE-REVISIT already ✅ via ADR-0001).
 
 | Status | Count |
 |--------|-------|
@@ -8,7 +8,7 @@ Last `/backlog-sync`: 2026-05-11 evening (session shipped #183 scanner HTTPS sid
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🟡 / 🟢 Tooling ecosystem (SH) — actionable | 3 (🟡 SH-WATCH v2, 🟢 SH-MICRO-LIVE-SMOKE, 🟢 SH-FILL-REALISM-QUEUE-AWARE) |
+| 🟡 / 🟢 Tooling ecosystem (SH) — actionable | 2 (🟡 SH-WATCH v2, 🟢 SH-MICRO-LIVE-SMOKE) |
 | 🧊 Surface parity (SP3.2 / SP3.3) | 2 |
 | 🧊 Other deferred (off-sequence) | 4 |
 | ✅ Shipped (this log) | 76 |
@@ -516,27 +516,9 @@ SH-EDGE for (5).
 
 Decision: keep `trailing_stop trailCents=10` as the recommended baseline. Documented in `engine-ts/docs/adr/0001-trailing-stop-baseline.md`. Revisit after the queue-aware fill model lands (see SH-FILL-REALISM-QUEUE-AWARE).
 
-### 🟢 SH-FILL-REALISM-QUEUE-AWARE — implement queue-position-tracked fill model
-**Tags:** engine [backtest] [realism]
-**Severity:** medium — blocks confident strategy-baseline decisions; passive/twap rankings depend on this.
+### ✅ SH-FILL-REALISM-QUEUE-AWARE — resolved 2026-05-12
 
-**Trigger:** the v3.2 net-pnl sweep (`engine-ts/docs/runbooks/2026-05-11-strategy-comparison-v3.2.md`) showed `s-passive` and `s-twap` beat `trailing_stop` by ~400¢/100-contract. But the naive fill model fills resting GTC orders whenever the recorded book has matching liquidity at limit price, with no queue-position penalty — so passive execution gets credited for fills it wouldn't realistically receive in production. ADR-0001 explicitly defers the baseline change pending this fix.
-
-**Proposed:**
-
-1. **Track queue depth at post time.** When the replay client posts a GTC limit order at price P, snapshot the visible depth at level P → that's the queue ahead.
-2. **Tick-by-tick decrement.** Each subsequent snapshot, compute aggressive-cross volume that consumed level P (depth_before - depth_after, clipped at 0). Decrement the queue counter by that amount.
-3. **Fill condition.** When queue counter reaches 0, the resting order is at the front and fills at the next aggressive cross to that level.
-4. **API surface.** Add a new `FillModel` variant `'queue_aware_v1'`. Keep `'naive'` as the legacy default to preserve existing test fixtures; flip sweep scripts opt-in.
-5. **Tests.** Unit-test queue-counter decrement against a hand-built snapshot sequence; integration-test that an s-passive backtest produces lower fill rate under queue_aware_v1 than under naive.
-
-**Cost:** ~3–4 hours. Touches `src/backtest/fillSimulator.ts` (new model branch), `src/backtest/replayClient.ts` (queue-state alongside resting orders), `test/backtest/fillSimulator.test.ts` + new integration test.
-
-**Done when:**
-- New fill model `queue_aware_v1` available; existing tests still green with `'naive'`.
-- Sweep v3.3 (runbook in `engine-ts/docs/runbooks/`) shows the strategy ranking under `queue_aware_v1` and re-evaluates ADR-0001.
-
-**Dependency:** PR #186 (net pnl) merged — already shipped 2026-05-12.
+Engine change shipped in PR #189 (queue-position-tracked fill model in `replayClient.ts`; `queue_aware` is no longer a stub; 3 integration tests pin drain-then-fill, hold, and the M1 swell-then-drain clamp). Sweep v3.3 runbook + ADR revisit shipped here. Verdict: keep `trailing_stop trailCents=10` baseline confirmed — see `engine-ts/docs/adr/0001-trailing-stop-baseline.md` §"2026-05-12 revisit". `s-twap`'s previous lead over `trailing_stop` compressed from 379¢ to 41¢ under realistic fills; `s-twap` is now worst on falling markets.
 
 ### 🟢 SH-MICRO-LIVE-SMOKE — first live trial through the SH-MICRO-EXECUTION-LOOP harness
 **Tags:** engine [validation] [operator-driven]
