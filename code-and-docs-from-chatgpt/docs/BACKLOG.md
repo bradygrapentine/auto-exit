@@ -1,6 +1,6 @@
 # Engine backlog
 
-Last `/backlog-sync`: 2026-05-09 evening (SH-PASSIVE-SELL-LIMIT shipped (#178), SH-PASSIVE-SPREAD-LOGIC shipped (#179, live path), SH-MCP-GAP-CLOSURES shipped (#177), SH-WATCH v2 spec slice landed (#180), Min-chunk-value-guard ✅ promotion (was already shipped via #168 / SH-MIN-CHUNK but the deferred row was stale). §7 bullet recount: 76.
+Last `/backlog-sync`: 2026-05-11 evening (session shipped #183 scanner HTTPS sidecar, #184 recording catalog regen on 345 recordings, #185 sweep v3.1, #186 backtest net-pnl, #187 sweep v3.2 + ADR-0001; SH-STRATEGY-BASELINE-REVISIT resolved → ✅; SH-FILL-REALISM-QUEUE-AWARE added as 🟢 Ready).
 
 | Status | Count |
 |--------|-------|
@@ -8,7 +8,7 @@ Last `/backlog-sync`: 2026-05-09 evening (SH-PASSIVE-SELL-LIMIT shipped (#178), 
 | 🧊 Strategy library (S) | 0 |
 | 🧊 Cross-cutting (W3) | 0 |
 | 🧊 Decision + optimization (W4) | 2 |
-| 🟡 / 🟢 Tooling ecosystem (SH) — actionable | 2 (🟡 SH-WATCH v2, 🟢 SH-MICRO-LIVE-SMOKE) |
+| 🟡 / 🟢 Tooling ecosystem (SH) — actionable | 3 (🟡 SH-WATCH v2, 🟢 SH-MICRO-LIVE-SMOKE, 🟢 SH-FILL-REALISM-QUEUE-AWARE) |
 | 🧊 Surface parity (SP3.2 / SP3.3) | 2 |
 | 🧊 Other deferred (off-sequence) | 4 |
 | ✅ Shipped (this log) | 76 |
