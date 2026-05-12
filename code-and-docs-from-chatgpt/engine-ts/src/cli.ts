@@ -81,6 +81,12 @@ import {
 } from './backtest/discoverForecasters.js';
 import { mergeTickerFiles, writeMergedTickers } from './backtest/mergeTickers.js';
 import { syncRecordings } from './backtest/sync.js';
+import { syncRecordingsAtomic, runFlySsh } from './backtest/syncAtomic.js';
+import {
+  computeCoverage,
+  formatCoverageReport,
+  parseSinceToMs,
+} from './backtest/coverage.js';
 import { runBacktest } from './backtest/harness.js';
 import { runSweep } from './backtest/sweep.js';
 import { formatReport, writeReport } from './backtest/report.js';
@@ -727,6 +733,21 @@ Scanner / recording commands:
                                      Start multi-ticker NDJSON recorder (runs until SIGINT/SIGTERM)
   record sync --fly-app <app> [--remote <path>] [--to <local-path>]
                                      Pull recordings from Fly.io volume via tar-pipe over fly ssh console
+  record sync-atomic --fly-app <app> [--remote <path>] [--to <local-path>]
+       [--delete-remote-older-than-days <N>]
+                                     Manifest-verified atomic pull. Verifies file count + per-file
+                                     byte size against the remote manifest; atomic dir swap.
+                                     --delete-remote-older-than-days is opt-in remote cleanup;
+                                     only runs after a verified swap.
+  record coverage [--recordings-dir <path>] [--since <30d|12h|...>] [--max-gap-seconds <n>]
+                                     Per-ticker max-gap-seconds gate. Exit 0 iff every ticker's
+                                     largest gap between consecutive snapshots is under threshold.
+                                     Defaults: dir=~/.kea/recordings, since=30d, max-gap=600.
+  record pause [--fly-app <app>] [--sentinel <path>]
+                                     Touch the pause sentinel on the Fly volume. Recorder skips
+                                     all snapshot writes within ~2s while the file exists.
+  record resume [--fly-app <app>] [--sentinel <path>]
+                                     Remove the pause sentinel. Recorder resumes within ~2s.
 
 Backtest commands:
   backtest run --recording <path> --strategy <name> --ticker <T>
@@ -2175,8 +2196,55 @@ async function cmdRecord(
       return;
     }
 
+    case 'sync-atomic': {
+      const flyApp = flags['fly-app'] || process.env.KEA_SYNC_FLY_APP || '';
+      if (!flyApp) die('record sync-atomic requires --fly-app <app> (or KEA_SYNC_FLY_APP)');
+      const remotePath = flags.remote || process.env.KEA_SYNC_REMOTE_PATH || '/data/recordings';
+      const localDir = flags.to || path.join(os.homedir(), '.kea', 'recordings');
+      const deleteDays = flags['delete-remote-older-than-days'] !== undefined
+        ? Number(flags['delete-remote-older-than-days'])
+        : undefined;
+      process.stderr.write(`[scanner] atomic sync fly:${flyApp}:${remotePath} → ${localDir}\n`);
+      const result = await syncRecordingsAtomic({
+        flyApp,
+        remotePath,
+        localDir,
+        ...(deleteDays !== undefined ? { deleteRemoteOlderThanDays: deleteDays } : {}),
+      });
+      process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      return;
+    }
+
+    case 'coverage': {
+      const recordingsDir = flags['recordings-dir'] ?? path.join(os.homedir(), '.kea', 'recordings');
+      const sinceMs = parseSinceToMs(flags.since ?? '30d');
+      const maxGapSeconds = flags['max-gap-seconds'] !== undefined ? Number(flags['max-gap-seconds']) : 600;
+      const report = await computeCoverage({ recordingsDir, sinceMs, maxGapSeconds });
+      process.stdout.write(formatCoverageReport(report) + '\n');
+      if (!report.ok) process.exit(1);
+      return;
+    }
+
+    case 'pause': {
+      const flyApp = flags['fly-app'] || process.env.KEA_SYNC_FLY_APP || 'auto-exit-scanner';
+      const sentinel = flags.sentinel || '/data/PAUSE';
+      process.stderr.write(`[scanner] pausing recorder via ${flyApp}:${sentinel}\n`);
+      await runFlySsh(flyApp, `touch ${sentinel}`);
+      process.stdout.write(`paused: ${flyApp}:${sentinel}\n`);
+      return;
+    }
+
+    case 'resume': {
+      const flyApp = flags['fly-app'] || process.env.KEA_SYNC_FLY_APP || 'auto-exit-scanner';
+      const sentinel = flags.sentinel || '/data/PAUSE';
+      process.stderr.write(`[scanner] resuming recorder via ${flyApp}:${sentinel}\n`);
+      await runFlySsh(flyApp, `rm -f ${sentinel}`);
+      process.stdout.write(`resumed: ${flyApp}:${sentinel}\n`);
+      return;
+    }
+
     default:
-      die(`unknown record subcommand: ${subcommand ?? '(none)'}. Valid: discover, discover-from-forecasters, merge-tickers, start, sync`);
+      die(`unknown record subcommand: ${subcommand ?? '(none)'}. Valid: discover, discover-from-forecasters, merge-tickers, start, sync, sync-atomic, coverage, pause, resume`);
   }
 }
 
