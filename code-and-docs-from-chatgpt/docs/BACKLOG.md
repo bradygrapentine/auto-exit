@@ -512,6 +512,30 @@ intrinsic.
 **Dependency:** none for the staleness-check + risk-note in (1)+(4).
 SH-EDGE for (5).
 
+### 🟢 SH-STRATEGY-BASELINE-REVISIT — revisit `trailing_stop trailCents=10` baseline given v3.1 data
+**Tags:** docs [strategy] [operator-driven]
+**Severity:** low-medium — affects the strategy CLAUDE.md recommends to operators by default, but doesn't gate anything in code.
+
+**Trigger:** `engine-ts/docs/runbooks/2026-05-11-strategy-comparison-v3.1.md` runs the v3 Cartesian grid against 117 tradable non-dead recordings (up from 5 in v3 / v4). The current CLAUDE.md baseline (`trailing_stop` with `trailCents: 10`) is NOT in the top half on this data. Winners:
+
+- Overall: `s-twap (numIntervals=10, intervalMinutes=1)` at 3242¢ avg
+- Rising: `s-twap (numIntervals=5, intervalMinutes=1)` 4002¢; stop_loss/bracket also strong at 3739¢
+- Falling: `s-passive (chunkSize=100, walkStepCents=1)` 3299¢ ≈ s-twap 3298¢
+- Sideways: `s-twap (numIntervals=10, intervalMinutes=1)` 3042¢
+
+`trailing_stop` at any `trailCents` value (1, 3, 5, 10) underperforms slow-execution variants by ~15% on average. The winning trail config is `trailCents=1` (very tight), not the recommended `=10`.
+
+**Done when:**
+- Decision recorded in an ADR or runbook: keep the `trailing_stop trailCents=10` baseline (with rationale that overrides the v3.1 data — e.g. risk profile, operator simplicity, fill realism caveat) OR change CLAUDE.md to recommend a different default.
+- If changing default: PR updating `~/.claude/...` and project CLAUDE.md, plus `code-and-docs-from-chatgpt/README.md` "Recommended baseline" section.
+
+**Caveats from the v3.1 data:**
+- Harness uses 0-cost initial position — absolute pnl is gross-sale proceeds, not net edge. Relative ranking is sound.
+- `fillModel: 'naive'` likely under-penalizes spread crossing — slip is single-digit on every strategy. Investigate before changing live defaults.
+- Sideways (75/117) dominates the sample — winners may overfit to sideways shapes.
+
+**Dependency:** none. Read-only data analysis + a decision.
+
 ### 🟢 SH-MICRO-LIVE-SMOKE — first live trial through the SH-MICRO-EXECUTION-LOOP harness
 **Tags:** engine [validation] [operator-driven]
 **Severity:** medium — gates the harness's path from "all unit tests pass" to "trusted with real money"; until completed, the harness is implementation-validated only.
