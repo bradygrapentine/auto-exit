@@ -196,6 +196,50 @@ describe('runBacktest', () => {
     expect(report.trace.length).toBeGreaterThan(0);
   });
 
+  describe('cost basis subtraction (SH-BACKTEST-NET-PNL)', () => {
+    // Snapshots: yes bid at 50+i, no bid at 50-i. First-tick mid = 50.
+    // stop_loss at 52¢ triggers on tick 0 (bid=50 ≤ 52) and sells 5 contracts.
+
+    it('costBasisCents=0 preserves old gross-proceeds behavior (pnl > 0)', async () => {
+      const report = await runBacktest({
+        recordingPath,
+        strategyId: 'stop_loss',
+        params: { ticker: TICKER, side: 'yes', stopPriceCents: 52, size: 5 },
+        initialPosition: { ticker: TICKER, side: 'yes', quantity: 5, costBasisCents: 0 },
+      });
+      expect(report.fill_count).toBeGreaterThan(0);
+      expect(report.pnl_cents).toBeGreaterThan(0);
+    });
+
+    it('costBasisCents=100 (above all fill prices) yields negative pnl', async () => {
+      const report = await runBacktest({
+        recordingPath,
+        strategyId: 'stop_loss',
+        params: { ticker: TICKER, side: 'yes', stopPriceCents: 52, size: 5 },
+        initialPosition: { ticker: TICKER, side: 'yes', quantity: 5, costBasisCents: 100 },
+      });
+      // Sold 5 contracts at ~50¢, paid 100¢ each → net is heavily negative.
+      expect(report.pnl_cents).toBeLessThan(-200);
+    });
+
+    it('costBasisCents omitted defaults to first-tick mid', async () => {
+      // First-tick mid = (50 + (100-50))/2 = 50, so net pnl ≈ 0 (modulo fees).
+      const reportDefault = await runBacktest({
+        recordingPath,
+        strategyId: 'stop_loss',
+        params: { ticker: TICKER, side: 'yes', stopPriceCents: 52, size: 5 },
+        initialPosition: { ticker: TICKER, side: 'yes', quantity: 5 },
+      });
+      const reportExplicit = await runBacktest({
+        recordingPath,
+        strategyId: 'stop_loss',
+        params: { ticker: TICKER, side: 'yes', stopPriceCents: 52, size: 5 },
+        initialPosition: { ticker: TICKER, side: 'yes', quantity: 5, costBasisCents: 50 },
+      });
+      expect(reportDefault.pnl_cents).toBe(reportExplicit.pnl_cents);
+    });
+  });
+
   it('empty recording (no snapshots) returns zero trace', async () => {
     const emptyPath = path.join(dir, 'empty.ndjson');
     fs.writeFileSync(emptyPath, '', 'utf-8');

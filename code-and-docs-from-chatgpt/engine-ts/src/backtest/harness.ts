@@ -199,18 +199,21 @@ function computeMid(
 // ---------------------------------------------------------------------------
 
 /**
- * Compute cumulative P&L from fill log.
+ * Compute cumulative P&L from fill log, net of an optional pre-paid cost basis
+ * for the initial position.
+ *
  * For sell fills: revenue = filled * fillPriceCents - feesCents.
  * For buy fills: cost = filled * fillPriceCents + feesCents.
- * P&L = sum of sell revenues - sum of buy costs (all in cents).
+ *
+ * `entryCostCents` is `initialQty * costBasisCents` — the amount paid to
+ * acquire the position before the backtest started. Subtracting it once at
+ * the top makes the harness report net edge instead of gross sale proceeds.
+ * Callers that want the old gross-only behavior pass entryCostCents=0.
  */
-function computePnl(fills: SimulatedFillRecord[]): number {
-  let pnl = 0;
+function computePnl(fills: SimulatedFillRecord[], entryCostCents = 0): number {
+  let pnl = -entryCostCents;
   for (const f of fills) {
     const gross = f.filled * f.fillPriceCents;
-    // We only track exit (sell) fills as positive P&L contributions;
-    // the initial cost basis is not tracked here (no-cost-basis assumption).
-    // This is a simplification: harness reports gross proceeds.
     pnl += gross - f.feesCents;
   }
   return pnl;
@@ -257,6 +260,10 @@ export async function runBacktest(config: BacktestConfig): Promise<Counterfactua
 
   let remainingQty = initialQty;
 
+  // Cost basis: explicit > first-tick mid (computed on first iteration) > 0.
+  // Captured here so it's constant for the entire run regardless of mark drift.
+  let costBasisCents: number | null = config.initialPosition?.costBasisCents ?? null;
+
   while (client.advance()) {
     const ts = client.currentTimestamp();
     if (!firstTs) firstTs = ts;
@@ -272,6 +279,11 @@ export async function runBacktest(config: BacktestConfig): Promise<Counterfactua
 
     markCurve.push({ ts, midCents });
 
+    // On the first tick, lock the cost basis to first-tick mid if not set.
+    if (costBasisCents === null) {
+      costBasisCents = midCents;
+    }
+
     // Invoke strategy
     await adapter.tick(client, remainingQty);
 
@@ -285,7 +297,8 @@ export async function runBacktest(config: BacktestConfig): Promise<Counterfactua
       fullExitTs = ts;
     }
 
-    const pnl = computePnl(fills);
+    const entryCost = initialQty * (costBasisCents ?? 0);
+    const pnl = computePnl(fills, entryCost);
 
     trace.push({
       ts,
@@ -300,7 +313,8 @@ export async function runBacktest(config: BacktestConfig): Promise<Counterfactua
   const fills = client.getFillLog();
   const totalFilled = fills.reduce((acc, f) => acc + f.filled, 0);
   const fillRate = initialQty > 0 ? totalFilled / initialQty : 0;
-  const finalPnl = computePnl(fills);
+  const entryCost = initialQty * (costBasisCents ?? 0);
+  const finalPnl = computePnl(fills, entryCost);
 
   // Slippage vs mid at fill tick
   let totalSlippage = 0;
